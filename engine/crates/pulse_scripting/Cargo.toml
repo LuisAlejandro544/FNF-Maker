@@ -1,0 +1,26 @@
+# Archivo: engine/crates/pulse_scripting/Cargo.toml
+# Propósito: Manifiesto del módulo de scripting multi-lenguaje `pulse_scripting`.
+# Integra:
+# - Lua 5.4 (`mlua`, MIT)
+# - JavaScript ES2022 (`rquickjs` con QuickJS-NG, MIT)
+# - Transpilador TypeScript -> JavaScript nativo en Rust (`oxc_*`, MIT)
+
+[package]
+name = "pulse_scripting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pulse_core.workspace = true
+mlua.workspace = true
+rquickjs.workspace = true
+oxc_allocator.workspace = true
+oxc_parser.workspace = true
+oxc_transformer.workspace = true
+oxc_codegen.workspace = true
+oxc_span.workspace = true
+oxc_semantic.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+log.workspace = true

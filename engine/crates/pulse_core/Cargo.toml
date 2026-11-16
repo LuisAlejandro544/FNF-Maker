@@ -1,0 +1,20 @@
+# Archivo: engine/crates/pulse_core/Cargo.toml
+# Propósito: Manifiesto del módulo núcleo (pulse_core).
+# Contiene parsers de charts, ensamblador automático de hojas Sparrow XML,
+# grafo de escenario, rasterizador de flechas SVG y compilador en caliente.
+
+[package]
+name = "pulse_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+roxmltree.workspace = true
+image.workspace = true
+resvg.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true

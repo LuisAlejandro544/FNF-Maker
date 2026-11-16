@@ -1,0 +1,11 @@
+<!-- Archivo: sdk/assets/arrows/right.svg | Skin de flecha derecha original libre de derechos -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="gRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+  <path d="M112 64 L64 110 L64 86 L18 86 L18 42 L64 42 L64 18 Z" fill="url(#gRight)" stroke="#F8FAFC" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M96 64 L72 86 L72 74 L34 74 L34 54 L72 54 L72 42 Z" fill="#EEF2FF" fill-opacity="0.32"/>
+</svg>

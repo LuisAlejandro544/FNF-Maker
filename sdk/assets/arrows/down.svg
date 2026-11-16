@@ -1,0 +1,11 @@
+<!-- Archivo: sdk/assets/arrows/down.svg | Skin de flecha abajo original libre de derechos -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="gDown" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <path d="M64 112 L18 64 L42 64 L42 18 L86 18 L86 64 L110 64 Z" fill="url(#gDown)" stroke="#F8FAFC" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M64 96 L42 72 L54 72 L54 34 L74 34 L74 72 L86 72 Z" fill="#ECFEFF" fill-opacity="0.32"/>
+</svg>

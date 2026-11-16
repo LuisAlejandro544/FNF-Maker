@@ -1,0 +1,6 @@
+{
+  "name": "BeatForge Studio",
+  "description": "Hello World web shell for BeatForge Studio, a modular Rust + Lua + TypeScript/JavaScript rhythm mod maker and mobile player.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

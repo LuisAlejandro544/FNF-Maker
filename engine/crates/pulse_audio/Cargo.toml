@@ -1,0 +1,23 @@
+# Archivo: engine/crates/pulse_audio/Cargo.toml
+# Propósito: Manifiesto del módulo de audio de baja latencia `pulse_audio`.
+# Usa Google Oboe en Android y decodificadores 100% permisivos (lewton, hound, rmp3)
+# para mezclar simultáneamente hasta 3 pistas de música (Mix/Instrumental, Voces Player, Voces Rival).
+
+[package]
+name = "pulse_audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pulse_core.workspace = true
+lewton.workspace = true
+hound.workspace = true
+rmp3.workspace = true
+rayon.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+oboe.workspace = true

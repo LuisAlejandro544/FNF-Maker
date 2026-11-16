@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Archivo: android/app/src/main/res/values/strings.xml -->
+<!-- Propósito: Define el nombre visible de la aplicación en el lanzador de Android. -->
+<resources>
+    <string name="app_name">BeatForge Studio</string>
+</resources>

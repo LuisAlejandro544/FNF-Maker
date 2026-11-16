@@ -1,0 +1,13 @@
+# Archivo: engine/.cargo/config.toml
+# Propósito: Configura flags de compilación cruzada para arquitecturas Android
+# de 32 bits (armv7-linux-androideabi) y 64 bits (aarch64-linux-android, x86_64-linux-android).
+# Incluye alineación de páginas de memoria de 16 KB exigida por Android 15+.
+
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

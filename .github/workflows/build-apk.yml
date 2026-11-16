@@ -1,0 +1,83 @@
+# Archivo: .github/workflows/build-apk.yml
+# Propósito: Flujo de GitHub Actions EXCLUSIVAMENTE manual (`workflow_dispatch`).
+# Nunca se ejecuta con commits ni pull requests.
+# Descarga dependencias del sistema, Android SDK/NDK, Rust + targets 32/64 bits,
+# utiliza caché para Rust (`Swatinem/rust-cache`), `cargo-ndk` y Gradle,
+# compila en modo Debug y sube 2 APKs separados (64 bits `arm64-v8a` y 32 bits `armeabi-v7a`).
+
+name: Compilar BeatForge Studio APK (Debug Manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-debug-apks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar dependencias nativas de compilación (C/C++/Clang/CMake)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang llvm cmake ninja-build
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar caché e instalar Android SDK + NDK r27
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018'
+
+      - name: Configurar Rust + targets 64 bits y 32 bits
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Caché de dependencias y compilación Rust (Cargo + target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+          key: android-debug-32-64
+
+      - name: Caché de cargo-ndk
+        id: cache-cargo-ndk
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ runner.os }}-v1
+
+      - name: Instalar cargo-ndk (si no está en caché)
+        if: steps.cache-cargo-ndk.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --locked
+
+      - name: Configurar Gradle con caché de dependencias y wrapper
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Descargar dependencias y compilar 2 APKs Debug (64 bits y 32 bits)
+        working-directory: android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          gradle wrapper --gradle-version 8.11.1
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Subir APK 64 bits (arm64-v8a Debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeatForgeStudio-64bit-arm64-v8a-Debug
+          path: android/app/build/outputs/apk/debug/*arm64-v8a*debug.apk
+          if-no-files-found: error
+
+      - name: Subir APK 32 bits (armeabi-v7a Debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeatForgeStudio-32bit-armeabi-v7a-Debug
+          path: android/app/build/outputs/apk/debug/*armeabi-v7a*debug.apk
+          if-no-files-found: error

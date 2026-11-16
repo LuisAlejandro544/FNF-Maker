@@ -1,0 +1,11 @@
+<!-- Archivo: sdk/assets/arrows/up.svg | Skin de flecha arriba original libre de derechos -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="gUp" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <path d="M64 16 L110 64 L86 64 L86 110 L42 110 L42 64 L18 64 Z" fill="url(#gUp)" stroke="#F8FAFC" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M64 32 L86 56 L74 56 L74 94 L54 94 L54 56 L42 56 Z" fill="#ECFDF5" fill-opacity="0.32"/>
+</svg>
