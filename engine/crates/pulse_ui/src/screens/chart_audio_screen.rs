@@ -123,6 +123,7 @@ pub fn draw_chart_audio_screen(ui: &mut egui::Ui, state: &mut AppState) {
                         if is_playing {
                             state.audio_engine.mixer.pause();
                         } else {
+                            state.audio_engine.ensure_started();
                             state.audio_engine.mixer.seek_ms(0.0);
                             state.audio_engine.mixer.play();
                         }

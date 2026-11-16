@@ -1,7 +1,7 @@
 # Archivo: engine/crates/pulse_audio/Cargo.toml
-# Propósito: Manifiesto del módulo de audio de baja latencia `pulse_audio`.
-# Usa Google Oboe en Android y decodificadores 100% permisivos (lewton, hound, rmp3)
-# para mezclar simultáneamente hasta 3 pistas de música (Mix/Instrumental, Voces Player, Voces Rival).
+# Propósito: Manifiesto del módulo de audio de baja latencia `pulse_audio` (100% Rust puro, sin C++).
+# Usa enlaces dinámicos directos en Rust al C ABI de Android AAudio (`libaaudio.so` vía `dlopen`)
+# y decodificadores 100% permisivos (lewton, hound, rmp3) para mezclar hasta 3 pistas.
 
 [package]
 name = "pulse_audio"
@@ -20,4 +20,4 @@ thiserror.workspace = true
 log.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-oboe.workspace = true
+libc.workspace = true

@@ -43,12 +43,15 @@ class MainActivity : GameActivity() {
                 "Error inesperado al iniciar BeatForge Studio",
                 throwable.stackTraceToString()
             )
+            try {
+                Thread.sleep(150)
+            } catch (_: InterruptedException) {
+            }
             Process.killProcess(Process.myPid())
         }
 
         try {
-            // pulse_android enlaza c++_static unificado con android-activity y Oboe,
-            // por lo que no se carga libc++_shared.so por separado.
+            // Audio ahora corre 100% en Rust puro (AAudio C ABI vía dlopen, sin Oboe C++ ni libc++_shared.so).
             System.loadLibrary("pulse_android")
         } catch (t: Throwable) {
             launchCrashScreen(
@@ -56,6 +59,10 @@ class MainActivity : GameActivity() {
                 t.stackTraceToString()
             )
             finish()
+            try {
+                Thread.sleep(150)
+            } catch (_: InterruptedException) {
+            }
             Process.killProcess(Process.myPid())
             return
         }

@@ -2,7 +2,7 @@
 // Propósito: Script de compilación del módulo `:app`.
 // Puntos clave:
 // 1. Invoca obligatoriamente `cargo ndk` dentro de `preBuild` para compilar todo el motor Rust
-//    (UI egui, Oboe con c++_static, Lua 5.4, QuickJS-NG, oxc TypeScript, resvg, Sparrow XML)
+//    (UI egui, audio AAudio en Rust puro sin C++, Lua 5.4, QuickJS-NG, oxc TypeScript, resvg, Sparrow XML)
 //    en 32-bit (`armeabi-v7a`) y 64-bit (`arm64-v8a`).
 // 2. Configura `androidx.games:games-activity:2.0.2` (`prefab = true`) y corrutinas Kotlin.
 // 3. Prepara salida APK lista para distribuirse en Uptodown o tiendas APK de terceros.

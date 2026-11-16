@@ -38,7 +38,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── lib.rs               # AudioEngineHandle y control del stream Oboe
 │       │       ├── decoder.rs           # Decodificación OGG (lewton), WAV (hound), MP3 (rmp3) y resampleo
 │       │       ├── mixer.rs             # Mezclador lock-free de hasta 3 pistas + reloj maestro por muestras
-│       │       └── oboe_backend.rs      # Backend Android Google Oboe (AAudio / OpenSL ES) + sintetizador fallback
+│       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados
 │       │   ├── Cargo.toml

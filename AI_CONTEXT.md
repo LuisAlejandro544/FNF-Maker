@@ -22,7 +22,7 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 | :--- | :--- | :--- |
 | `eframe` / `egui` | `0.37.0` | `eframe::App` usa `fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)` (ya no `update`). `TopBottomPanel` se reemplazó por `egui::Panel::top(...).exact_size(...)` + `.show_inside(ui, ...)`, y `CentralPanel::default().show_inside(ui, ...)`. |
 | `winit` | `0.30.13` | `eframe` 0.37 usa `winit 0.30` con feature `android-game-activity` y `winit::platform::android::activity::AndroidApp`. |
-| `oboe` | `0.6.1` | En `oboe_backend.rs`, los traits `oboe::AudioStream` y `oboe::AudioStreamBase` deben importarse explícitamente para llamar `.get_sample_rate()` y `.start()`. Requiere `features = ["shared-stdcxx"]` y `libc++_shared.so` en `jniLibs/<abi>/`. |
+| Audio Android (`AAudio` Rust puro) | `libc` (`dlopen` C ABI) | En `rust_audio_backend.rs`, se eliminó `oboe` C++ (`oboe-sys`) para evitar conflictos de STL (`c++_static`/`libc++_shared`). Carga `libaaudio.so` vía `dlopen`/`dlsym` en Rust puro (API 26+) con reloj de respaldo en Rust para Android 7.x (`minSdk = 24`). |
 | `oxc_*` | `0.158.0` | `ParserReturn`, `SemanticBuilderReturn` y `TransformerReturn` exponen `.diagnostics` (`oxc_diagnostics::Diagnostics`) en lugar de `.errors`. Usar `.diagnostics.has_errors()` y `.diagnostics.errors()`. |
 | `mlua` | `0.12.2` | `Lua::new()` con `lua54` y `vendored`; `func.call::<()>(args)`. |
 | `rquickjs` | `0.14.0` | `Function::new(ctx.clone(), closure)` + `func.call::<_, ()>(args)` con `features = ["rust-alloc", "macro", "bindgen"]`. |

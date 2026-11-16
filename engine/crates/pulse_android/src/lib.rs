@@ -55,8 +55,12 @@ fn encode_import_kind(kind: ImportKind) -> i32 {
 #[cfg(target_os = "android")]
 fn call_kotlin_saf_picker(kind_code: i32) -> Result<(), String> {
     let ctx = ndk_context::android_context();
+    if ctx.vm().is_null() || ctx.context().is_null() {
+        return Err("Contexto Android no inicializado".to_string());
+    }
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
     let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+    let _ = env.exception_clear();
     let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
 
     env.call_method(
@@ -65,7 +69,10 @@ fn call_kotlin_saf_picker(kind_code: i32) -> Result<(), String> {
         "(I)V",
         &[jni::objects::JValue::Int(kind_code)],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        let _ = env.exception_clear();
+        e.to_string()
+    })?;
 
     Ok(())
 }
@@ -88,7 +95,10 @@ fn call_kotlin_report_crash(details: &str) -> Result<(), String> {
         "(Ljava/lang/String;)V",
         &[jni::objects::JValue::Object(&*jdetails)],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        let _ = env.exception_clear();
+        e.to_string()
+    })?;
 
     Ok(())
 }
@@ -113,15 +123,21 @@ pub extern "C" fn Java_com_beatforge_studio_SafFileBridge_nativeOnFilePicked(
     }
 }
 
-/// Punto de entrada principal ejecutado por Android GameActivity.
+/// Punto de entrada principal ejecutado por `android-activity` (`GameActivity`).
+/// CRÍTICO: Debe usar ABI de Rust (`pub fn android_main`), NO `extern "C"`,
+/// porque `android-activity` invoca `extern "Rust" { fn android_main(app: AndroidApp); }`.
+/// Usar `extern "C"` con la estructura no-FFI `AndroidApp` corrompe los registros y provoca
+/// un crash nativo silencioso inmediato con pantalla negra al abrir la app.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
             .with_tag("BeatForgeEngine"),
     );
+
+    log::info!("BeatForge Studio: android_main iniciado correctamente");
 
     let crash_dir = app.internal_data_path();
     let panic_dir = crash_dir.clone();
@@ -146,6 +162,7 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
             let _ = std::fs::write(dir.join("last_native_crash.txt"), &msg);
         }
         let _ = call_kotlin_report_crash(&msg);
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }));
 
     // run_and_return = false y persist_window = false evitan reutilizar EventLoop obsoletos
@@ -170,5 +187,6 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
             let _ = std::fs::write(dir.join("last_native_crash.txt"), &msg);
         }
         let _ = call_kotlin_report_crash(&msg);
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
 }
