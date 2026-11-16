@@ -9,7 +9,7 @@ pub mod lua_vm;
 pub mod ts_transpiler;
 
 pub use bridge::{ScriptCommand, ScriptHostState};
-pub use js_vm::JsScriptVm;
+pub use js_vm::{JsScriptVm, JsWorkerHandle};
 pub use lua_vm::LuaScriptVm;
 pub use ts_transpiler::transpile_typescript_to_js;
 
@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub struct ModScriptRuntime {
     pub state: Arc<ScriptHostState>,
     lua_vms: Vec<LuaScriptVm>,
-    js_vms: Vec<JsScriptVm>,
+    js_worker: Option<JsWorkerHandle>,
 }
 
 impl ModScriptRuntime {
@@ -28,7 +28,7 @@ impl ModScriptRuntime {
     pub fn load_from_scripts(scripts: &[ScriptAsset]) -> (Self, Vec<String>) {
         let state = Arc::new(ScriptHostState::default());
         let mut lua_vms = Vec::new();
-        let mut js_vms = Vec::new();
+        let mut js_sources: Vec<(String, String)> = Vec::new();
         let mut errors = Vec::new();
 
         for script in scripts.iter().filter(|s| s.enabled) {
@@ -37,25 +37,29 @@ impl ModScriptRuntime {
                     Ok(vm) => lua_vms.push(vm),
                     Err(e) => errors.push(format!("[{}] {}", script.name, e)),
                 },
-                ScriptLanguage::JavaScript => match JsScriptVm::new(&script.source_code, Arc::clone(&state)) {
-                    Ok(vm) => js_vms.push(vm),
-                    Err(e) => errors.push(format!("[{}] {}", script.name, e)),
-                },
+                ScriptLanguage::JavaScript => {
+                    js_sources.push((script.name.clone(), script.source_code.clone()));
+                }
                 ScriptLanguage::TypeScript => match transpile_typescript_to_js(&script.name, &script.source_code) {
-                    Ok(js_code) => match JsScriptVm::new(&js_code, Arc::clone(&state)) {
-                        Ok(vm) => js_vms.push(vm),
-                        Err(e) => errors.push(format!("[{}] {}", script.name, e)),
-                    },
+                    Ok(js_code) => js_sources.push((script.name.clone(), js_code)),
                     Err(e) => errors.push(format!("[{}] {}", script.name, e)),
                 },
             }
         }
 
+        let js_worker = if js_sources.is_empty() {
+            None
+        } else {
+            let (worker, mut js_errors) = JsWorkerHandle::spawn(js_sources, Arc::clone(&state));
+            errors.append(&mut js_errors);
+            Some(worker)
+        };
+
         (
             Self {
                 state,
                 lua_vms,
-                js_vms,
+                js_worker,
             },
             errors,
         )
@@ -65,8 +69,8 @@ impl ModScriptRuntime {
         for vm in &mut self.lua_vms {
             vm.call_void("onCreate");
         }
-        for vm in &mut self.js_vms {
-            vm.call_void("onCreate");
+        if let Some(worker) = &self.js_worker {
+            worker.call_void("onCreate");
         }
     }
 
@@ -74,8 +78,8 @@ impl ModScriptRuntime {
         for vm in &mut self.lua_vms {
             vm.call_f32("onUpdate", dt);
         }
-        for vm in &mut self.js_vms {
-            vm.call_f32("onUpdate", dt);
+        if let Some(worker) = &self.js_worker {
+            worker.call_f32("onUpdate", dt);
         }
     }
 
@@ -83,8 +87,8 @@ impl ModScriptRuntime {
         for vm in &mut self.lua_vms {
             vm.call_i32("onBeatHit", beat);
         }
-        for vm in &mut self.js_vms {
-            vm.call_i32("onBeatHit", beat);
+        if let Some(worker) = &self.js_worker {
+            worker.call_i32("onBeatHit", beat);
         }
     }
 
@@ -92,8 +96,8 @@ impl ModScriptRuntime {
         for vm in &mut self.lua_vms {
             vm.call_note_event("onNoteHit", lane, is_player);
         }
-        for vm in &mut self.js_vms {
-            vm.call_note_event("onNoteHit", lane, is_player);
+        if let Some(worker) = &self.js_worker {
+            worker.call_note_event("onNoteHit", lane, is_player);
         }
     }
 
@@ -101,8 +105,8 @@ impl ModScriptRuntime {
         for vm in &mut self.lua_vms {
             vm.call_note_event("onNoteMiss", lane, is_player);
         }
-        for vm in &mut self.js_vms {
-            vm.call_note_event("onNoteMiss", lane, is_player);
+        if let Some(worker) = &self.js_worker {
+            worker.call_note_event("onNoteMiss", lane, is_player);
         }
     }
 

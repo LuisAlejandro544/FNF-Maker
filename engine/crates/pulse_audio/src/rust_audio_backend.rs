@@ -88,6 +88,7 @@ impl AudioEngineHandle {
 }
 
 #[cfg(target_os = "android")]
+#[allow(dead_code)]
 enum AndroidAudioOutput {
     AAudio(android_aaudio::AAudioStreamHandle),
     FallbackClock(FallbackClockThread),

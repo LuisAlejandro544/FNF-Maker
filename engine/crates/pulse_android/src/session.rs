@@ -779,6 +779,7 @@ impl EngineSession {
     }
 
     pub fn start_gameplay(&mut self) -> String {
+        self.gameplay = None;
         let bundle = self
             .compiled_bundle
             .take()
