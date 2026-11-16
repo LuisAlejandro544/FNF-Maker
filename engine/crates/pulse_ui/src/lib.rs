@@ -33,19 +33,21 @@ impl BeatForgeApp {
 }
 
 impl eframe::App for BeatForgeApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+
         // Procesar archivos recién importados desde Android SAF (hilo IO coroutine)
         // y progreso de compilación en caliente o decodificación de audio.
-        self.state.poll_background_events(ctx);
+        self.state.poll_background_events(&ctx);
 
         // Si estamos en gameplay, ocultamos la barra de editor para vista horizontal inmersiva.
         if self.state.screen != ActiveScreen::Gameplay && self.state.screen != ActiveScreen::HotCompile {
-            draw_top_studio_nav(ctx, &mut self.state);
+            draw_top_studio_nav(ui, &mut self.state);
         }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::BG_CANVAS).inner_margin(12.0))
-            .show(ctx, |ui| match self.state.screen {
+            .show_inside(ui, |ui| match self.state.screen {
                 ActiveScreen::Hub => draw_hub_screen(ui, &mut self.state),
                 ActiveScreen::ChartAndAudio => draw_chart_audio_screen(ui, &mut self.state),
                 ActiveScreen::SpriteLab => draw_sprite_lab_screen(ui, &mut self.state),
@@ -57,11 +59,11 @@ impl eframe::App for BeatForgeApp {
 
         // Popups modales dedicados (sin amontonar en las pantallas principales).
         if self.state.show_arrow_skin_popup {
-            draw_arrow_skin_popup(ctx, &mut self.state);
+            draw_arrow_skin_popup(&ctx, &mut self.state);
         }
 
         if let Some(msg) = self.state.toast_message.clone() {
-            draw_toast_banner(ctx, &msg, &mut self.state);
+            draw_toast_banner(&ctx, &msg, &mut self.state);
         }
 
         // En Gameplay o Compilación en caliente solicitamos repintado continuo a 60+ FPS.
@@ -74,16 +76,16 @@ impl eframe::App for BeatForgeApp {
     }
 }
 
-fn draw_top_studio_nav(ctx: &egui::Context, state: &mut AppState) {
-    egui::TopBottomPanel::top("studio_nav_bar")
-        .exact_height(52.0)
+fn draw_top_studio_nav(ui: &mut egui::Ui, state: &mut AppState) {
+    egui::Panel::top("studio_nav_bar")
+        .exact_size(52.0)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_ELEVATED)
                 .inner_margin(egui::Margin::symmetric(14, 8))
                 .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE)),
         )
-        .show(ctx, |ui| {
+        .show_inside(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(
                     egui::RichText::new("BEATFORGE STUDIO")

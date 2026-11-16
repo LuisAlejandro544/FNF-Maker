@@ -17,15 +17,15 @@ pub fn transpile_typescript_to_js(filename: &str, ts_source: &str) -> Result<Str
     let source_type = SourceType::ts();
     let parsed = Parser::new(&allocator, ts_source, source_type).parse();
 
-    if !parsed.errors.is_empty() {
-        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.to_string()).collect();
+    if parsed.diagnostics.has_errors() {
+        let msgs: Vec<String> = parsed.diagnostics.errors().map(|e| e.to_string()).collect();
         return Err(format!("Error de sintaxis TypeScript: {}", msgs.join("; ")));
     }
 
     let mut program = parsed.program;
     let semantic = SemanticBuilder::new().build(&program);
-    if !semantic.errors.is_empty() {
-        let msgs: Vec<String> = semantic.errors.iter().map(|e| e.to_string()).collect();
+    if semantic.diagnostics.has_errors() {
+        let msgs: Vec<String> = semantic.diagnostics.errors().map(|e| e.to_string()).collect();
         return Err(format!("Error semántico TypeScript: {}", msgs.join("; ")));
     }
 
@@ -34,8 +34,8 @@ pub fn transpile_typescript_to_js(filename: &str, ts_source: &str) -> Result<Str
     let ret = Transformer::new(&allocator, Path::new(filename), &transform_options)
         .build_with_scoping(scoping, &mut program);
 
-    if !ret.errors.is_empty() {
-        let msgs: Vec<String> = ret.errors.iter().map(|e| e.to_string()).collect();
+    if ret.diagnostics.has_errors() {
+        let msgs: Vec<String> = ret.diagnostics.errors().map(|e| e.to_string()).collect();
         return Err(format!("Error transpilando TypeScript: {}", msgs.join("; ")));
     }
 

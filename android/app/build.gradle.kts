@@ -132,7 +132,7 @@ val copyCppShared by tasks.registering {
         val hostDir = prebuiltDir.listFiles()?.firstOrNull { it.isDirectory } ?: return@doLast
         for ((abi, triple) in abiMap) {
             val src = File(hostDir, "sysroot/usr/lib/$triple/libc++_shared.so")
-            val dst = File("src/main/jniLibs/$abi/libc++_shared.so")
+            val dst = project.file("src/main/jniLibs/$abi/libc++_shared.so")
             if (src.exists() && !dst.exists()) {
                 dst.parentFile.mkdirs()
                 src.copyTo(dst, overwrite = true)

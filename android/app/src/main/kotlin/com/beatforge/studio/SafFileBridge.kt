@@ -12,6 +12,7 @@ import java.io.File
 
 object SafFileBridge {
 
+    @JvmStatic
     external fun nativeOnFilePicked(localPath: String)
 
     fun copyUriToInternalCache(context: Context, uri: Uri, kindCode: Int): String? {
