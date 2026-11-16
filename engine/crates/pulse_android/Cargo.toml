@@ -24,4 +24,4 @@ log.workspace = true
 android_logger = "0.14.1"
 jni = "0.21.1"
 ndk-context = "0.1.1"
-winit = { version = "0.30.9", features = ["android-game-activity"] }
+winit = { version = "0.30.13", features = ["android-game-activity"] }

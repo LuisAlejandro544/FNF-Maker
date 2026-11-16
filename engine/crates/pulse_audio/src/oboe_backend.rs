@@ -22,8 +22,8 @@ impl AudioEngineHandle {
         #[cfg(target_os = "android")]
         {
             use oboe::{
-                AudioOutputCallback, AudioStreamBuilder, DataCallbackResult, PerformanceMode,
-                SharingMode, Stereo,
+                AudioStream, AudioStreamBase, AudioStreamBuilder, PerformanceMode, SharingMode,
+                Stereo,
             };
 
             let callback = OboeCallback {
