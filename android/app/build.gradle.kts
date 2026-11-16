@@ -78,7 +78,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.games:games-activity:4.4.2")
+    implementation("androidx.games:games-activity:2.0.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }
 
@@ -98,7 +98,7 @@ val buildRustDebug by tasks.registering(Exec::class) {
         "-t", "arm64-v8a",
         "--platform", "24",
         "-o", jniOut,
-        "build", "-p", "pulse_android"
+        "build", "--keep-going", "-p", "pulse_android"
     )
 }
 
@@ -114,7 +114,7 @@ val buildRustRelease by tasks.registering(Exec::class) {
         "-t", "arm64-v8a",
         "--platform", "24",
         "-o", jniOut,
-        "build", "--release", "-p", "pulse_android"
+        "build", "--release", "--keep-going", "-p", "pulse_android"
     )
 }
 

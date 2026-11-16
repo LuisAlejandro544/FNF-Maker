@@ -139,9 +139,14 @@ pub fn draw_chart_audio_screen(ui: &mut egui::Ui, state: &mut AppState) {
             );
             ui.add_space(8.0);
 
+            let mut import_requested_slot: Option<usize> = None;
             for slot in 0..MAX_AUDIO_TRACKS {
-                let track_cfg = &mut state.project.audio_tracks[slot];
-                let decoded_opt = state.decoded_tracks[slot].as_ref();
+                let role_label = state.project.audio_tracks[slot].role_label.clone();
+                let has_file = state.project.audio_tracks[slot].file_path.is_some();
+                let file_lbl = state.project.audio_tracks[slot]
+                    .file_name
+                    .clone()
+                    .unwrap_or_else(|| "Sin archivo asignado".to_string());
 
                 egui::Frame::NONE
                     .fill(theme::BG_CARD)
@@ -151,31 +156,27 @@ pub fn draw_chart_audio_screen(ui: &mut egui::Ui, state: &mut AppState) {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(&track_cfg.role_label)
+                                egui::RichText::new(&role_label)
                                     .strong()
                                     .color(theme::TEXT_PRIMARY),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if track_cfg.file_path.is_some() && ui.button("Quitar").clicked() {
-                                    track_cfg.file_path = None;
-                                    track_cfg.file_name = None;
+                                if has_file && ui.button("Quitar").clicked() {
+                                    state.project.audio_tracks[slot].file_path = None;
+                                    state.project.audio_tracks[slot].file_name = None;
                                     state.decoded_tracks[slot] = None;
                                     state.audio_engine.mixer.set_track(slot, None);
                                 }
                                 if ui.button("📂 Importar (.ogg/.wav/.mp3)").clicked() {
-                                    state.trigger_import(ImportKind::AudioTrack(slot));
+                                    import_requested_slot = Some(slot);
                                 }
                             });
                         });
 
-                        let file_lbl = track_cfg
-                            .file_name
-                            .as_deref()
-                            .unwrap_or("Sin archivo asignado");
                         ui.label(
-                            egui::RichText::new(file_lbl)
+                            egui::RichText::new(&file_lbl)
                                 .size(11.5)
-                                .color(if track_cfg.file_path.is_some() {
+                                .color(if has_file {
                                     theme::ACCENT_EMERALD
                                 } else {
                                     theme::TEXT_MUTED
@@ -185,29 +186,40 @@ pub fn draw_chart_audio_screen(ui: &mut egui::Ui, state: &mut AppState) {
                         ui.horizontal(|ui| {
                             ui.label("Vol:");
                             if ui
-                                .add(egui::Slider::new(&mut track_cfg.gain, 0.0..=1.5))
+                                .add(egui::Slider::new(
+                                    &mut state.project.audio_tracks[slot].gain,
+                                    0.0..=1.5,
+                                ))
                                 .changed()
                             {
-                                state.audio_engine.mixer.configs[slot].set_gain(track_cfg.gain);
-                            }
-                            if ui.checkbox(&mut track_cfg.muted, "Mute").changed() {
                                 state.audio_engine.mixer.configs[slot]
-                                    .muted
-                                    .store(track_cfg.muted, std::sync::atomic::Ordering::Relaxed);
+                                    .set_gain(state.project.audio_tracks[slot].gain);
+                            }
+                            if ui
+                                .checkbox(&mut state.project.audio_tracks[slot].muted, "Mute")
+                                .changed()
+                            {
+                                state.audio_engine.mixer.configs[slot].muted.store(
+                                    state.project.audio_tracks[slot].muted,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                             }
                             if slot == 1 {
                                 ui.checkbox(
-                                    &mut track_cfg.duck_on_player_miss,
+                                    &mut state.project.audio_tracks[slot].duck_on_player_miss,
                                     "Bajar al fallar",
                                 );
                             }
                         });
 
-                        if let Some(decoded) = decoded_opt {
+                        if let Some(decoded) = state.decoded_tracks[slot].as_ref() {
                             draw_waveform_bars(ui, &decoded.waveform_peaks);
                         }
                     });
                 ui.add_space(8.0);
+            }
+            if let Some(slot) = import_requested_slot {
+                state.trigger_import(ImportKind::AudioTrack(slot));
             }
         });
     });

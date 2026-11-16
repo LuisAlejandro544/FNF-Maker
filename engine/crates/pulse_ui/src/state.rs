@@ -248,7 +248,7 @@ impl AppState {
 
     pub fn poll_background_events(&mut self, ctx: &egui::Context) {
         let mut imported = Vec::new();
-        if let Ok(mut rx) = self.import_rx.try_lock() {
+        if let Some(mut rx) = self.import_rx.try_lock() {
             while let Ok(ev) = rx.try_recv() {
                 imported.push(ev);
             }
@@ -258,7 +258,7 @@ impl AppState {
         }
 
         let mut bg_events = Vec::new();
-        if let Ok(mut rx) = self.bg_rx.try_lock() {
+        if let Some(mut rx) = self.bg_rx.try_lock() {
             while let Ok(ev) = rx.try_recv() {
                 bg_events.push(ev);
             }

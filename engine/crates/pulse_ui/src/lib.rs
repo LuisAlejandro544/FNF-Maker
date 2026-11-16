@@ -47,7 +47,7 @@ impl eframe::App for BeatForgeApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::BG_CANVAS).inner_margin(12.0))
-            .show_inside(ui, |ui| match self.state.screen {
+            .show(ui, |ui| match self.state.screen {
                 ActiveScreen::Hub => draw_hub_screen(ui, &mut self.state),
                 ActiveScreen::ChartAndAudio => draw_chart_audio_screen(ui, &mut self.state),
                 ActiveScreen::SpriteLab => draw_sprite_lab_screen(ui, &mut self.state),
@@ -85,7 +85,7 @@ fn draw_top_studio_nav(ui: &mut egui::Ui, state: &mut AppState) {
                 .inner_margin(egui::Margin::symmetric(14, 8))
                 .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE)),
         )
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(
                     egui::RichText::new("BEATFORGE STUDIO")
