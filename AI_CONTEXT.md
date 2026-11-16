@@ -1,6 +1,6 @@
 # AI Context — Arquitectura Técnica de BeatForge Studio
 
-Este archivo concentra el contexto técnico profundo necesario para entender cómo interactúan Rust, Lua, TypeScript/JavaScript, Google Oboe y Android (`GameActivity` + Kotlin Coroutines) dentro de **BeatForge Studio**.
+Este archivo concentra el contexto técnico profundo necesario para entender cómo interactúan **Rust** (lógica, audio AAudio puro, scripting y rasterizado), **JNI**, **Kotlin Coroutines (`Dispatchers.IO`)** y **Jetpack Compose + Material 3** dentro de **BeatForge Studio**.
 
 ---
 
@@ -11,7 +11,8 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
    - Existe para que `npm run build` y el servidor de desarrollo en el puerto `3000` dentro de AI Studio compilen y arranquen sin errores.
    - **No** debe mezclarse aquí la lógica pesada del motor móvil.
 2. **Motor Móvil Real (`/engine`, `/android`, `/sdk`)**:
-   - Toda la lógica de procesamiento, renderizado, audio y UI táctil horizontal vive en Rust dentro del workspace `/engine`.
+   - Toda la lógica del juego, parseo de charts, decodificación de audio, mezcla en tiempo real, XML Sparrow, scripting Lua/TS/JS, SVG `resvg`, compilación en caliente (`rayon`) y simulación de gameplay vive en **Rust** (`/engine`).
+   - Toda la interfaz gráfica horizontal, edición de texto con teclado nativo, navegación por pantallas y renderizado Compose Canvas vive en **Kotlin + Jetpack Compose + Material 3 + Material Icons Extended** (`/android`), conectado al motor mediante **JNI directo (`NativeEngineBridge.kt` ↔ `pulse_android`)**.
    - El contenedor del entorno web no tiene `rustc` ni Android NDK instalados localmente; la compilación nativa de las arquitecturas `arm64-v8a` (64 bits) y `armeabi-v7a` (32 bits) se ejecuta mediante GitHub Actions (`.github/workflows/build-apk.yml`).
 
 ---
@@ -20,13 +21,14 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 
 | Componente | Versión | Detalles Críticos de API |
 | :--- | :--- | :--- |
-| `eframe` / `egui` | `0.37.0` | `eframe::App` usa `fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)` (ya no `update`). `TopBottomPanel` se reemplazó por `egui::Panel::top(...).exact_size(...)` + `.show_inside(ui, ...)`, y `CentralPanel::default().show_inside(ui, ...)`. |
-| `winit` | `0.30.13` | `eframe` 0.37 usa `winit 0.30` con feature `android-game-activity` y `winit::platform::android::activity::AndroidApp`. |
-| Audio Android (`AAudio` Rust puro) | `libc` (`dlopen` C ABI) | En `rust_audio_backend.rs`, se eliminó `oboe` C++ (`oboe-sys`) para evitar conflictos de STL (`c++_static`/`libc++_shared`). Carga `libaaudio.so` vía `dlopen`/`dlsym` en Rust puro (API 26+) con reloj de respaldo en Rust para Android 7.x (`minSdk = 24`). |
+| Jetpack Compose BOM | `2025.02.00` | Incluye `material3`, `material-icons-extended`, `ui`, `ui-graphics`, `activity-compose:1.10.1`, `lifecycle-viewmodel-compose:2.8.7`, `lifecycle-runtime-compose:2.8.7` y plugin `org.jetbrains.kotlin.plugin.compose:2.1.20`. |
+| Android Gradle / Kotlin | AGP `8.9.1` / Kotlin `2.1.20` | `compileSdk = 35`, `targetSdk = 35`, `minSdk = 24`, `ndkVersion = "27.2.12479018"`. Sin `GameActivity` ni `prefab`. |
+| Audio Android (`AAudio` Rust puro) | `libc` (`dlopen` C ABI) | En `pulse_audio/src/rust_audio_backend.rs`, se eliminó por completo C++ Oboe (`oboe-sys`) y `libc++_shared.so`. Carga `libaaudio.so` vía `dlopen`/`dlsym` en Rust puro (API 26+) con reloj de respaldo (`FallbackClockThread`) para Android 7.x (`minSdk = 24`). |
+| Puente JNI (`jni` crate) | `0.21.1` | `pulse_android/src/lib.rs` exporta símbolos `Java_com_beatforge_studio_NativeEngineBridge_*` conectados a `EngineSession` (`parking_lot::Mutex`) e intercambia snapshots JSON (`serde_json` camelCase) + `ByteArray` PNG de `resvg`. |
 | `oxc_*` | `0.158.0` | `ParserReturn`, `SemanticBuilderReturn` y `TransformerReturn` exponen `.diagnostics` (`oxc_diagnostics::Diagnostics`) en lugar de `.errors`. Usar `.diagnostics.has_errors()` y `.diagnostics.errors()`. |
 | `mlua` | `0.12.2` | `Lua::new()` con `lua54` y `vendored`; `func.call::<()>(args)`. |
 | `rquickjs` | `0.14.0` | `Function::new(ctx.clone(), closure)` + `func.call::<_, ()>(args)` con `features = ["rust-alloc", "macro", "bindgen"]`. |
-| `resvg` | `0.50.0` | Rasteriza SVG sobre `resvg::tiny_skia::Pixmap` (RGBA premultiplicado que `svg_skin.rs` des-premultiplica a RGBA recto para `egui::ColorImage`). |
+| `resvg` | `0.50.0` | Rasteriza SVG sobre `resvg::tiny_skia::Pixmap` y `pulse_android/session.rs` codifica PNG en bytes vía `image` para consumirse como `ImageBitmap` en Compose. |
 | `cargo-ndk` | `v4.x` | El nivel de API se pasa con `--platform 24` (NO `-p 24`, porque `-p` en v4 es `--package`). |
 
 ---
@@ -34,34 +36,35 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 ## 3. Flujos Internos Clave del Motor
 
 ### A. Importación de Archivos desde Android (SAF + Coroutines + JNI)
-1. En Rust (`pulse_ui`), el usuario pulsa un botón de importar (Chart, Pista 1–3, PNG, XML, SVG o Script).
-2. `AndroidSafPicker::request_import` guarda `(ImportKind, UnboundedSender<ImportedFileEvent>)` en `PENDING_PICK_TX` y llama vía JNI a `MainActivity.launchSafPicker(kindCode)`.
-3. `MainActivity` abre el selector nativo de Android (`ActivityResultContracts.OpenDocument`) en el hilo UI.
-4. Al recibir el `Uri`, lanza una corrutina en **`Dispatchers.IO`** (`lifecycleScope.launch(Dispatchers.IO)`) para no bloquear el hilo principal ni congelar el renderizado.
-5. `SafFileBridge.copyUriToInternalCache` resuelve el nombre real (`OpenableColumns.DISPLAY_NAME`) y copia el stream a `filesDir/mod_imports/`.
-6. Luego invoca `@JvmStatic external fun nativeOnFilePicked(localPath: String)` -> `Java_com_beatforge_studio_SafFileBridge_nativeOnFilePicked` en Rust, enviando el `ImportedFileEvent` al canal `tokio::sync::mpsc`.
-7. `AppState::poll_background_events` procesa el archivo en el siguiente frame y dispara decodificación/carga asíncrona en `tokio`.
+1. En una pantalla Compose (`ChartAudioScreen`, `SpriteLabScreen`, `StageEditorScreen`, `ScriptStudioScreen` o `ArrowSkinDialog`), el usuario pulsa un botón de importar.
+2. `StudioViewModel.requestImport(kind)` abre `ActivityResultContracts.OpenDocument` registrado en `MainActivity.kt`.
+3. Al recibir el `Uri`, `StudioViewModel.onUriPicked` ejecuta una corrutina en **`Dispatchers.IO`** para no bloquear el hilo principal.
+4. `SafFileBridge.copyUriToInternalCache` resuelve el nombre real (`OpenableColumns.DISPLAY_NAME`), sanea caracteres especiales y copia el stream a `filesDir/mod_imports/`.
+5. Luego invoca el método JNI correspondiente en `NativeEngineBridge` (`nativeImportChart`, `nativeImportAudioTrack`, `nativeImportSpriteSheetPng`, `nativeImportSparrowXml`, `nativeImportScript`, `nativeImportArrowSvg`).
+6. Rust procesa/decodifica el archivo y devuelve un `ActionResultJson<ProjectSnapshotJson>` con el estado actualizado, y `StudioViewModel` recarga en `Dispatchers.IO` los bitmaps necesarios para la UI Compose.
 
-### B. Reloj Maestro de Audio (Google Oboe) y 1–3 Pistas
+### B. Reloj Maestro de Audio (AAudio Rust Puro) y 1–3 Pistas
 - `AudioMixer` mantiene hasta 3 `TrackSlotConfig` + `Arc<DecodedTrack>` (`slots[0..3]`).
-- El callback en tiempo real de Oboe (`on_audio_ready`) avanza `played_frames: AtomicU64` **sin mutex bloqueantes** (`try_read` / atomics), garantizando cero cortes en 32 y 64 bits.
+- El callback en tiempo real de AAudio (`data_callback` en `rust_audio_backend.rs`) avanza `played_frames: AtomicU64` **sin mutex bloqueantes** (`try_read` / atomics), garantizando cero cortes en 32 y 64 bits.
 - `position_ms()` deriva directamente de `played_frames / sample_rate`, manteniendo notas, scripts y animaciones sincronizados con precisión de muestra.
 - Si no hay pistas importadas, activa un metrónomo/base sintetizada demo para que el mod siempre pueda probarse al instante.
 
 ### C. Ensamblado Automático de Spritesheets (`.png` + `.xml`)
 - `SparrowAtlas::from_xml_str` parsea los `<SubTexture name="..." x="..." y="..." width="..." height="..." .../>` usando `roxmltree`.
-- Agrupa frames por prefijo normalizado (quitando dígitos finales como `0000`, `0001`) y los asigna heurísticamente a los 5 estados base: `Idle`, `Left`, `Down`, `Up`, `Right`, permitiendo ajuste manual en `SpriteLab` si el mod usa nombres personalizados.
+- Agrupa frames por prefijo normalizado (quitando dígitos finales como `0000`, `0001`) y los asigna heurísticamente a los 5 estados base: `Idle`, `Left`, `Down`, `Up`, `Right`.
+- `SpriteLabScreen.kt` consulta a Rust `nativeGetSparrowFrameInfo(entityId, animKind, elapsedSec)` a 24 FPS y dibuja el sub-rectángulo exacto en Compose `Canvas` compensando cualquier reescalado previo.
 
 ### D. Compilación en Caliente (`Hot Compile`)
-- Ejecutada en `tokio_rt.spawn_blocking` usando `rayon::par_iter()`:
+- Disparada por `StudioViewModel.startCompileAndPlay()` en `Dispatchers.IO` invocando `NativeEngineBridge.nativeHotCompile(tierCode)` sobre `rayon::par_iter()`:
   1. Clasifica entidades según su rol (`Background`, `Player`, `Opponent`, `Decoration`) y orden Z.
-  2. **Poda de invisibles**: Descarta cualquier entidad con `!visible` u `opacity <= 0.01` que no sea referenciada dinámicamente, reportando la RAM/VRAM ahorrada.
-  3. **Reescalado por gama de dispositivo** (`LowRam32Bit`: máx. 1024px, `Balanced`: 2048px, `HighQuality`: 4096px) y rasterización de flechas `.svg` a RGBA8888.
+  2. **Poda de invisibles**: Descarta cualquier entidad con `!visible` u `opacity <= 0.01` fuera de escena que no sea referenciada por scripts, reportando la RAM/VRAM ahorrada.
+  3. **Reescalado por gama de dispositivo** (`LowRam32Bit`: máx. 1024px, `Balanced`: 2048px, `HighQuality`: 4096px), escribe las texturas optimizadas a `<cacheDir>/compiled_cache/*.png` y rasteriza las flechas `.svg` con `resvg`.
+- `GameplayScreen.kt` sincroniza el loop de `withFrameNanos` llamando a `nativeStepGameplay(dtSec, pressedMask, justPressedMask)` con zonas táctiles multi-touch de 4 carriles.
 
 ### E. Scripting Unificado (Lua 5.4 + TypeScript + JavaScript)
 - Los scripts `.ts` pasan por `oxc_allocator` -> `oxc_parser` -> `oxc_semantic` -> `oxc_transformer` -> `oxc_codegen` en memoria, obteniendo JS ES2022 listo para `rquickjs`.
-- Tanto Lua (`mlua`) como JS/TS (`rquickjs`) registran exactamente las mismas funciones globales: `log`, `setCameraZoom`, `shakeCamera`, `setEntityProp`, `playAnim`, `getSongPosMs`.
-- Las mutaciones no tocan la UI desde dentro del VM: se encolan como `ScriptCommand` en `ScriptHostState` y `gameplay_screen.rs` las drena cada frame.
+- Tanto Lua (`mlua`) como JS/TS (`rquickjs`) registran exactamente las mismas funciones globales: `log`, `setCameraZoom`, `shakeCamera`, `setEntityProp`, `playEntityAnim`, `getSongPosMs`.
+- Las mutaciones se encolan como `ScriptCommand` en `ScriptHostState` y `EngineSession::step_gameplay` las drena cada frame antes de enviar el `GameplayStepJson` a Kotlin Compose.
 
 ---
 

@@ -1,6 +1,7 @@
 # Archivo: engine/crates/pulse_android/Cargo.toml
 # Propósito: Crate dinámico (`cdylib`) para Android que compila `libpulse_android.so`
-# e integra `eframe` con `GameActivity`, Google Oboe y el puente JNI hacia Kotlin SAF.
+# y expone mediante JNI todo el motor Rust (`pulse_core`, `pulse_audio`, `pulse_scripting`)
+# hacia la interfaz móvil en Kotlin + Jetpack Compose (sin `eframe`, `winit` ni C++).
 
 [package]
 name = "pulse_android"
@@ -10,18 +11,18 @@ license.workspace = true
 
 [lib]
 name = "pulse_android"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pulse_core.workspace = true
-pulse_ui.workspace = true
-eframe = { workspace = true, features = ["android-game-activity", "glow", "default_fonts"] }
-tokio.workspace = true
+pulse_audio.workspace = true
+pulse_scripting.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 parking_lot.workspace = true
 log.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14.1"
 jni = "0.21.1"
-ndk-context = "0.1.1"
-winit = { version = "0.30.13", features = ["android-game-activity"] }

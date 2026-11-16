@@ -10,7 +10,6 @@ members = [
     "crates/pulse_core",
     "crates/pulse_audio",
     "crates/pulse_scripting",
-    "crates/pulse_ui",
     "crates/pulse_android",
 ]
 
@@ -21,10 +20,6 @@ license = "Apache-2.0"
 authors = ["BeatForge Studio Contributors"]
 
 [workspace.dependencies]
-# Interfaz grafica nativa en Rust (MIT / Apache-2.0)
-eframe = { version = "0.37.0", default-features = false }
-egui = "0.37.0"
-
 # Audio de baja latencia 100% en Rust puro para Android via C ABI de AAudio (dlopen, cero C++)
 libc = "0.2.172"
 
@@ -50,7 +45,6 @@ resvg = "0.50.0"
 
 # Concurrencia, paralelismo en caliente y serializacion (MIT / Apache-2.0)
 rayon = "1.12.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 thiserror = "2.0.12"
@@ -61,7 +55,6 @@ parking_lot = "0.12.3"
 pulse_core = { path = "crates/pulse_core" }
 pulse_audio = { path = "crates/pulse_audio" }
 pulse_scripting = { path = "crates/pulse_scripting" }
-pulse_ui = { path = "crates/pulse_ui" }
 
 [profile.dev]
 opt-level = 1

@@ -2,14 +2,15 @@
 // Propósito: Script de compilación del módulo `:app`.
 // Puntos clave:
 // 1. Invoca obligatoriamente `cargo ndk` dentro de `preBuild` para compilar todo el motor Rust
-//    (UI egui, audio AAudio en Rust puro sin C++, Lua 5.4, QuickJS-NG, oxc TypeScript, resvg, Sparrow XML)
+//    (audio AAudio en Rust puro sin C++, Lua 5.4, QuickJS-NG, oxc TypeScript, resvg, Sparrow XML)
 //    en 32-bit (`armeabi-v7a`) y 64-bit (`arm64-v8a`).
-// 2. Configura `androidx.games:games-activity:2.0.2` (`prefab = true`) y corrutinas Kotlin.
+// 2. Configura Jetpack Compose + Material 3 + Material Icons Extended + ViewModel + Corrutinas Kotlin.
 // 3. Prepara salida APK lista para distribuirse en Uptodown o tiendas APK de terceros.
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -19,7 +20,7 @@ android {
 
     defaultConfig {
         applicationId = "com.beatforge.studio"
-        // minSdk 24 garantiza compatibilidad amplia con teléfonos de 32 y 64 bits + Oboe (OpenSL/AAudio)
+        // minSdk 24 garantiza compatibilidad amplia con teléfonos de 32 y 64 bits
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -37,7 +38,7 @@ android {
     }
 
     buildFeatures {
-        prefab = true
+        compose = true
     }
 
     compileOptions {
@@ -70,12 +71,25 @@ android {
 }
 
 dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2025.02.00")
+    implementation(composeBom)
+
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.games:games-activity:2.0.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
 val isReleaseRequested = gradle.startParameter.taskNames.any {

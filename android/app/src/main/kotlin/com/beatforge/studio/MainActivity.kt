@@ -1,8 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/MainActivity.kt
-// Propósito: Actividad principal basada en Google `GameActivity`.
-// No contiene lógica del motor ni fallbacks (todo el motor y UI viven en Rust).
-// Solo gestiona el ciclo de vida de Android y lanza el selector nativo SAF (`ACTION_OPEN_DOCUMENT`)
-// delegando la copia de archivos a corrutinas en `Dispatchers.IO` para no bloquear el hilo principal.
+// Propósito: Actividad principal basada en Jetpack Compose (`ComponentActivity`) conectada
+// al motor nativo Rust (`libpulse_android.so`) vía JNI a través de `StudioViewModel`.
+// Gestiona el selector nativo SAF (`ACTION_OPEN_DOCUMENT`), captura fallos fatales hacia
+// `CrashReportActivity` y mantiene pantalla activa horizontal sin lógica de motor en Kotlin.
 
 package com.beatforge.studio
 
@@ -11,36 +11,70 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Process
 import android.view.WindowManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
-import com.google.androidgamesdk.GameActivity
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import androidx.activity.viewModels
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.beatforge.studio.ui.components.StudioNavBar
+import com.beatforge.studio.ui.popups.ArrowSkinDialog
+import com.beatforge.studio.ui.screens.ChartAudioScreen
+import com.beatforge.studio.ui.screens.GameplayScreen
+import com.beatforge.studio.ui.screens.HotCompileScreen
+import com.beatforge.studio.ui.screens.HubScreen
+import com.beatforge.studio.ui.screens.ScriptStudioScreen
+import com.beatforge.studio.ui.screens.SpriteLabScreen
+import com.beatforge.studio.ui.screens.StageEditorScreen
+import com.beatforge.studio.ui.theme.BeatForgeTheme
+import com.beatforge.studio.ui.theme.StudioColors
 import java.io.File
 
-class MainActivity : GameActivity() {
+class MainActivity : ComponentActivity() {
 
-    private var pendingKindCode: Int = 1
+    private val studioViewModel: StudioViewModel by viewModels()
 
-    private val openDocLauncher =
+    private val openDocumentLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
             if (uri != null) {
-                // Copia asíncrona fuera del hilo principal usando Kotlin Coroutines (Dispatchers.IO)
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val localPath = SafFileBridge.copyUriToInternalCache(applicationContext, uri, pendingKindCode)
-                    if (localPath != null) {
-                        SafFileBridge.nativeOnFilePicked(localPath)
-                    }
-                }
+                studioViewModel.onUriPicked(uri)
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Captura excepciones Kotlin/Java no controladas (incluyendo UnsatisfiedLinkError)
-        // antes de inicializar GameActivity para evitar cierres silenciosos en el teléfono.
         Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
             launchCrashScreen(
-                "Error inesperado al iniciar BeatForge Studio",
+                "Error inesperado en BeatForge Studio",
                 throwable.stackTraceToString()
             )
             try {
@@ -51,24 +85,37 @@ class MainActivity : GameActivity() {
         }
 
         try {
-            // Audio ahora corre 100% en Rust puro (AAudio C ABI vía dlopen, sin Oboe C++ ni libc++_shared.so).
-            System.loadLibrary("pulse_android")
+            NativeEngineBridge.ensureLoaded()
         } catch (t: Throwable) {
             launchCrashScreen(
-                "No se pudo cargar el motor nativo (libpulse_android.so)",
+                "No se pudo cargar el motor nativo Rust (libpulse_android.so)",
                 t.stackTraceToString()
             )
             finish()
-            try {
-                Thread.sleep(150)
-            } catch (_: InterruptedException) {
-            }
-            Process.killProcess(Process.myPid())
             return
         }
 
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        configureImmersiveLandscape()
+
+        studioViewModel.registerPickerLauncher { mimeTypes ->
+            openDocumentLauncher.launch(mimeTypes)
+        }
+
+        setContent {
+            BeatForgeTheme {
+                val state by studioViewModel.uiState.collectAsStateWithLifecycle()
+                BeatForgeRootContent(state = state, viewModel = studioViewModel)
+            }
+        }
+    }
+
+    private fun configureImmersiveLandscape() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
     }
 
     private fun launchCrashScreen(title: String, details: String) {
@@ -76,7 +123,6 @@ class MainActivity : GameActivity() {
             File(filesDir, "last_java_crash.txt").writeText("$title\n\n$details")
         } catch (_: Throwable) {
         }
-
         val intent = Intent(this, CrashReportActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             putExtra(CrashReportActivity.EXTRA_TITLE, title)
@@ -84,38 +130,183 @@ class MainActivity : GameActivity() {
         }
         startActivity(intent)
     }
+}
 
-    /**
-     * Método invocado desde Rust vía JNI (`pulse_android`) si ocurre un panic o fallo de OpenGL ES.
-     */
-    @Suppress("unused")
-    fun reportNativeCrash(details: String) {
-        runOnUiThread {
-            launchCrashScreen("Error en el motor nativo Rust", details)
-            finish()
+@Composable
+private fun BeatForgeRootContent(
+    state: StudioUiState,
+    viewModel: StudioViewModel
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(StudioColors.BgDark)
+    ) {
+        if (!state.initialized) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = StudioColors.AccentCyan)
+                    Text(
+                        text = "Inicializando motor Rust...",
+                        color = StudioColors.TextMuted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
+            }
+            return
+        }
+
+        if (state.currentScreen != StudioScreen.Gameplay && state.currentScreen != StudioScreen.HotCompile) {
+            StudioNavBar(
+                currentScreen = state.currentScreen,
+                onNavigate = { viewModel.navigateTo(it) },
+                onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
+                onCompileAndPlay = { viewModel.startCompileAndPlay() }
+            )
+        }
+
+        if (state.isBusy && state.currentScreen != StudioScreen.HotCompile) {
+            LinearProgressIndicator(
+                color = StudioColors.AccentCyan,
+                trackColor = StudioColors.BgPanel,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when (state.currentScreen) {
+                StudioScreen.Hub -> HubScreen(
+                    snapshot = state.snapshot,
+                    selectedTier = state.selectedTier,
+                    onSelectTier = { viewModel.setDeviceTier(it) },
+                    onUpdateMeta = { name, author, downscroll, offset, speed ->
+                        viewModel.updateProjectMeta(name, author, downscroll, offset, speed)
+                    },
+                    onNavigate = { viewModel.navigateTo(it) },
+                    onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
+                    onCompileAndPlay = { viewModel.startCompileAndPlay() }
+                )
+
+                StudioScreen.ChartAudio -> ChartAudioScreen(
+                    snapshot = state.snapshot,
+                    audioPreviewPlaying = state.audioPreviewPlaying,
+                    onRequestImport = { viewModel.requestImport(it) },
+                    onRestoreDemoChart = { viewModel.restoreDemoChart() },
+                    onToggleAudioPreview = { viewModel.toggleAudioPreview() },
+                    onUpdateTrackConfig = { slot, gain, muted, duck ->
+                        viewModel.updateAudioTrackConfig(slot, gain, muted, duck)
+                    },
+                    onRemoveTrack = { viewModel.removeAudioTrack(it) }
+                )
+
+                StudioScreen.SpriteLab -> SpriteLabScreen(
+                    snapshot = state.snapshot,
+                    selectedEntityId = state.selectedEntityId,
+                    entityBitmaps = state.entityBitmaps,
+                    onSelectEntity = { viewModel.selectEntity(it) },
+                    onRequestImport = { viewModel.requestImport(it) },
+                    onSetBinding = { entityId, kind, prefix ->
+                        viewModel.setSparrowBinding(entityId, kind, prefix)
+                    },
+                    onQuerySparrowFrame = { entityId, kind, elapsed ->
+                        viewModel.querySparrowFrame(entityId, kind, elapsed)
+                    }
+                )
+
+                StudioScreen.StageEditor -> StageEditorScreen(
+                    snapshot = state.snapshot,
+                    selectedEntityId = state.selectedEntityId,
+                    entityBitmaps = state.entityBitmaps,
+                    onSelectEntity = { viewModel.selectEntity(it) },
+                    onAddEntity = { name, role -> viewModel.addStageEntity(name, role) },
+                    onUpdateEntity = { id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx ->
+                        viewModel.updateStageEntity(id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx)
+                    },
+                    onReorderEntity = { id, action -> viewModel.reorderStageEntity(id, action) },
+                    onRequestImportPng = { entityId ->
+                        viewModel.requestImport(ImportKind.SpritePng(entityId))
+                    }
+                )
+
+                StudioScreen.ScriptStudio -> ScriptStudioScreen(
+                    snapshot = state.snapshot,
+                    selectedScriptId = state.selectedScriptId,
+                    validationMsg = state.scriptValidationMsg,
+                    validationOk = state.scriptValidationOk,
+                    onSelectScript = { viewModel.selectScript(it) },
+                    onAddScript = { viewModel.addScript(it) },
+                    onRequestImportScript = { viewModel.requestImport(ImportKind.Script) },
+                    onUpdateScript = { id, enabled, src, silent ->
+                        viewModel.updateScript(id, enabled, src, silent)
+                    },
+                    onValidateScript = { id, enabled, src ->
+                        viewModel.validateScript(id, enabled, src)
+                    }
+                )
+
+                StudioScreen.HotCompile -> HotCompileScreen(tier = state.selectedTier)
+
+                StudioScreen.Gameplay -> GameplayScreen(
+                    step = state.gameplayStep,
+                    arrowBitmaps = state.arrowBitmaps,
+                    compiledBitmaps = state.compiledBitmaps,
+                    onStepFrame = { dt, pressed, justPressed ->
+                        viewModel.stepGameplayFrame(dt, pressed, justPressed)
+                    },
+                    onSetPaused = { viewModel.setGameplayPaused(it) },
+                    onRestart = { viewModel.restartGameplay() },
+                    onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }
+                )
+            }
+
+            // Banner de notificación flotante
+            val banner = state.statusBanner
+            if (!banner.isNullOrBlank() && state.currentScreen != StudioScreen.Gameplay) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(14.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = StudioColors.BgElevated,
+                    border = BorderStroke(
+                        1.dp,
+                        if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (state.statusIsError) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(banner, color = StudioColors.TextPrimary, fontSize = 12.sp)
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = { viewModel.dismissBanner() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Rounded.Close, "Cerrar", tint = StudioColors.TextMuted, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /**
-     * Método invocado desde Rust vía JNI (`pulse_android`) cuando el usuario pulsa un botón de importar.
-     */
-    @Suppress("unused")
-    fun launchSafPicker(kindCode: Int) {
-        pendingKindCode = kindCode
-        runOnUiThread {
-            val mimeTypes = when (kindCode) {
-                1 -> arrayOf("application/json", "text/plain", "*/*")
-                10, 11, 12 -> arrayOf("audio/*", "application/ogg", "*/*")
-                20 -> arrayOf("image/png", "image/*")
-                21 -> arrayOf("text/xml", "application/xml", "*/*")
-                30, 31, 32, 33 -> arrayOf("image/svg+xml", "*/*")
-                else -> arrayOf("*/*")
-            }
-            try {
-                openDocLauncher.launch(mimeTypes)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+    if (state.arrowSkinDialogOpen) {
+        ArrowSkinDialog(
+            skinName = state.snapshot.arrowSkinName,
+            customPaths = state.snapshot.customArrowPaths,
+            arrowBitmaps = state.arrowBitmaps,
+            onImportSvg = { dir -> viewModel.requestImport(ImportKind.ArrowSvg(dir)) },
+            onRestoreDefault = { viewModel.restoreDefaultArrowSvg() },
+            onDismiss = { viewModel.setArrowSkinDialogOpen(false) }
+        )
     }
 }

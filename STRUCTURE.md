@@ -16,8 +16,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 ├── metadata.json                        # Metadatos del applet
 ├── package.json                         # Dependencias web + tsx para tests del SDK
 │
-├── engine/                              # Motor nativo modular en Rust (Workspace Cargo)
-│   ├── Cargo.toml                       # Dependencias centralizadas (eframe, oboe, mlua, rquickjs, oxc, resvg)
+├── engine/                              # Motor nativo modular en Rust (Workspace Cargo, sin UI)
+│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon)
 │   ├── .cargo/
 │   │   └── config.toml                  # Flags de enlazador Android (alineación 16KB para Android 15+)
 │   └── crates/
@@ -27,15 +27,15 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── lib.rs               # Exportaciones públicas y pruebas unitarias Rust
 │       │       ├── chart.rs             # Parser de charts .json, BPM, secciones y densidad de notas
 │       │       ├── sparrow.rs           # Lector XML Sparrow y auto-armado de Idle/Left/Down/Up/Right
-│       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Enemigo/Decoración) y Z-order
+│       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Oponente/Decoración) y Z-order
 │       │       ├── svg_skin.rs          # Flechas SVG originales + rasterizador resvg a RGBA8888
 │       │       ├── project.rs           # Modelo ModProject, límites (máx. 3 pistas audio) y demo integrada
 │       │       └── hot_compile.rs       # Compilación en caliente paralela (rayon) y poda de invisibles
 │       │
-│       ├── pulse_audio/                 # Subsistema de audio de baja latencia
+│       ├── pulse_audio/                 # Subsistema de audio de baja latencia 100% Rust puro
 │       │   ├── Cargo.toml
 │       │   └── src/
-│       │       ├── lib.rs               # AudioEngineHandle y control del stream Oboe
+│       │       ├── lib.rs               # AudioEngineHandle y control del stream
 │       │       ├── decoder.rs           # Decodificación OGG (lewton), WAV (hound), MP3 (rmp3) y resampleo
 │       │       ├── mixer.rs             # Mezclador lock-free de hasta 3 pistas + reloj maestro por muestras
 │       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI, cero C++) + fallback
@@ -49,45 +49,46 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── ts_transpiler.rs     # Compilador TypeScript -> ES2022 JS en Rust (oxc 0.158)
 │       │       └── js_vm.rs             # Máquina virtual JavaScript ES2022 (rquickjs / QuickJS-NG)
 │       │
-│       ├── pulse_ui/                    # Interfaz gráfica horizontal completa en Rust (eframe + egui)
-│       │   ├── Cargo.toml
-│       │   └── src/
-│       │       ├── lib.rs               # BeatForgeApp (eframe::App::ui) y barra de navegación superior
-│       │       ├── theme.rs             # Paleta pizarra profesional (cian, índigo, esmeralda, coral)
-│       │       ├── state.rs             # AppState, runtime tokio, caché de texturas GPU y eventos SAF
-│       │       ├── popups/
-│       │       │   ├── mod.rs
-│       │       │   └── arrow_skin_popup.rs # Modal para personalizar o restaurar flechas .svg
-│       │       └── screens/
-│       │           ├── mod.rs
-│       │           ├── hub_screen.rs          # Inicio, resumen del proyecto y perfil de recursos del móvil
-│       │           ├── chart_audio_screen.rs  # Importador de chart .json y 1–3 pistas de audio
-│       │           ├── sprite_lab_screen.rs   # Importador .png + .xml con visor animado en vivo
-│       │           ├── stage_editor_screen.rs # Editor de escenario, cruceta de flechas, escala, opacidad y Z
-│       │           ├── script_studio_screen.rs# Editor y validador en vivo Lua / TypeScript / JS
-│       │           ├── compile_screen.rs      # Pantalla de carga durante la compilación en caliente
-│       │           └── gameplay_screen.rs     # Motor jugable horizontal (Oboe sync + controles táctiles/teclado)
-│       │
 │       └── pulse_android/               # Puente nativo Android (`libpulse_android.so`)
-│           ├── Cargo.toml               # Crate cdylib con android-game-activity, jni y winit 0.30
-│           ├── build.rs                 # Enlaza `c++_shared` requerido por Google Oboe
+│           ├── Cargo.toml               # Crate cdylib + rlib con jni, android_logger, serde_json e image
+│           ├── build.rs                 # Script de compilación limpio (sin C++ ni GameActivity)
 │           └── src/
-│               └── lib.rs               # `android_main` + callbacks JNI hacia SafFileBridge.kt
+│               ├── lib.rs               # Exportaciones JNI (`Java_com_beatforge_studio_NativeEngineBridge_*`)
+│               └── session.rs           # `EngineSession`: orquestador de proyecto, hot-compile y gameplay paso a paso
 │
-├── android/                             # Proyecto Gradle Android (Kotlin + GameActivity)
+├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
-│   ├── build.gradle.kts
+│   ├── build.gradle.kts                 # AGP 8.9.1 + Kotlin 2.1.20 + Compose Compiler Plugin
 │   ├── gradle.properties
 │   ├── gradle/wrapper/gradle-wrapper.properties
 │   └── app/
-│       ├── build.gradle.kts             # Splits 32b/64b, prefab GameActivity, tasks cargo-ndk y copyCppShared
-│       ├── proguard-rules.pro           # Reglas JNI para MainActivity y SafFileBridge
+│       ├── build.gradle.kts             # Splits 32b/64b, Compose BOM, Material Icons Extended y cargo-ndk en preBuild
+│       ├── proguard-rules.pro           # Reglas JNI para NativeEngineBridge y SafFileBridge
 │       └── src/main/
-│           ├── AndroidManifest.xml      # `sensorLandscape`, OpenGL ES 3.0 y permisos Android 7..15
+│           ├── AndroidManifest.xml      # `sensorLandscape`, teclado `adjustResize` y permisos Android 7..15
 │           ├── res/values/strings.xml
 │           └── kotlin/com/beatforge/studio/
-│               ├── MainActivity.kt      # GameActivity + ActivityResultContracts + corrutina Dispatchers.IO
-│               └── SafFileBridge.kt     # Copia segura de URIs SAF a almacenamiento interno y llamada JNI
+│               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + captura de fallos
+│               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
+│               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so`
+│               ├── SafFileBridge.kt     # Copia segura de URIs SAF a almacenamiento interno
+│               ├── StudioModels.kt      # Data classes Kotlin y parsers `org.json` de snapshots Rust
+│               ├── StudioViewModel.kt   # Estado reactivo (`StateFlow`), corrutinas `Dispatchers.IO` y caché Bitmaps
+│               └── ui/
+│                   ├── theme/
+│                   │   └── StudioTheme.kt         # Paleta oscura Material 3 y colores de carriles
+│                   ├── components/
+│                   │   └── StudioNavBar.kt        # Barra superior con Material Icons Extended y CTA
+│                   ├── popups/
+│                   │   └── ArrowSkinDialog.kt     # Modal para personalizar o restaurar flechas .svg (resvg)
+│                   └── screens/
+│                       ├── HubScreen.kt           # Metadatos del mod, métricas, perfil de recursos y accesos
+│                       ├── ChartAudioScreen.kt    # Importador chart .json, histograma y mezclador 3 pistas
+│                       ├── SpriteLabScreen.kt     # Importador .png + .xml Sparrow y visor animado 24 FPS
+│                       ├── StageEditorScreen.kt   # Capas Z-order, lienzo 16:9 táctil e inspector de cruceta
+│                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS y validador de sintaxis Rust
+│                       ├── HotCompileScreen.kt    # Pantalla de carga durante la compilación paralela Rayon
+│                       └── GameplayScreen.kt      # Renderizado Canvas 60 FPS, notas SVG y 4 zonas multi-touch
 │
 ├── sdk/                                 # Recursos y SDK para creadores de mods y pruebas locales
 │   ├── assets/arrows/                   # Flechas SVG originales libres de derechos (left, down, up, right)

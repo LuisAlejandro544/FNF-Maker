@@ -2,16 +2,14 @@
 <!--
   Archivo: android/app/src/main/AndroidManifest.xml
   Propósito: Configura la aplicación en modo estrictamente horizontal (`sensorLandscape`),
-  permisos de lectura multimedia compatibles con Android 7..15, y enlaza `MainActivity`
-  (GameActivity) con la librería nativa `libpulse_android.so`.
+  permisos de lectura multimedia compatibles con Android 7..15, y registra `MainActivity`
+  con Jetpack Compose conectado al motor nativo Rust `libpulse_android.so` vía JNI.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-
-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
     <application
         android:allowBackup="true"
@@ -24,11 +22,8 @@
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="sensorLandscape">
-
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="pulse_android" />
+            android:screenOrientation="sensorLandscape"
+            android:windowSoftInputMode="adjustResize">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -1,192 +1,433 @@
 //! Archivo: engine/crates/pulse_android/src/lib.rs
-//! Propósito: Punto de entrada nativo `android_main` para Android (`GameActivity`) y puente JNI
-//! bidireccional con `SafFileBridge.kt` para importar charts, pistas de audio (1-3),
-//! hojas PNG + XML, flechas SVG y scripts comunitarios desde el almacenamiento del teléfono.
+//! Propósito: Puente JNI limpio entre Kotlin Jetpack Compose (`NativeEngineBridge.kt`)
+//! y el motor modular en Rust (`pulse_core`, `pulse_audio`, `pulse_scripting`).
+//! No usa `GameActivity`, `eframe` ni `winit`: todo el renderizado de interfaz vive en
+//! Kotlin Compose y toda la lógica de motor, audio, XML, SVG, compilación y scripts vive en Rust.
 
+pub mod session;
+
+use crate::session::EngineSession;
 use parking_lot::Mutex;
-use pulse_core::NoteDirection;
-use pulse_ui::state::{ImportKind, ImportedFileEvent, PlatformFilePicker};
-use pulse_ui::BeatForgeApp;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
-use tokio::sync::mpsc;
+use std::sync::OnceLock;
 
-/// Canal global protegido para entregar archivos copiados por las corrutinas Kotlin al hilo Rust.
-static PENDING_PICK_TX: OnceLock<Mutex<Option<(ImportKind, mpsc::UnboundedSender<ImportedFileEvent>)>>> =
-    OnceLock::new();
+static SESSION: OnceLock<Mutex<EngineSession>> = OnceLock::new();
 
-fn pick_slot() -> &'static Mutex<Option<(ImportKind, mpsc::UnboundedSender<ImportedFileEvent>)>> {
-    PENDING_PICK_TX.get_or_init(|| Mutex::new(None))
+pub fn init_session(cache_dir: PathBuf) -> &'static Mutex<EngineSession> {
+    SESSION.get_or_init(|| Mutex::new(EngineSession::new(cache_dir)))
 }
 
-/// Implementación real del selector de archivos llamando a Kotlin `MainActivity.launchSafPicker` vía JNI.
-pub struct AndroidSafPicker;
-
-impl PlatformFilePicker for AndroidSafPicker {
-    fn request_import(&self, kind: ImportKind, tx: mpsc::UnboundedSender<ImportedFileEvent>) {
-        *pick_slot().lock() = Some((kind, tx));
-
-        #[cfg(target_os = "android")]
-        {
-            let kind_code = encode_import_kind(kind);
-            if let Err(e) = call_kotlin_saf_picker(kind_code) {
-                log::error!("Error invocando SAF picker vía JNI: {}", e);
-            }
-        }
-    }
-}
-
-fn encode_import_kind(kind: ImportKind) -> i32 {
-    match kind {
-        ImportKind::ChartJson => 1,
-        ImportKind::AudioTrack(0) => 10,
-        ImportKind::AudioTrack(1) => 11,
-        ImportKind::AudioTrack(_) => 12,
-        ImportKind::SpriteSheetPng => 20,
-        ImportKind::SpriteAtlasXml => 21,
-        ImportKind::ArrowSvg(NoteDirection::Left) => 30,
-        ImportKind::ArrowSvg(NoteDirection::Down) => 31,
-        ImportKind::ArrowSvg(NoteDirection::Up) => 32,
-        ImportKind::ArrowSvg(NoteDirection::Right) => 33,
-        ImportKind::ScriptFile => 40,
-    }
+pub fn session() -> &'static Mutex<EngineSession> {
+    SESSION.get_or_init(|| Mutex::new(EngineSession::new(std::env::temp_dir())))
 }
 
 #[cfg(target_os = "android")]
-fn call_kotlin_saf_picker(kind_code: i32) -> Result<(), String> {
-    let ctx = ndk_context::android_context();
-    if ctx.vm().is_null() || ctx.context().is_null() {
-        return Err("Contexto Android no inicializado".to_string());
+mod jni_exports {
+    use super::*;
+    use jni::JNIEnv;
+    use jni::objects::{JByteArray, JClass, JString};
+    use jni::sys::{jboolean, jdouble, jfloat, jint};
+
+    fn read_str(env: &mut JNIEnv, input: &JString) -> String {
+        env.get_string(input)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
-    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
-    let _ = env.exception_clear();
-    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
 
-    env.call_method(
-        &activity,
-        "launchSafPicker",
-        "(I)V",
-        &[jni::objects::JValue::Int(kind_code)],
-    )
-    .map_err(|e| {
-        let _ = env.exception_clear();
-        e.to_string()
-    })?;
-
-    Ok(())
-}
-
-#[cfg(target_os = "android")]
-fn call_kotlin_report_crash(details: &str) -> Result<(), String> {
-    let ctx = ndk_context::android_context();
-    if ctx.vm().is_null() || ctx.context().is_null() {
-        return Err("Contexto Android no inicializado".to_string());
+    fn to_jstr<'local>(env: &mut JNIEnv<'local>, s: &str) -> JString<'local> {
+        env.new_string(s).unwrap_or_default()
     }
-    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
-    let _ = env.exception_clear();
-    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
-    let jdetails = env.new_string(details).map_err(|e| e.to_string())?;
 
-    env.call_method(
-        &activity,
-        "reportNativeCrash",
-        "(Ljava/lang/String;)V",
-        &[jni::objects::JValue::Object(&*jdetails)],
-    )
-    .map_err(|e| {
-        let _ = env.exception_clear();
-        e.to_string()
-    })?;
-
-    Ok(())
-}
-
-/// Callback JNI llamado desde `SafFileBridge.kt` cuando la corrutina `Dispatchers.IO`
-/// termina de copiar el archivo seleccionado a almacenamiento interno.
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_com_beatforge_studio_SafFileBridge_nativeOnFilePicked(
-    mut env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-    local_path: jni::objects::JString,
-) {
-    if let Ok(path_str) = env.get_string(&local_path) {
-        let path_buf = PathBuf::from(path_str.to_string_lossy().into_owned());
-        if let Some((kind, tx)) = pick_slot().lock().take() {
-            let _ = tx.send(ImportedFileEvent {
-                kind,
-                path: path_buf,
-            });
-        }
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeInit<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        cache_dir: JString<'local>,
+    ) -> JString<'local> {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Info)
+                .with_tag("BeatForgeEngine"),
+        );
+        let dir = PathBuf::from(read_str(&mut env, &cache_dir));
+        let sess = init_session(dir);
+        let json = sess.lock().snapshot_json_string();
+        to_jstr(&mut env, &json)
     }
-}
 
-/// Punto de entrada principal ejecutado por `android-activity` (`GameActivity`).
-/// CRÍTICO: Debe usar ABI de Rust (`pub fn android_main`), NO `extern "C"`,
-/// porque `android-activity` invoca `extern "Rust" { fn android_main(app: AndroidApp); }`.
-/// Usar `extern "C"` con la estructura no-FFI `AndroidApp` corrompe los registros y provoca
-/// un crash nativo silencioso inmediato con pantalla negra al abrir la app.
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
-            .with_tag("BeatForgeEngine"),
-    );
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetSnapshot<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().snapshot_json_string();
+        to_jstr(&mut env, &json)
+    }
 
-    log::info!("BeatForge Studio: android_main iniciado correctamente");
-
-    let crash_dir = app.internal_data_path();
-    let panic_dir = crash_dir.clone();
-
-    // Capturar cualquier panic de Rust y mostrarlo en pantalla en caso de fallo crítico en móvil.
-    std::panic::set_hook(Box::new(move |info| {
-        let location = info
-            .location()
-            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
-            .unwrap_or_else(|| "ubicacion desconocida".to_string());
-        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            (*s).to_string()
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "Panic sin mensaje legible".to_string()
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateProjectMeta<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        name: JString<'local>,
+        author: JString<'local>,
+        downscroll: jboolean,
+        audio_offset_ms: jdouble,
+        scroll_speed: jdouble,
+    ) -> JString<'local> {
+        let name_s = read_str(&mut env, &name);
+        let author_s = read_str(&mut env, &author);
+        let json = {
+            let mut guard = session().lock();
+            guard.project.name = name_s;
+            guard.project.author = author_s;
+            guard.project.downscroll = downscroll != 0;
+            guard.project.audio_offset_ms = audio_offset_ms.clamp(-500.0, 500.0);
+            guard.project.chart.speed = scroll_speed.clamp(0.5, 5.0);
+            guard.ok_response("Proyecto actualizado")
         };
-        let msg = format!("PANIC NATIVO ({}): {}", location, payload);
-        log::error!("{}", msg);
-        if let Some(dir) = &panic_dir {
-            let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::write(dir.join("last_native_crash.txt"), &msg);
-        }
-        let _ = call_kotlin_report_crash(&msg);
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    }));
+        to_jstr(&mut env, &json)
+    }
 
-    // run_and_return = false y persist_window = false evitan reutilizar EventLoop obsoletos
-    // si Android recrea la Activity dentro del mismo proceso.
-    let options = eframe::NativeOptions {
-        android_app: Some(app),
-        run_and_return: false,
-        persist_window: false,
-        ..Default::default()
-    };
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportChart<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_chart(p);
+        to_jstr(&mut env, &json)
+    }
 
-    let picker: Arc<dyn PlatformFilePicker> = Arc::new(AndroidSafPicker);
-    if let Err(err) = eframe::run_native(
-        "BeatForge Studio",
-        options,
-        Box::new(move |cc| Ok(Box::new(BeatForgeApp::new(cc, picker)))),
-    ) {
-        let msg = format!("Error iniciando motor grafico eframe/OpenGL ES: {}", err);
-        log::error!("{}", msg);
-        if let Some(dir) = &crash_dir {
-            let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::write(dir.join("last_native_crash.txt"), &msg);
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRestoreDemoChart<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = {
+            let mut guard = session().lock();
+            guard.project.chart = pulse_core::ChartData::bundled_demo_chart();
+            guard.project.chart_source_path = None;
+            guard.ok_response("Chart demo restaurado")
+        };
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportAudioTrack<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        slot: jint,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_audio_track(slot.max(0) as usize, p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRemoveAudioTrack<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        slot: jint,
+    ) -> JString<'local> {
+        let json = session().lock().remove_audio_track(slot.max(0) as usize);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateAudioTrackConfig<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        slot: jint,
+        gain: jfloat,
+        muted: jboolean,
+        duck_on_miss: jboolean,
+    ) -> JString<'local> {
+        let json = session().lock().update_audio_track_config(
+            slot.max(0) as usize,
+            gain,
+            muted != 0,
+            duck_on_miss != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeToggleAudioPreview(
+        _env: JNIEnv,
+        _cls: JClass,
+        play: jboolean,
+    ) -> jboolean {
+        let mut guard = session().lock();
+        if play != 0 {
+            guard.audio_engine.ensure_started();
+            let any_audio = guard.project.active_audio_count() > 0;
+            guard
+                .audio_engine
+                .mixer
+                .use_demo_synth
+                .store(!any_audio, std::sync::atomic::Ordering::Relaxed);
+            guard.audio_engine.mixer.seek_ms(0.0);
+            guard.audio_engine.mixer.play();
+            1
+        } else {
+            guard.audio_engine.mixer.pause();
+            0
         }
-        let _ = call_kotlin_report_crash(&msg);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportSpriteSheetPng<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_sprite_png(&eid, p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportSparrowXml<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_sparrow_xml(&eid, p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetSparrowBinding<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        anim_kind: JString<'local>,
+        prefix: JString<'local>,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let kind = read_str(&mut env, &anim_kind);
+        let pref = read_str(&mut env, &prefix);
+        let json = session().lock().set_sparrow_binding(&eid, &kind, &pref);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetSparrowFrameInfo<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        anim_kind: JString<'local>,
+        elapsed_sec: jfloat,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let kind = read_str(&mut env, &anim_kind);
+        let json = session()
+            .lock()
+            .get_sparrow_frame_info(&eid, &kind, elapsed_sec);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddStageEntity<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        name: JString<'local>,
+        role: JString<'local>,
+    ) -> JString<'local> {
+        let name_s = read_str(&mut env, &name);
+        let role_s = read_str(&mut env, &role);
+        let json = session().lock().add_stage_entity(&name_s, &role_s);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateStageEntity<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        name: JString<'local>,
+        role: JString<'local>,
+        dx: jfloat,
+        dy: jfloat,
+        abs_x: jfloat,
+        abs_y: jfloat,
+        use_abs_pos: jboolean,
+        scale: jfloat,
+        opacity: jfloat,
+        visible: jboolean,
+        flip_x: jboolean,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let name_s = read_str(&mut env, &name);
+        let role_s = read_str(&mut env, &role);
+        let json = session().lock().update_stage_entity(
+            &eid,
+            &name_s,
+            &role_s,
+            dx,
+            dy,
+            abs_x,
+            abs_y,
+            use_abs_pos != 0,
+            scale,
+            opacity,
+            visible != 0,
+            flip_x != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeReorderStageEntity<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        action: JString<'local>,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let act = read_str(&mut env, &action);
+        let json = session().lock().reorder_stage_entity(&eid, &act);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddScript<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        language: JString<'local>,
+    ) -> JString<'local> {
+        let lang = read_str(&mut env, &language);
+        let json = session().lock().add_script(&lang);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportScript<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_script(p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateScript<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        script_id: JString<'local>,
+        enabled: jboolean,
+        source_code: JString<'local>,
+    ) -> JString<'local> {
+        let sid = read_str(&mut env, &script_id);
+        let src = read_str(&mut env, &source_code);
+        let json = session().lock().update_script(&sid, enabled != 0, src);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeValidateScript<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        script_id: JString<'local>,
+    ) -> JString<'local> {
+        let sid = read_str(&mut env, &script_id);
+        let json = session().lock().validate_script(&sid);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportArrowSvg<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        direction: jint,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session()
+            .lock()
+            .import_arrow_svg((direction.clamp(0, 3)) as u8, p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRestoreDefaultArrowSvg<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().restore_default_arrow_svg();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetArrowPngBytes<'local>(
+        env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        direction: jint,
+    ) -> JByteArray<'local> {
+        let bytes = session()
+            .lock()
+            .rasterize_arrow_png_bytes((direction.clamp(0, 3)) as u8);
+        env.byte_array_from_slice(&bytes).unwrap_or_default()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeHotCompile<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        tier_code: jint,
+    ) -> JString<'local> {
+        let json = session().lock().hot_compile(tier_code);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeStartGameplay<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().start_gameplay();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeStepGameplay<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        dt_sec: jfloat,
+        lane_pressed_mask: jint,
+        lane_just_pressed_mask: jint,
+    ) -> JString<'local> {
+        let json = session()
+            .lock()
+            .step_gameplay(dt_sec, lane_pressed_mask, lane_just_pressed_mask);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetGameplayPaused<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        paused: jboolean,
+    ) -> JString<'local> {
+        let json = session().lock().set_gameplay_paused(paused != 0);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeStopGameplay<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().stop_gameplay();
+        to_jstr(&mut env, &json)
     }
 }
