@@ -18,6 +18,7 @@ plugins {
 android {
     namespace = "com.beatforge.studio"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.beatforge.studio"
@@ -95,7 +96,7 @@ val buildRustDebug by tasks.registering(Exec::class) {
         "cargo", "ndk",
         "-t", "armeabi-v7a",
         "-t", "arm64-v8a",
-        "-p", "24",
+        "--platform", "24",
         "-o", jniOut,
         "build", "-p", "pulse_android"
     )
@@ -111,7 +112,7 @@ val buildRustRelease by tasks.registering(Exec::class) {
         "cargo", "ndk",
         "-t", "armeabi-v7a",
         "-t", "arm64-v8a",
-        "-p", "24",
+        "--platform", "24",
         "-o", jniOut,
         "build", "--release", "-p", "pulse_android"
     )

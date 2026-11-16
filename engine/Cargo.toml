@@ -26,7 +26,7 @@ eframe = { version = "0.37.0", default-features = false }
 egui = "0.37.0"
 
 # Audio de baja latencia para Android via Google Oboe (Apache-2.0)
-oboe = "0.6.0"
+oboe = { version = "0.6.1", features = ["shared-stdcxx"] }
 
 # Decodificadores de audio puros con licencias permisivas (sin MPL/GPL)
 lewton = "0.10.2"   # OGG Vorbis (MIT / Apache-2.0)
@@ -35,7 +35,7 @@ rmp3 = "0.3.1"      # MP3 (MIT)
 
 # Motores de scripting: Lua 5.4 + TypeScript/JavaScript (MIT)
 mlua = { version = "0.12.2", features = ["lua54", "vendored", "send", "serialize"] }
-rquickjs = { version = "0.14.0", features = ["rust-alloc", "macro"] }
+rquickjs = { version = "0.14.0", features = ["rust-alloc", "macro", "bindgen"] }
 oxc_allocator = "0.158.0"
 oxc_parser = "0.158.0"
 oxc_transformer = "0.158.0"
