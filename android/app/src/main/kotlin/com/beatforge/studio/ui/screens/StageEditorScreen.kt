@@ -1,13 +1,14 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/StageEditorScreen.kt
 // Propósito: Editor visual de escenario en 3 columnas (Capas Z-order, Lienzo interactivo 16:9
-// con arrastre táctil y selección directa, e Inspector con cruceta de precisión 1/10/35 px,
-// escala, opacidad, rol, visibilidad y volteo horizontal).
+// con etiquetas visibles y arrastre táctil, e Inspector con selector de rol en cuadrícula 2x2,
+// cruceta de precisión 1/10/35 px, escala, opacidad, visibilidad y volteo horizontal).
 
 package com.beatforge.studio.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -43,7 +44,6 @@ import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -63,18 +63,22 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.beatforge.studio.ImportKind
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.ProjectSnapshot
 import com.beatforge.studio.StageEntitySnapshot
@@ -123,6 +127,8 @@ fun StageEditorScreen(
     var dragX by remember(selected?.id, selected?.x) { mutableFloatStateOf(selected?.x ?: 640f) }
     var dragY by remember(selected?.id, selected?.y) { mutableFloatStateOf(selected?.y ?: 360f) }
 
+    val textMeasurer = rememberTextMeasurer()
+
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -138,24 +144,30 @@ fun StageEditorScreen(
             color = StudioColors.BgPanel,
             border = BorderStroke(1.dp, StudioColors.BorderSubtle)
         ) {
-            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Capas (Z)", color = StudioColors.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        text = "Capas",
+                        color = StudioColors.TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
                     Button(
                         onClick = { onAddEntity("Decoración", "decoration") },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.AccentCyan,
-                            contentColor = Color(0xFF041C24)
+                            contentColor = Color(0xFF1F0C00)
                         ),
                         modifier = Modifier.height(28.dp)
                     ) {
                         Icon(Icons.Rounded.Add, null, modifier = Modifier.size(14.dp))
-                        Text("Asset", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.width(2.dp))
+                        Text("Objeto", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                 }
 
@@ -179,7 +191,7 @@ fun StageEditorScreen(
                             )
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
@@ -188,12 +200,15 @@ fun StageEditorScreen(
                                         color = StudioColors.TextPrimary,
                                         fontWeight = FontWeight.SemiBold,
                                         fontSize = 11.sp,
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = "Z:${ent.zIndex} · ${ent.roleLabel}",
                                         color = StudioColors.TextMuted,
-                                        fontSize = 10.sp
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                                 IconButton(
@@ -252,7 +267,7 @@ fun StageEditorScreen(
         // Columna central: Lienzo 16:9 interactivo
         Surface(
             modifier = Modifier
-                .weight(0.46f)
+                .weight(0.43f)
                 .fillMaxHeight(),
             shape = RoundedCornerShape(12.dp),
             color = StudioColors.BgPanel,
@@ -320,11 +335,11 @@ fun StageEditorScreen(
                     // Rejilla guía de 1280x720
                     for (gx in 1..7) {
                         val px = size.width * (gx / 8f)
-                        drawLine(StudioColors.BorderSubtle.copy(alpha = 0.35f), Offset(px, 0f), Offset(px, size.height))
+                        drawLine(StudioColors.BorderSubtle.copy(alpha = 0.3f), Offset(px, 0f), Offset(px, size.height))
                     }
                     for (gy in 1..4) {
                         val py = size.height * (gy / 5f)
-                        drawLine(StudioColors.BorderSubtle.copy(alpha = 0.35f), Offset(0f, py), Offset(size.width, py))
+                        drawLine(StudioColors.BorderSubtle.copy(alpha = 0.3f), Offset(0f, py), Offset(size.width, py))
                     }
 
                     entities.forEach { ent ->
@@ -355,11 +370,11 @@ fun StageEditorScreen(
                                 val fallbackColor = when (ent.role) {
                                     "background" -> StudioColors.AccentIndigo
                                     "opponent" -> StudioColors.AccentCoral
-                                    "player" -> StudioColors.AccentCyan
-                                    else -> StudioColors.AccentAmber
+                                    "player" -> StudioColors.AccentEmerald
+                                    else -> StudioColors.AccentCyan
                                 }
                                 drawRect(
-                                    color = fallbackColor.copy(alpha = 0.25f * ent.opacity),
+                                    color = fallbackColor.copy(alpha = 0.22f * ent.opacity),
                                     topLeft = Offset(left, top),
                                     size = Size(w, h)
                                 )
@@ -370,6 +385,24 @@ fun StageEditorScreen(
                                     style = Stroke(width = 2f)
                                 )
                             }
+                        }
+
+                        if (loaded == null && w > 36f && h > 18f) {
+                            val layout = textMeasurer.measure(
+                                text = ent.displayName,
+                                style = TextStyle(
+                                    color = StudioColors.TextPrimary.copy(alpha = ent.opacity),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                            drawText(
+                                textLayoutResult = layout,
+                                topLeft = Offset(
+                                    (cx - layout.size.width / 2f).coerceIn(left + 4f, (left + w - layout.size.width - 4f).coerceAtLeast(left + 4f)),
+                                    (cy - layout.size.height / 2f).coerceIn(top + 2f, (top + h - layout.size.height - 2f).coerceAtLeast(top + 2f))
+                                )
+                            )
                         }
 
                         if (ent.id == selected?.id) {
@@ -388,7 +421,7 @@ fun StageEditorScreen(
         // Columna derecha: Inspector del objeto seleccionado
         Surface(
             modifier = Modifier
-                .weight(0.30f)
+                .weight(0.33f)
                 .fillMaxHeight(),
             shape = RoundedCornerShape(12.dp),
             color = StudioColors.BgPanel,
@@ -464,29 +497,55 @@ private fun StageEntityInspector(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            STAGE_ROLES.forEach { (key, label) ->
-                FilterChip(
-                    selected = entity.role == key,
-                    onClick = {
-                        onUpdate(
-                            entity.id,
-                            localName,
-                            key,
-                            0f,
-                            0f,
-                            entity.x,
-                            entity.y,
-                            false,
-                            entity.scale,
-                            entity.opacity,
-                            entity.visible,
-                            entity.flipX
-                        )
-                    },
-                    label = { Text(label.take(5), fontSize = 10.sp) },
-                    modifier = Modifier.weight(1f)
-                )
+        // Cuadrícula 2x2 limpia para los 4 roles sin amontonar ni partir palabras
+        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            STAGE_ROLES.chunked(2).forEach { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    pair.forEach { (key, label) ->
+                        val isSel = entity.role == key
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(30.dp)
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(if (isSel) StudioColors.AccentCyan.copy(alpha = 0.22f) else StudioColors.BgCard)
+                                .border(
+                                    1.dp,
+                                    if (isSel) StudioColors.AccentCyan else StudioColors.BorderSubtle,
+                                    RoundedCornerShape(7.dp)
+                                )
+                                .clickable {
+                                    onUpdate(
+                                        entity.id,
+                                        localName,
+                                        key,
+                                        0f,
+                                        0f,
+                                        entity.x,
+                                        entity.y,
+                                        false,
+                                        entity.scale,
+                                        entity.opacity,
+                                        entity.visible,
+                                        entity.flipX
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (isSel) StudioColors.AccentCyan else StudioColors.TextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -499,7 +558,7 @@ private fun StageEntityInspector(
         ) {
             Icon(Icons.Rounded.Image, null, modifier = Modifier.size(15.dp))
             Spacer(Modifier.width(5.dp))
-            Text("Cambiar Imagen PNG", fontSize = 11.sp)
+            Text("Imagen PNG / ASTC", fontSize = 11.sp, maxLines = 1, softWrap = false)
         }
 
         Text(
@@ -508,14 +567,32 @@ private fun StageEntityInspector(
             fontSize = 11.sp
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
             listOf(1, 10, 35).forEach { px ->
-                FilterChip(
-                    selected = stepPx == px,
-                    onClick = { onStepChange(px) },
-                    label = { Text("${px}px", fontSize = 10.sp) },
-                    modifier = Modifier.weight(1f)
-                )
+                val isSel = stepPx == px
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isSel) StudioColors.AccentEmerald.copy(alpha = 0.22f) else StudioColors.BgCard)
+                        .border(
+                            1.dp,
+                            if (isSel) StudioColors.AccentEmerald else StudioColors.BorderSubtle,
+                            RoundedCornerShape(6.dp)
+                        )
+                        .clickable { onStepChange(px) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${px}px",
+                        color = if (isSel) StudioColors.AccentEmerald else StudioColors.TextPrimary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
             }
         }
 
@@ -565,7 +642,7 @@ private fun StageEntityInspector(
                     onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, s, entity.opacity, entity.visible, entity.flipX)
                 },
                 valueRange = 0.1f..3.0f,
-                colors = SliderDefaults.colors(thumbColor = StudioColors.AccentCyan)
+                colors = SliderDefaults.colors(thumbColor = StudioColors.AccentCyan, activeTrackColor = StudioColors.AccentCyan)
             )
         }
 
@@ -577,7 +654,7 @@ private fun StageEntityInspector(
                     onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, entity.scale, op, entity.visible, entity.flipX)
                 },
                 valueRange = 0f..1f,
-                colors = SliderDefaults.colors(thumbColor = StudioColors.AccentIndigo)
+                colors = SliderDefaults.colors(thumbColor = StudioColors.AccentIndigo, activeTrackColor = StudioColors.AccentIndigo)
             )
         }
 

@@ -1,6 +1,6 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/HotCompileScreen.kt
-// Propósito: Pantalla de carga de Compilación en Caliente mientras Rust (`rayon` + `resvg`)
-// descarta objetos invisibles, escala texturas al perfil del dispositivo y prepara el audio.
+// Propósito: Pantalla de preparación automática mientras el motor optimiza texturas según
+// la capacidad real del teléfono, descarta objetos invisibles y prepara el audio y scripts.
 
 package com.beatforge.studio.ui.screens
 
@@ -57,13 +57,13 @@ fun HotCompileScreen(tier: DeviceTier) {
                     modifier = Modifier.size(34.dp)
                 )
                 Text(
-                    text = "Compilando Mod en Caliente...",
+                    text = "Preparando Partida...",
                     color = StudioColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
                 )
                 Text(
-                    text = "Perfil: ${tier.label} · Optimizando sprites en paralelo (Rayon) y rasterizando flechas SVG (resvg)",
+                    text = "Ajustando gráficos automáticamente para tu teléfono (${tier.label}) y cargando pistas de audio...",
                     color = StudioColors.TextMuted,
                     fontSize = 12.sp
                 )

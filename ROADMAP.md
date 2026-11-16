@@ -7,17 +7,17 @@ Hoja de ruta técnica y de producto para **BeatForge Studio** (`com.beatforge.st
 ## Fase 1 — Núcleo Rust Modular, Audio AAudio Puro, UI Jetpack Compose y CI Manual 32/64 bits (Actual)
 
 - [x] **Workspace Rust modular (`/engine`)**:
-  - `pulse_core`: Parser de charts `.json`, ensamblador automático Sparrow `.png` + `.xml`, escena `1280×720` con roles y orden Z, rasterizador SVG `resvg`, compilador en caliente con `rayon` y descarte de assets invisibles.
-  - `pulse_audio`: Mezclador lock-free de hasta 3 pistas sincronizado por muestras en **Rust puro** (`libaaudio.so` vía `dlopen`, cero C++) y decodificadores permisivos (`lewton`, `hound`, `rmp3`).
+  - `pulse_core`: Parser y exportador completo de `chart.json` (`player1`, `player2`, `gfVersion`, `stage`, `events`, `changeBPM`, `mustHitSection`, `-1` inline), decodificador **`.astc`** (`texture2ddecoder`), ensamblador Sparrow `.xml` + atlas **`.json`** (`TexturePacker`/`Aseprite`, `spritemap1.json`, `Animation.json` con baking por software), escena `1280×720` con Z-order, rasterizador SVG `resvg` y compilador en caliente con `rayon`.
+  - `pulse_audio`: Mezclador lock-free de hasta 3 pistas sincronizado por muestras en **Rust puro** (`libaaudio.so` vía `dlopen`, cero C++), decodificadores permisivos (`lewton`, `hound`, `rmp3`) y **cuenta regresiva BPM ("3, 2, 1, ¡YA!")** sintetizada antes de `0.0 ms`.
   - `pulse_scripting`: VM **Lua 5.4** (`mlua`), transpilador **TypeScript** nativo en móvil (`oxc 0.158`) y VM **JavaScript ES2022** (`rquickjs`), compartiendo hooks (`onCreate`, `onUpdate`, `onBeatHit`, `onNoteHit`, `onNoteMiss`).
-  - `pulse_android`: Puente JNI (`EngineSession`) limpio hacia Kotlin sin `GameActivity` ni `eframe`.
+  - `pulse_android`: Puente JNI (`EngineSession`) limpio hacia Kotlin sin `GameActivity` ni `eframe`, incluyendo exportación `.json` y caché de texturas `.astc`/Animate decodificadas.
 - [x] **Interfaz Android Nativa en Kotlin + Jetpack Compose (`/android`)**:
   - `ComponentActivity` + Material 3 + Material Icons Extended + `StudioViewModel` con corrutinas `Dispatchers.IO`.
-  - Pantallas dedicadas (`Hub`, `Chart & Audio`, `Sprites`, `Escenario`, `Scripts`, `Compilando`, `Gameplay` multi-touch) y popup modal de skins `.svg`.
+  - Pantallas dedicadas (`Hub`, `Chart`, `Audio`, `Sprites` con PNG/ASTC + XML/JSON + rotación de frames, `Escenario`, `Scripts`, `Compilando`, `Gameplay` multi-touch con overlay animado de cuenta regresiva BPM) y popup modal de skins `.svg`.
   - `minSdk 24`, `compileSdk 35`, `targetSdk 35`, `ndkVersion 27.2.12479018`.
   - Integración obligatoria de `cargo-ndk` en `preBuild` generando 2 APKs separados (`arm64-v8a` 64 bits y `armeabi-v7a` 32 bits).
 - [x] **SDK & Pruebas (`/sdk`)**:
-  - Definiciones `.d.ts`, scripts de ejemplo (`.lua`, `.ts`, `.js`), flechas SVG originales y suite de pruebas unitarias TypeScript (`tsx --test`).
+  - Definiciones `.d.ts`, scripts de ejemplo (`.lua`, `.ts`, `.js`), flechas SVG originales y suite de pruebas unitarias TypeScript (`tsx --test`) cubriendo `chart.json`, countdown BPM, `.astc` y `.json` sprites.
 - [x] **Workflow GitHub Actions Manual (`build-apk.yml`)**:
   - Disparo exclusivo `workflow_dispatch`, caché de Rust/Cargo/Gradle y subida de los 2 APKs Debug.
 

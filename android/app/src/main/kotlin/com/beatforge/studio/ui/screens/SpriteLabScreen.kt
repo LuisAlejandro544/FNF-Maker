@@ -1,8 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/SpriteLabScreen.kt
-// Propósito: Laboratorio de Sprites & Sparrow XML.
-// Permite seleccionar una entidad del escenario, vincularle su hoja `.png` y archivo `.xml`
-// (Sparrow v1/v2), reasignar prefijos de animación (Idle, Left, Down, Up, Right) detectados
-// por Rust y previsualizar cada cuadro recortado en tiempo real a 24 FPS en Compose Canvas.
+// Propósito: Laboratorio de Sprites, Texturas `.astc` y Atlas `.xml` / `.json`.
+// Permite seleccionar una entidad del escenario, vincularle su textura (`.png` o `.astc`)
+// y su descriptor (`.xml` Sparrow, TexturePacker `.json`, `spritemap1.json` y `Animation.json`),
+// reasignar animaciones y previsualizar cada cuadro recortado en vivo a 24 FPS en Compose Canvas.
 
 package com.beatforge.studio.ui.screens
 
@@ -52,7 +52,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -92,7 +94,7 @@ fun SpriteLabScreen(
     var elapsedSec by remember { mutableFloatStateOf(0f) }
     var currentFrame by remember { mutableStateOf(SparrowFrameInfo()) }
 
-    LaunchedEffect(entity?.id, activeAnimKind, playingPreview, entity?.xmlPath, entity?.animBindings) {
+    LaunchedEffect(entity?.id, activeAnimKind, playingPreview, entity?.xmlPath, entity?.animateJsonPath, entity?.animBindings) {
         if (entity == null) return@LaunchedEffect
         var lastNs = 0L
         while (true) {
@@ -113,7 +115,7 @@ fun SpriteLabScreen(
             .padding(12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Panel izquierdo: Selección de entidad, carga PNG + XML y asignación de prefijos
+        // Panel izquierdo: Selección de entidad, carga PNG/ASTC + XML/JSON y asignación de prefijos
         Surface(
             modifier = Modifier
                 .weight(0.5f)
@@ -129,7 +131,7 @@ fun SpriteLabScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Laboratorio de Sprites & Sparrow XML",
+                    text = "Sprites · PNG/ASTC + XML/JSON",
                     color = StudioColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
@@ -158,7 +160,7 @@ fun SpriteLabScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = { onRequestImport(ImportKind.SpritePng(entity.id)) },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.AccentCyan,
                                 contentColor = Color(0xFF041C24)
@@ -167,12 +169,12 @@ fun SpriteLabScreen(
                         ) {
                             Icon(Icons.Rounded.Image, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
-                            Text("Importar PNG", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("PNG / ASTC", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                         }
 
                         Button(
                             onClick = { onRequestImport(ImportKind.SparrowXml(entity.id)) },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.AccentIndigo,
                                 contentColor = Color.White
@@ -181,7 +183,7 @@ fun SpriteLabScreen(
                         ) {
                             Icon(Icons.Rounded.Code, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
-                            Text("Importar XML", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("XML / JSON", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                         }
                     }
 
@@ -190,17 +192,25 @@ fun SpriteLabScreen(
                         color = StudioColors.BgCard,
                         border = BorderStroke(1.dp, StudioColors.BorderSubtle)
                     ) {
+                        val texDisplay = entity.rawImagePath ?: entity.imagePath
                         Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
-                                text = "Hoja PNG: ${entity.imagePath?.substringAfterLast('/') ?: "No asignada"}",
-                                color = if (entity.imagePath != null) StudioColors.AccentEmerald else StudioColors.TextMuted,
+                                text = "Textura: ${texDisplay?.substringAfterLast('/') ?: "No asignada"}",
+                                color = if (texDisplay != null) StudioColors.AccentEmerald else StudioColors.TextMuted,
                                 fontSize = 11.sp
                             )
                             Text(
-                                text = "XML Sparrow: ${entity.xmlPath?.substringAfterLast('/') ?: "No asignado"} (${entity.animationPrefixes.size} prefijos detectados)",
+                                text = "Atlas XML/Spritemap: ${entity.xmlPath?.substringAfterLast('/') ?: "No asignado"} (${entity.animationPrefixes.size} anims)",
                                 color = if (entity.xmlPath != null) StudioColors.AccentCyan else StudioColors.TextMuted,
                                 fontSize = 11.sp
                             )
+                            if (entity.animateJsonPath != null || (entity.xmlPath?.contains("spritemap", ignoreCase = true) == true)) {
+                                Text(
+                                    text = "Animate Rig: ${entity.animateJsonPath?.substringAfterLast('/') ?: "Falta importar Animation.json"}",
+                                    color = if (entity.animateJsonPath != null) StudioColors.AccentAmber else StudioColors.TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
                         }
                     }
 
@@ -368,13 +378,19 @@ fun SpriteLabScreen(
                         val dstX = ((size.width - dstW) / 2f).roundToInt()
                         val dstY = ((size.height - dstH) / 2f).roundToInt()
 
-                        drawImage(
-                            image = bmp,
-                            srcOffset = IntOffset(srcX, srcY),
-                            srcSize = IntSize(srcW, srcH),
-                            dstOffset = IntOffset(dstX, dstY),
-                            dstSize = IntSize(dstW, dstH)
-                        )
+                        withTransform({
+                            if (currentFrame.found && currentFrame.rotated) {
+                                rotate(-90f, pivot = Offset(size.width / 2f, size.height / 2f))
+                            }
+                        }) {
+                            drawImage(
+                                image = bmp,
+                                srcOffset = IntOffset(srcX, srcY),
+                                srcSize = IntSize(srcW, srcH),
+                                dstOffset = IntOffset(dstX, dstY),
+                                dstSize = IntSize(dstW, dstH)
+                            )
+                        }
                     }
                 }
 
@@ -382,9 +398,9 @@ fun SpriteLabScreen(
                     text = if (currentFrame.found) {
                         "Frame: ${currentFrame.rawName} (${currentFrame.width}x${currentFrame.height} px)"
                     } else if (loaded != null) {
-                        "Mostrando imagen PNG completa (${loaded.origWidth}x${loaded.origHeight} px)"
+                        "Mostrando textura completa (${loaded.origWidth}x${loaded.origHeight} px)"
                     } else {
-                        "Importa un PNG y su XML Sparrow para previsualizar el recorte animado"
+                        "Importa PNG/.astc y su descriptor XML/.json para previsualizar en vivo"
                     },
                     color = StudioColors.TextMuted,
                     fontSize = 11.sp

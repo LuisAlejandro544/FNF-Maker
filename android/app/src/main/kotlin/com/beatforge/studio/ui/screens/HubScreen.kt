@@ -1,7 +1,7 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/HubScreen.kt
-// Propósito: Pantalla principal (Hub del Mod) en distribución horizontal de dos columnas.
-// Permite editar metadatos del proyecto (nombre, autor, scroll, downscroll, offset de audio),
-// inspeccionar estadísticas rápidas del mod y acceder a los apartados modulares especializados.
+// Propósito: Pantalla de inicio (Hub) en dos columnas horizontales limpias.
+// Permite editar metadatos del mod, sincronización, consultar métricas rápidas y acceder
+// a cada editor especializado. La optimización de texturas ahora es automática según el teléfono.
 
 package com.beatforge.studio.ui.screens
 
@@ -25,20 +25,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Layers
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -59,7 +55,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.beatforge.studio.DeviceTier
 import com.beatforge.studio.ProjectSnapshot
 import com.beatforge.studio.StudioScreen
 import com.beatforge.studio.ui.theme.StudioColors
@@ -68,8 +63,6 @@ import kotlin.math.roundToInt
 @Composable
 fun HubScreen(
     snapshot: ProjectSnapshot,
-    selectedTier: DeviceTier,
-    onSelectTier: (DeviceTier) -> Unit,
     onUpdateMeta: (name: String, author: String, downscroll: Boolean, offsetMs: Double, speed: Double) -> Unit,
     onNavigate: (StudioScreen) -> Unit,
     onOpenArrowSkin: () -> Unit,
@@ -92,16 +85,16 @@ fun HubScreen(
     Row(
         modifier = Modifier
             .fillMaxSize()
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Columna izquierda: Metadatos, estadísticas y último reporte de compilación
+        // Columna izquierda: Configuración del proyecto y resumen
         Column(
             modifier = Modifier
-                .weight(0.46f)
+                .weight(0.47f)
                 .fillMaxHeight()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
@@ -118,7 +111,7 @@ fun HubScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "Proyecto & Sincronización",
+                            text = "Configuración del Mod",
                             color = StudioColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
@@ -155,7 +148,7 @@ fun HubScreen(
                     ) {
                         Column {
                             Text("Modo Downscroll", color = StudioColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Las notas caen de arriba hacia abajo", color = StudioColors.TextMuted, fontSize = 11.sp)
+                            Text("Las flechas caen de arriba hacia abajo", color = StudioColors.TextMuted, fontSize = 11.sp)
                         }
                         Switch(
                             checked = downscroll,
@@ -172,7 +165,7 @@ fun HubScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Velocidad de Scroll", color = StudioColors.TextMuted, fontSize = 12.sp)
+                            Text("Velocidad de Notas", color = StudioColors.TextMuted, fontSize = 12.sp)
                             Text(
                                 "${((scrollSpeed * 10.0).roundToInt() / 10.0)}x",
                                 color = StudioColors.AccentCyan,
@@ -223,7 +216,6 @@ fun HubScreen(
                 }
             }
 
-            // Tarjeta de métricas rápidas del mod
             val activeTracks = snapshot.audioTracks.count { it.fileName != null }
             val enabledScripts = snapshot.scripts.count { it.enabled }
             Surface(
@@ -238,148 +230,72 @@ fun HubScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     StatBadge("Notas", snapshot.chart.totalNotes.toString(), StudioColors.AccentCyan)
-                    StatBadge("BPM", snapshot.chart.bpm.roundToInt().toString(), StudioColors.AccentEmerald)
-                    StatBadge("Pistas", "$activeTracks/3", StudioColors.AccentAmber)
+                    StatBadge("BPM", snapshot.chart.bpm.roundToInt().toString(), StudioColors.AccentAmber)
+                    StatBadge("Pistas", "$activeTracks/3", StudioColors.AccentEmerald)
                     StatBadge("Capas", snapshot.stageEntities.size.toString(), StudioColors.AccentIndigo)
                     StatBadge("Scripts", "$enabledScripts/${snapshot.scripts.size}", StudioColors.AccentPurple)
                 }
             }
-
-            snapshot.lastCompileReport?.let { rep ->
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = StudioColors.BgCard,
-                    border = BorderStroke(1.dp, StudioColors.AccentEmerald.copy(alpha = 0.45f))
-                ) {
-                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Rounded.Speed,
-                                contentDescription = null,
-                                tint = StudioColors.AccentEmerald,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = "Última Compilación (${rep.elapsedMs} ms)",
-                                color = StudioColors.AccentEmerald,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
-                            )
-                        }
-                        Text(
-                            text = "Activos: ${rep.keptEntities} | Descartados: ${rep.discardedInvisibleEntities.size} | Escalados: ${rep.downscaledTextures} | VRAM ahorrada: ${rep.estimatedVramSavedKb} KB",
-                            color = StudioColors.TextMuted,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-            }
         }
 
-        // Columna derecha: Accesos a módulos, perfil de dispositivo y CTAs
+        // Columna derecha: Accesos directos a cada apartado + botones de acción
         Column(
             modifier = Modifier
-                .weight(0.54f)
+                .weight(0.53f)
                 .fillMaxHeight()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ModuleShortcutCard(
-                    title = "Chart & Audio",
-                    subtitle = "JSON, hasta 3 pistas .ogg/.wav/.mp3 e histograma",
-                    icon = Icons.Rounded.LibraryMusic,
+                    title = "Editor de Chart",
+                    subtitle = "Chartea manualmente paso a paso o importa archivos .json",
+                    icon = Icons.Rounded.Tune,
                     accent = StudioColors.AccentCyan,
-                    onClick = { onNavigate(StudioScreen.ChartAudio) },
+                    onClick = { onNavigate(StudioScreen.Chart) },
                     modifier = Modifier.weight(1f)
                 )
                 ModuleShortcutCard(
+                    title = "Mezclador Audio",
+                    subtitle = "Hasta 3 pistas (.ogg/.wav/.mp3) y prueba en vivo",
+                    icon = Icons.Rounded.GraphicEq,
+                    accent = StudioColors.AccentEmerald,
+                    onClick = { onNavigate(StudioScreen.Audio) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModuleShortcutCard(
                     title = "Sprite Lab",
-                    subtitle = "Spritesheet PNG + XML Sparrow automático a 24 FPS",
+                    subtitle = "Hojas .png + XML Sparrow automático a 24 FPS",
                     icon = Icons.Rounded.Animation,
                     accent = StudioColors.AccentAmber,
                     onClick = { onNavigate(StudioScreen.SpriteLab) },
                     modifier = Modifier.weight(1f)
                 )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ModuleShortcutCard(
                     title = "Escenario & Capas",
-                    subtitle = "Editor Z-order, arrastre táctil y cruceta de precisión",
+                    subtitle = "Capas Z-order, arrastre táctil y cruceta de precisión",
                     icon = Icons.Rounded.Layers,
                     accent = StudioColors.AccentIndigo,
                     onClick = { onNavigate(StudioScreen.StageEditor) },
                     modifier = Modifier.weight(1f)
                 )
-                ModuleShortcutCard(
-                    title = "Script Studio",
-                    subtitle = "Lua 5.4, TypeScript (oxc) y JavaScript (QuickJS)",
-                    icon = Icons.Rounded.Code,
-                    accent = StudioColors.AccentPurple,
-                    onClick = { onNavigate(StudioScreen.ScriptStudio) },
-                    modifier = Modifier.weight(1f)
-                )
             }
 
-            // Selector de perfil de recursos para compilación en caliente
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = StudioColors.BgPanel,
-                border = BorderStroke(1.dp, StudioColors.BorderSubtle)
-            ) {
-                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.Memory,
-                            contentDescription = null,
-                            tint = StudioColors.AccentIndigo,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "Perfil de Recursos (Compilación Paralela Rayon)",
-                            color = StudioColors.TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    }
+            ModuleShortcutCard(
+                title = "Script Studio (Lua / TypeScript / JavaScript)",
+                subtitle = "Eventos onBeatHit, cámaras y animaciones personalizadas para tu mod",
+                icon = Icons.Rounded.Code,
+                accent = StudioColors.AccentPurple,
+                onClick = { onNavigate(StudioScreen.ScriptStudio) },
+                modifier = Modifier.fillMaxWidth()
+            )
 
-                    DeviceTier.entries.forEach { tier ->
-                        val selected = tier == selectedTier
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSelectTier(tier) }
-                                .padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = selected,
-                                onClick = { onSelectTier(tier) },
-                                colors = RadioButtonDefaults.colors(selectedColor = StudioColors.AccentCyan),
-                                modifier = Modifier.size(26.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = tier.label,
-                                color = if (selected) StudioColors.AccentCyan else StudioColors.TextPrimary,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = tier.subtitle,
-                                color = StudioColors.TextMuted,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-                }
-            }
+            Spacer(Modifier.weight(1f, fill = false))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onOpenArrowSkin,
                     shape = RoundedCornerShape(10.dp),
@@ -393,7 +309,7 @@ fun HubScreen(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Cambiar Skin SVG", color = StudioColors.TextPrimary, fontSize = 13.sp)
+                    Text("Skin de Flechas", color = StudioColors.TextPrimary, fontSize = 13.sp, maxLines = 1, softWrap = false)
                 }
 
                 Button(
@@ -402,7 +318,7 @@ fun HubScreen(
                     contentPadding = PaddingValues(vertical = 12.dp, horizontal = 14.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.AccentEmerald,
-                        contentColor = Color(0xFF042419)
+                        contentColor = Color(0xFF042117)
                     ),
                     modifier = Modifier.weight(1.1f)
                 ) {
@@ -412,7 +328,7 @@ fun HubScreen(
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Compilar y Jugar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("Jugar Mod", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -440,7 +356,7 @@ private fun ModuleShortcutCard(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         color = StudioColors.BgCard,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f))
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.4f))
     ) {
         Column(modifier = Modifier.padding(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -448,17 +364,18 @@ private fun ModuleShortcutCard(
                     imageVector = icon,
                     contentDescription = title,
                     tint = accent,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(19.dp)
                 )
                 Spacer(Modifier.width(7.dp))
                 Text(
                     text = title,
                     color = StudioColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    maxLines = 1
                 )
             }
-            Spacer(Modifier.height(5.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 text = subtitle,
                 color = StudioColors.TextMuted,

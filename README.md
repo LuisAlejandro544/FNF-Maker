@@ -8,27 +8,28 @@ BeatForge Studio (`com.beatforge.studio`) es un **motor de creación de mods de 
 
 ## Características Principales
 
-1. **Importador de Charts (`.json`)**:
-   - Carga charts de mods externos con detección automática de `bpm`, `speed`, secciones `mustHitSection`, cambios de BPM y notas sostenidas.
-   - Incluye histograma visual de densidad de notas en Compose `Canvas` y estadísticas por bando.
-2. **Mezclador de Audio de Baja Latencia en Rust Puro (AAudio C ABI, hasta 3 pistas)**:
+1. **Editor Manual de Charts, Configuración Completa y Exportación (`chart.json`)**:
+   - Línea de tiempo larga continua de **8 carriles** (4 Oponente + 4 Jugador) para colocar/quitar notas manualmente por paso, elegir duración de *sustain*, ajustar BPM global o por sección (`changeBPM`), agregar secciones y cambiar enfoque de cámara o escuchar cada sección al instante.
+   - Modal `Config .json` para editar metadatos completos (`player1`, `player2`, `gfVersion`, `stage`, `speed`, `needsVoices`) y eventos de canción (`events` globales e inline `-1`), además de **importar y exportar `.json`** completo compatible vía SAF.
+2. **Mezclador de Audio en Rust Puro (AAudio C ABI) + Cuenta Regresiva BPM**:
    - Motor de audio 100% en Rust (`libaaudio.so` vía `libc::dlopen`, cero dependencias de C++ ni `libc++_shared.so`, con reloj de respaldo para Android 7.x `minSdk = 24`).
-   - Soporta mods con **1 archivo** (mix completo), **2 archivos** (Instrumental + Voces) o **3 archivos** (Instrumental + Voces Jugador + Voces Oponente).
-   - Decodificadores con licencia permisiva: **OGG Vorbis** (`lewton`), **WAV** (`hound`) y **MP3** (`rmp3`), con control de volumen, mute, atenuación al fallar y forma de onda.
-3. **Ensamblador Automático de Spritesheets (`.png` + `.xml`)**:
-   - Importa tu hoja `.png` y tu atlas Sparrow `.xml` y **Rust** detecta y agrupa automáticamente `Idle`, `Arriba`, `Abajo`, `Izquierda` y `Derecha`, previsualizando los frames recortados en vivo a 24 FPS desde Kotlin Compose.
+   - Al entrar a jugar o reiniciar, ejecuta una **cuenta regresiva sincronizada al BPM real de la canción** (`"3"`, `"2"`, `"1"`, `"¡YA!"`) con voces/tonos sintetizados lock-free en `pulse_audio` y animación visual sincronizada en `GameplayScreen` antes de arrancar en `0.0 ms`.
+   - Soporta mods con **1 archivo** (mix completo), **2 archivos** (Instrumental + Voces) o **3 archivos** (Instrumental + Voces Jugador + Voces Oponente) en **OGG** (`lewton`), **WAV** (`hound`) y **MP3** (`rmp3`).
+3. **Ensamblador Automático de Spritesheets (`.png`, `.astc`, `.xml`, `.json`)**:
+   - Decodificación nativa de texturas comprimidas **`.astc`** en Rust puro (`texture2ddecoder`, sin GLES obligatorio en el editor) junto a `.png`/`.jpg`/`.webp`.
+   - Soporte de atlas **`.xml` Sparrow** y formatos **`.json`** de mods optimizados: **TexturePacker / Aseprite** (Hash/Array), **`spritemap1.json`** y **`Animation.json`** (Adobe Animate Texture Atlas), horneando automáticamente las poses a spritesheet RGBA y detectando `Idle`, `Arriba`, `Abajo`, `Izquierda` y `Derecha` (con soporte de frames rotados 90°).
 4. **Editor Visual de Escenario Horizontal (`1280×720`)**:
-   - Mueve tus assets con **cruceta direccional** (pasos configurables de 1px, 10px, 35px) o arrastrando directamente sobre el lienzo 16:9.
-   - Ajusta escala, opacidad, volteo horizontal (`Flip X`), rol (`Fondo`, `Jugador`, `Oponente`, `Decoración`) y **orden de capa Z** (`Subir`, `Bajar`, `Frente`, `Fondo`).
-5. **Compilación en Caliente (`Hot Compile`)**:
-   - Antes de iniciar la partida, muestra una pantalla de carga mientras **Rust** (`rayon`) optimiza y cachea texturas según el perfil del dispositivo (`32-bit / RAM baja`, `Equilibrado`, `Alta calidad`) y **descarta automáticamente objetos invisibles** durante toda la canción para ahorrar RAM/VRAM.
+   - Mueve tus assets con **cruceta direccional** (pasos configurables de 1px, 10px, 35px) o arrastrando directamente sobre el lienzo 16:9 con etiquetas visibles.
+   - Ajusta escala, opacidad, volteo horizontal (`Flip X`), rol en cuadrícula 2×2 (`Fondo`, `Oponente`, `Jugador`, `Decoración`) y **orden de capa Z** (`Subir`, `Bajar`, `Frente`, `Fondo`).
+5. **Compilación en Caliente Automática (`Hot Compile`)**:
+   - Detecta automáticamente la RAM disponible y arquitectura (32/64 bits) de tu teléfono y muestra una pantalla de carga mientras **Rust** (`rayon`) optimiza y cachea texturas (incluyendo `.astc` decodificados y rigs Animate horneados), **descartando automáticamente objetos invisibles** durante toda la canción para ahorrar RAM/VRAM.
 6. **Skins de Flechas `.svg` Personalizables**:
    - Incluye flechas vectoriales propias en formato `.svg` libres de derechos de autor (`sdk/assets/arrows/`) rasterizadas por `resvg` en Rust, con popup modal (`ArrowSkinDialog`) para importar `.svg` por dirección.
 7. **Scripting Comunitario en Lua 5.4, TypeScript y JavaScript**:
    - **Lua 5.4** (`mlua`), **TypeScript** transpilado nativamente dentro del teléfono sin Node.js (`oxc_parser` + `oxc_transformer` + `oxc_codegen`) y **JavaScript ES2022** (`rquickjs` / QuickJS-NG).
    - Editor nativo en Compose (`OutlinedTextField` monoespaciado) con soporte completo del teclado virtual de Android y validación real de sintaxis en Rust.
 8. **Interfaz Horizontal Nativa en Jetpack Compose + Material 3**:
-   - Diseñada con **Kotlin Jetpack Compose**, **Material 3** y **Material Icons Extended** en paleta oscura de estudio (pizarra profundo, cian, esmeralda, índigo y coral), dividida en pantallas modulares dedicadas, controles multi-touch de 4 carriles y pantalla de diagnóstico aislada (`CrashReportActivity`).
+   - Riel de navegación lateral izquierdo (`StudioNavRail`) con manejo de muesca de cámara (`displayCutoutPadding`), diseñado en paleta de estudio hardware (carbón mate, grafito cálido, naranja estudio, ámbar y verde limpio), controles multi-touch de 4 carriles y pantalla de diagnóstico aislada (`CrashReportActivity`).
 
 ---
 

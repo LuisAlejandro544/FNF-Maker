@@ -1,13 +1,14 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/MainActivity.kt
-// Propósito: Actividad principal basada en Jetpack Compose (`ComponentActivity`) conectada
-// al motor nativo Rust (`libpulse_android.so`) vía JNI a través de `StudioViewModel`.
-// Gestiona el selector nativo SAF (`ACTION_OPEN_DOCUMENT`), captura fallos fatales hacia
-// `CrashReportActivity` y mantiene pantalla activa horizontal sin lógica de motor en Kotlin.
+// Propósito: Actividad principal (`ComponentActivity` + Jetpack Compose) conectada al motor
+// nativo Rust (`libpulse_android.so`) vía JNI a través de `StudioViewModel`.
+// Configura pantalla horizontal de borde a borde respetando muescas/cámara (`displayCutoutPadding`),
+// barra de navegación lateral compacta (`StudioNavRail`) y selector nativo SAF en `Dispatchers.IO`.
 
 package com.beatforge.studio
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.view.WindowManager
@@ -21,6 +22,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -47,9 +50,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.beatforge.studio.ui.components.StudioNavBar
+import com.beatforge.studio.ui.components.StudioNavRail
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
-import com.beatforge.studio.ui.screens.ChartAudioScreen
+import com.beatforge.studio.ui.screens.AudioScreen
+import com.beatforge.studio.ui.screens.ChartScreen
 import com.beatforge.studio.ui.screens.GameplayScreen
 import com.beatforge.studio.ui.screens.HotCompileScreen
 import com.beatforge.studio.ui.screens.HubScreen
@@ -68,6 +72,13 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
             if (uri != null) {
                 studioViewModel.onUriPicked(uri)
+            }
+        }
+
+    private val createChartDocumentLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+            if (uri != null) {
+                studioViewModel.exportChartToUri(uri)
             }
         }
 
@@ -102,6 +113,9 @@ class MainActivity : ComponentActivity() {
         studioViewModel.registerPickerLauncher { mimeTypes ->
             openDocumentLauncher.launch(mimeTypes)
         }
+        studioViewModel.registerExportChartLauncher { suggestedName ->
+            createChartDocumentLauncher.launch(suggestedName)
+        }
 
         setContent {
             BeatForgeTheme {
@@ -113,6 +127,12 @@ class MainActivity : ComponentActivity() {
 
     private fun configureImmersiveLandscape() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -137,10 +157,11 @@ private fun BeatForgeRootContent(
     state: StudioUiState,
     viewModel: StudioViewModel
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxSize()
             .background(StudioColors.BgDark)
+            .displayCutoutPadding()
     ) {
         if (!state.initialized) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -154,11 +175,11 @@ private fun BeatForgeRootContent(
                     )
                 }
             }
-            return
+            return@Row
         }
 
         if (state.currentScreen != StudioScreen.Gameplay && state.currentScreen != StudioScreen.HotCompile) {
-            StudioNavBar(
+            StudioNavRail(
                 currentScreen = state.currentScreen,
                 onNavigate = { viewModel.navigateTo(it) },
                 onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
@@ -166,132 +187,164 @@ private fun BeatForgeRootContent(
             )
         }
 
-        if (state.isBusy && state.currentScreen != StudioScreen.HotCompile) {
-            LinearProgressIndicator(
-                color = StudioColors.AccentCyan,
-                trackColor = StudioColors.BgPanel,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            when (state.currentScreen) {
-                StudioScreen.Hub -> HubScreen(
-                    snapshot = state.snapshot,
-                    selectedTier = state.selectedTier,
-                    onSelectTier = { viewModel.setDeviceTier(it) },
-                    onUpdateMeta = { name, author, downscroll, offset, speed ->
-                        viewModel.updateProjectMeta(name, author, downscroll, offset, speed)
-                    },
-                    onNavigate = { viewModel.navigateTo(it) },
-                    onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
-                    onCompileAndPlay = { viewModel.startCompileAndPlay() }
-                )
-
-                StudioScreen.ChartAudio -> ChartAudioScreen(
-                    snapshot = state.snapshot,
-                    audioPreviewPlaying = state.audioPreviewPlaying,
-                    onRequestImport = { viewModel.requestImport(it) },
-                    onRestoreDemoChart = { viewModel.restoreDemoChart() },
-                    onToggleAudioPreview = { viewModel.toggleAudioPreview() },
-                    onUpdateTrackConfig = { slot, gain, muted, duck ->
-                        viewModel.updateAudioTrackConfig(slot, gain, muted, duck)
-                    },
-                    onRemoveTrack = { viewModel.removeAudioTrack(it) }
-                )
-
-                StudioScreen.SpriteLab -> SpriteLabScreen(
-                    snapshot = state.snapshot,
-                    selectedEntityId = state.selectedEntityId,
-                    entityBitmaps = state.entityBitmaps,
-                    onSelectEntity = { viewModel.selectEntity(it) },
-                    onRequestImport = { viewModel.requestImport(it) },
-                    onSetBinding = { entityId, kind, prefix ->
-                        viewModel.setSparrowBinding(entityId, kind, prefix)
-                    },
-                    onQuerySparrowFrame = { entityId, kind, elapsed ->
-                        viewModel.querySparrowFrame(entityId, kind, elapsed)
-                    }
-                )
-
-                StudioScreen.StageEditor -> StageEditorScreen(
-                    snapshot = state.snapshot,
-                    selectedEntityId = state.selectedEntityId,
-                    entityBitmaps = state.entityBitmaps,
-                    onSelectEntity = { viewModel.selectEntity(it) },
-                    onAddEntity = { name, role -> viewModel.addStageEntity(name, role) },
-                    onUpdateEntity = { id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx ->
-                        viewModel.updateStageEntity(id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx)
-                    },
-                    onReorderEntity = { id, action -> viewModel.reorderStageEntity(id, action) },
-                    onRequestImportPng = { entityId ->
-                        viewModel.requestImport(ImportKind.SpritePng(entityId))
-                    }
-                )
-
-                StudioScreen.ScriptStudio -> ScriptStudioScreen(
-                    snapshot = state.snapshot,
-                    selectedScriptId = state.selectedScriptId,
-                    validationMsg = state.scriptValidationMsg,
-                    validationOk = state.scriptValidationOk,
-                    onSelectScript = { viewModel.selectScript(it) },
-                    onAddScript = { viewModel.addScript(it) },
-                    onRequestImportScript = { viewModel.requestImport(ImportKind.Script) },
-                    onUpdateScript = { id, enabled, src, silent ->
-                        viewModel.updateScript(id, enabled, src, silent)
-                    },
-                    onValidateScript = { id, enabled, src ->
-                        viewModel.validateScript(id, enabled, src)
-                    }
-                )
-
-                StudioScreen.HotCompile -> HotCompileScreen(tier = state.selectedTier)
-
-                StudioScreen.Gameplay -> GameplayScreen(
-                    step = state.gameplayStep,
-                    arrowBitmaps = state.arrowBitmaps,
-                    compiledBitmaps = state.compiledBitmaps,
-                    onStepFrame = { dt, pressed, justPressed ->
-                        viewModel.stepGameplayFrame(dt, pressed, justPressed)
-                    },
-                    onSetPaused = { viewModel.setGameplayPaused(it) },
-                    onRestart = { viewModel.restartGameplay() },
-                    onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+        ) {
+            if (state.isBusy && state.currentScreen != StudioScreen.HotCompile) {
+                LinearProgressIndicator(
+                    color = StudioColors.AccentCyan,
+                    trackColor = StudioColors.BgPanel,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
-            // Banner de notificación flotante
-            val banner = state.statusBanner
-            if (!banner.isNullOrBlank() && state.currentScreen != StudioScreen.Gameplay) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(14.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    color = StudioColors.BgElevated,
-                    border = BorderStroke(
-                        1.dp,
-                        if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                when (state.currentScreen) {
+                    StudioScreen.Hub -> HubScreen(
+                        snapshot = state.snapshot,
+                        onUpdateMeta = { name, author, downscroll, offset, speed ->
+                            viewModel.updateProjectMeta(name, author, downscroll, offset, speed)
+                        },
+                        onNavigate = { viewModel.navigateTo(it) },
+                        onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
+                        onCompileAndPlay = { viewModel.startCompileAndPlay() }
                     )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = if (state.statusIsError) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle,
-                            contentDescription = null,
-                            tint = if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald,
-                            modifier = Modifier.size(16.dp)
+
+                    StudioScreen.Chart -> ChartScreen(
+                        snapshot = state.snapshot,
+                        audioPreviewPlaying = state.audioPreviewPlaying,
+                        onRequestImport = { viewModel.requestImport(it) },
+                        onRequestExportJson = { viewModel.requestExportChartJson() },
+                        onRestoreDemoChart = { viewModel.restoreDemoChart() },
+                        onSetChartBpm = { viewModel.setChartBpm(it) },
+                        onUpdateChartDetails = { title, speed, p1, p2, gf, stage, voices ->
+                            viewModel.updateChartDetails(title, speed, p1, p2, gf, stage, voices)
+                        },
+                        onSetSectionBpm = { secIdx, bpm, changeBpm ->
+                            viewModel.setSectionBpm(secIdx, bpm, changeBpm)
+                        },
+                        onAddChartEvent = { timeMs, name, v1, v2 ->
+                            viewModel.addChartEvent(timeMs, name, v1, v2)
+                        },
+                        onRemoveChartEvent = { idx -> viewModel.removeChartEvent(idx) },
+                        onAddSection = { viewModel.addChartSection(it) },
+                        onToggleSectionMustHit = { viewModel.toggleSectionMustHit(it) },
+                        onToggleChartNote = { sec, step, col, sustain ->
+                            viewModel.toggleChartNote(sec, step, col, sustain)
+                        },
+                        onToggleAudioPreviewAtMs = { ms -> viewModel.toggleAudioPreview(ms) }
+                    )
+
+                    StudioScreen.Audio -> AudioScreen(
+                        snapshot = state.snapshot,
+                        audioPreviewPlaying = state.audioPreviewPlaying,
+                        onRequestImport = { viewModel.requestImport(it) },
+                        onToggleAudioPreview = { viewModel.toggleAudioPreview(0.0) },
+                        onUpdateTrackConfig = { slot, gain, muted, duck ->
+                            viewModel.updateAudioTrackConfig(slot, gain, muted, duck)
+                        },
+                        onRemoveTrack = { viewModel.removeAudioTrack(it) }
+                    )
+
+                    StudioScreen.SpriteLab -> SpriteLabScreen(
+                        snapshot = state.snapshot,
+                        selectedEntityId = state.selectedEntityId,
+                        entityBitmaps = state.entityBitmaps,
+                        onSelectEntity = { viewModel.selectEntity(it) },
+                        onRequestImport = { viewModel.requestImport(it) },
+                        onSetBinding = { entityId, kind, prefix ->
+                            viewModel.setSparrowBinding(entityId, kind, prefix)
+                        },
+                        onQuerySparrowFrame = { entityId, kind, elapsed ->
+                            viewModel.querySparrowFrame(entityId, kind, elapsed)
+                        }
+                    )
+
+                    StudioScreen.StageEditor -> StageEditorScreen(
+                        snapshot = state.snapshot,
+                        selectedEntityId = state.selectedEntityId,
+                        entityBitmaps = state.entityBitmaps,
+                        onSelectEntity = { viewModel.selectEntity(it) },
+                        onAddEntity = { name, role -> viewModel.addStageEntity(name, role) },
+                        onUpdateEntity = { id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx ->
+                            viewModel.updateStageEntity(id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx)
+                        },
+                        onReorderEntity = { id, action -> viewModel.reorderStageEntity(id, action) },
+                        onRequestImportPng = { entityId ->
+                            viewModel.requestImport(ImportKind.SpritePng(entityId))
+                        }
+                    )
+
+                    StudioScreen.ScriptStudio -> ScriptStudioScreen(
+                        snapshot = state.snapshot,
+                        selectedScriptId = state.selectedScriptId,
+                        validationMsg = state.scriptValidationMsg,
+                        validationOk = state.scriptValidationOk,
+                        onSelectScript = { viewModel.selectScript(it) },
+                        onAddScript = { viewModel.addScript(it) },
+                        onRequestImportScript = { viewModel.requestImport(ImportKind.Script) },
+                        onUpdateScript = { id, enabled, src, silent ->
+                            viewModel.updateScript(id, enabled, src, silent)
+                        },
+                        onValidateScript = { id, enabled, src ->
+                            viewModel.validateScript(id, enabled, src)
+                        }
+                    )
+
+                    StudioScreen.HotCompile -> HotCompileScreen(tier = state.selectedTier)
+
+                    StudioScreen.Gameplay -> GameplayScreen(
+                        step = state.gameplayStep,
+                        arrowBitmaps = state.arrowBitmaps,
+                        compiledBitmaps = state.compiledBitmaps,
+                        onStepFrame = { dt, pressed, justPressed ->
+                            viewModel.stepGameplayFrame(dt, pressed, justPressed)
+                        },
+                        onSetPaused = { viewModel.setGameplayPaused(it) },
+                        onRestart = { viewModel.restartGameplay() },
+                        onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }
+                    )
+                }
+
+                // Banner de notificación flotante
+                val banner = state.statusBanner
+                if (!banner.isNullOrBlank() && state.currentScreen != StudioScreen.Gameplay) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(12.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = StudioColors.BgElevated,
+                        border = BorderStroke(
+                            1.dp,
+                            if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald
                         )
-                        Spacer(Modifier.width(8.dp))
-                        Text(banner, color = StudioColors.TextPrimary, fontSize = 12.sp)
-                        Spacer(Modifier.width(8.dp))
-                        IconButton(
-                            onClick = { viewModel.dismissBanner() },
-                            modifier = Modifier.size(24.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Rounded.Close, "Cerrar", tint = StudioColors.TextMuted, modifier = Modifier.size(14.dp))
+                            Icon(
+                                imageVector = if (state.statusIsError) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(banner, color = StudioColors.TextPrimary, fontSize = 12.sp)
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(
+                                onClick = { viewModel.dismissBanner() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Rounded.Close, "Cerrar", tint = StudioColors.TextMuted, modifier = Modifier.size(14.dp))
+                            }
                         }
                     }
                 }

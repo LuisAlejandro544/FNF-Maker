@@ -17,7 +17,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 ├── package.json                         # Dependencias web + tsx para tests del SDK
 │
 ├── engine/                              # Motor nativo modular en Rust (Workspace Cargo, sin UI)
-│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon)
+│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, texture2ddecoder)
 │   ├── .cargo/
 │   │   └── config.toml                  # Flags de enlazador Android (alineación 16KB para Android 15+)
 │   └── crates/
@@ -25,8 +25,10 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │   ├── Cargo.toml
 │       │   └── src/
 │       │       ├── lib.rs               # Exportaciones públicas y pruebas unitarias Rust
-│       │       ├── chart.rs             # Parser de charts .json, BPM, secciones y densidad de notas
+│       │       ├── chart.rs             # Parser y exportador completo `chart.json` (`events`, `changeBPM`, `player1/2`, `stage`)
 │       │       ├── sparrow.rs           # Lector XML Sparrow y auto-armado de Idle/Left/Down/Up/Right
+│       │       ├── astc_loader.rs       # Decodificador puro Rust `.astc` (`texture2ddecoder`) y cargador unificado de texturas
+│       │       ├── atlas_json.rs        # Lectores `.json` (TexturePacker, Aseprite, `spritemap1.json`) + baker `Animation.json`
 │       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Oponente/Decoración) y Z-order
 │       │       ├── svg_skin.rs          # Flechas SVG originales + rasterizador resvg a RGBA8888
 │       │       ├── project.rs           # Modelo ModProject, límites (máx. 3 pistas audio) y demo integrada
@@ -37,7 +39,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │   └── src/
 │       │       ├── lib.rs               # AudioEngineHandle y control del stream
 │       │       ├── decoder.rs           # Decodificación OGG (lewton), WAV (hound), MP3 (rmp3) y resampleo
-│       │       ├── mixer.rs             # Mezclador lock-free de hasta 3 pistas + reloj maestro por muestras
+│       │       ├── mixer.rs             # Mezclador lock-free 3 pistas + reloj maestro + voces/tonos de cuenta regresiva BPM
 │       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados
@@ -54,7 +56,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           ├── build.rs                 # Script de compilación limpio (sin C++ ni GameActivity)
 │           └── src/
 │               ├── lib.rs               # Exportaciones JNI (`Java_com_beatforge_studio_NativeEngineBridge_*`)
-│               └── session.rs           # `EngineSession`: orquestador de proyecto, hot-compile y gameplay paso a paso
+│               └── session.rs           # `EngineSession`: chart.json completo, baking Animate/ASTC, hot-compile y gameplay
 │
 ├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
@@ -68,27 +70,28 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           ├── AndroidManifest.xml      # `sensorLandscape`, teclado `adjustResize` y permisos Android 7..15
 │           ├── res/values/strings.xml
 │           └── kotlin/com/beatforge/studio/
-│               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + captura de fallos
+│               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + CreateDocument (.json)
 │               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
 │               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so`
 │               ├── SafFileBridge.kt     # Copia segura de URIs SAF a almacenamiento interno
 │               ├── StudioModels.kt      # Data classes Kotlin y parsers `org.json` de snapshots Rust
-│               ├── StudioViewModel.kt   # Estado reactivo (`StateFlow`), corrutinas `Dispatchers.IO` y caché Bitmaps
+│               ├── StudioViewModel.kt   # Estado reactivo (`StateFlow`), detección RAM/ABI, corrutinas IO y Bitmaps
 │               └── ui/
 │                   ├── theme/
-│                   │   └── StudioTheme.kt         # Paleta oscura Material 3 y colores de carriles
+│                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
 │                   ├── components/
-│                   │   └── StudioNavBar.kt        # Barra superior con Material Icons Extended y CTA
+│                   │   └── StudioNavBar.kt        # Riel vertical izquierdo compacto (`StudioNavRail`) con Material Icons
 │                   ├── popups/
 │                   │   └── ArrowSkinDialog.kt     # Modal para personalizar o restaurar flechas .svg (resvg)
 │                   └── screens/
-│                       ├── HubScreen.kt           # Metadatos del mod, métricas, perfil de recursos y accesos
-│                       ├── ChartAudioScreen.kt    # Importador chart .json, histograma y mezclador 3 pistas
-│                       ├── SpriteLabScreen.kt     # Importador .png + .xml Sparrow y visor animado 24 FPS
-│                       ├── StageEditorScreen.kt   # Capas Z-order, lienzo 16:9 táctil e inspector de cruceta
+│                       ├── HubScreen.kt           # Metadatos del mod, métricas y accesos directos modulares
+│                       ├── ChartScreen.kt         # Editor manual 8 carriles + modal Config .json + eventos + export .json
+│                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda en vivo
+│                       ├── SpriteLabScreen.kt     # Importador PNG/ASTC + XML/JSON (Animate) y visor 24 FPS con rotación
+│                       ├── StageEditorScreen.kt   # Capas Z-order, lienzo 16:9 con etiquetas e inspector de rol 2x2
 │                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS y validador de sintaxis Rust
-│                       ├── HotCompileScreen.kt    # Pantalla de carga durante la compilación paralela Rayon
-│                       └── GameplayScreen.kt      # Renderizado Canvas 60 FPS, notas SVG y 4 zonas multi-touch
+│                       ├── HotCompileScreen.kt    # Pantalla de carga durante la optimización automática Rayon
+│                       └── GameplayScreen.kt      # Renderizado Canvas 60 FPS, overlay cuenta regresiva BPM y 4 zonas touch
 │
 ├── sdk/                                 # Recursos y SDK para creadores de mods y pruebas locales
 │   ├── assets/arrows/                   # Flechas SVG originales libres de derechos (left, down, up, right)

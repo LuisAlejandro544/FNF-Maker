@@ -1,12 +1,15 @@
 //! Archivo: engine/crates/pulse_android/src/session.rs
 //! Propósito: Estado de sesión puro del motor Rust (`EngineSession`) compartido por el puente JNI.
 //! Concentra todas las operaciones reales de `pulse_core`, `pulse_audio` y `pulse_scripting`
-//! (parseo de charts JSON, decodificación de hasta 3 pistas, Sparrow XML, escenario Z-order,
+//! (parseo/edición/exportación completa de `chart.json`, decodificación de hasta 3 pistas,
+//! Sparrow XML, texturas `.astc` y atlas `.json` / Adobe Animate, escenario Z-order,
 //! compilación en caliente `rayon`, rasterización SVG `resvg`, validación/ejecución Lua/TS/JS
-//! y simulación frame-a-frame del gameplay sincronizada con el reloj de audio).
+//! y simulación frame-a-frame con cuenta regresiva BPM "3, 2, 1, ¡YA!").
 
 use image::ImageFormat;
 use pulse_audio::{AudioEngineHandle, DecodedTrack, decode_audio_file};
+use pulse_core::astc_loader::{is_astc_path, load_sprite_image, read_sprite_dimensions};
+use pulse_core::atlas_json::{DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
 use pulse_core::hot_compile::{CompiledBundle, DeviceResourceTier, HotCompileReport, hot_compile_project};
 use pulse_core::project::{ModProject, MAX_AUDIO_TRACKS};
 use pulse_core::sparrow::CharacterAnimKind;
@@ -50,10 +53,37 @@ pub struct ProjectSnapshotJson {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChartEventJson {
+    pub time_ms: f64,
+    pub name: String,
+    pub value1: String,
+    pub value2: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartSectionSnapshotJson {
+    pub index: usize,
+    pub start_ms: f64,
+    pub length_in_steps: u32,
+    pub must_hit_section: bool,
+    pub bpm: f64,
+    pub change_bpm: bool,
+    pub alt_anim: bool,
+    pub gf_section: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChartSnapshotJson {
     pub title: String,
     pub bpm: f64,
     pub speed: f64,
+    pub needs_voices: bool,
+    pub player1: String,
+    pub player2: String,
+    pub gf_version: String,
+    pub stage: String,
     pub section_count: usize,
     pub total_notes: usize,
     pub player_notes: usize,
@@ -62,6 +92,9 @@ pub struct ChartSnapshotJson {
     pub duration_ms: f64,
     pub density_buckets: Vec<u16>,
     pub source_path: Option<String>,
+    pub sections: Vec<ChartSectionSnapshotJson>,
+    pub notes: Vec<VisibleNoteJson>,
+    pub events: Vec<ChartEventJson>,
 }
 
 #[derive(Serialize)]
@@ -85,7 +118,9 @@ pub struct StageEntitySnapshotJson {
     pub role: String,
     pub role_label: String,
     pub image_path: Option<String>,
+    pub raw_image_path: Option<String>,
     pub xml_path: Option<String>,
+    pub animate_json_path: Option<String>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -134,6 +169,7 @@ pub struct SparrowFrameJson {
     pub frame_y: i32,
     pub frame_width: u32,
     pub frame_height: u32,
+    pub rotated: bool,
 }
 
 #[derive(Serialize)]
@@ -171,7 +207,11 @@ pub struct GameplayStepJson {
     pub song_pos_ms: f64,
     pub duration_ms: f64,
     pub scroll_speed: f64,
+    pub active_bpm: f64,
     pub downscroll: bool,
+    pub countdown_stage: i32,
+    pub countdown_label: String,
+    pub countdown_progress: f32,
     pub camera_zoom: f32,
     pub camera_shake: f32,
     pub camera_x: f32,
@@ -284,7 +324,9 @@ impl EngineSession {
                     role: role_to_key(ent.role).to_string(),
                     role_label: ent.role.label_es().to_string(),
                     image_path: ent.image_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                    raw_image_path: ent.raw_image_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                     xml_path: ent.xml_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                    animate_json_path: ent.animate_json_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                     x: ent.x,
                     y: ent.y,
                     width: ent.width,
@@ -341,6 +383,11 @@ impl EngineSession {
                 title: self.project.chart.title.clone(),
                 bpm: self.project.chart.bpm,
                 speed: self.project.chart.speed,
+                needs_voices: self.project.chart.needs_voices,
+                player1: self.project.chart.player1.clone(),
+                player2: self.project.chart.player2.clone(),
+                gf_version: self.project.chart.gf_version.clone(),
+                stage: self.project.chart.stage.clone(),
                 section_count: self.project.chart.sections.len(),
                 total_notes: self.project.chart.stats.total_notes,
                 player_notes: self.project.chart.stats.player_notes,
@@ -353,6 +400,47 @@ impl EngineSession {
                     .chart_source_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
+                sections: self
+                    .project
+                    .chart
+                    .sections
+                    .iter()
+                    .map(|s| ChartSectionSnapshotJson {
+                        index: s.index,
+                        start_ms: s.start_ms,
+                        length_in_steps: s.length_in_steps,
+                        must_hit_section: s.must_hit_section,
+                        bpm: s.bpm,
+                        change_bpm: s.change_bpm,
+                        alt_anim: s.alt_anim,
+                        gf_section: s.gf_section,
+                    })
+                    .collect(),
+                notes: self
+                    .project
+                    .chart
+                    .notes
+                    .iter()
+                    .map(|n| VisibleNoteJson {
+                        id: n.id,
+                        time_ms: n.time_ms,
+                        direction: n.direction as u8,
+                        is_player: n.is_player,
+                        sustain_ms: n.sustain_ms,
+                    })
+                    .collect(),
+                events: self
+                    .project
+                    .chart
+                    .events
+                    .iter()
+                    .map(|e| ChartEventJson {
+                        time_ms: e.time_ms,
+                        name: e.name.clone(),
+                        value1: e.value1.clone(),
+                        value2: e.value2.clone(),
+                    })
+                    .collect(),
             },
             audio_tracks,
             stage_entities,
@@ -397,6 +485,70 @@ impl EngineSession {
             },
             Err(e) => self.err_response(format!("No se pudo leer el chart: {}", e)),
         }
+    }
+
+    pub fn export_chart_json(&self) -> String {
+        self.project.chart.to_json_str()
+    }
+
+    pub fn set_chart_bpm(&mut self, bpm: f64) -> String {
+        self.project.chart.set_bpm(bpm);
+        self.ok_response(format!("BPM actualizado a {:.1}", self.project.chart.bpm))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_chart_details(
+        &mut self,
+        title: &str,
+        speed: f64,
+        player1: &str,
+        player2: &str,
+        gf_version: &str,
+        stage: &str,
+        needs_voices: bool,
+    ) -> String {
+        self.project
+            .chart
+            .set_metadata(title, speed, player1, player2, gf_version, stage, needs_voices);
+        self.ok_response("Metadatos completos de chart.json actualizados")
+    }
+
+    pub fn set_section_bpm(&mut self, sec_index: usize, bpm: f64, change_bpm: bool) -> String {
+        self.project.chart.set_section_bpm(sec_index, bpm, change_bpm);
+        self.ok_response(format!("BPM de sección {} actualizado", sec_index + 1))
+    }
+
+    pub fn add_chart_event(&mut self, time_ms: f64, name: &str, value1: &str, value2: &str) -> String {
+        self.project.chart.add_event(time_ms, name, value1, value2);
+        self.ok_response("Evento de chart.json añadido")
+    }
+
+    pub fn remove_chart_event(&mut self, index: usize) -> String {
+        self.project.chart.remove_event(index);
+        self.ok_response("Evento eliminado")
+    }
+
+    pub fn add_chart_section(&mut self, must_hit: bool) -> String {
+        let idx = self.project.chart.add_section(must_hit);
+        self.ok_response(format!("Sección {} añadida", idx + 1))
+    }
+
+    pub fn toggle_section_must_hit(&mut self, sec_index: usize) -> String {
+        self.project.chart.toggle_section_must_hit(sec_index);
+        self.ok_response("Foco de sección actualizado")
+    }
+
+    pub fn toggle_chart_note(
+        &mut self,
+        sec_index: usize,
+        step_in_sec: u32,
+        col_0_to_7: u8,
+        sustain_steps: u32,
+    ) -> String {
+        self.project
+            .chart
+            .toggle_note_at(sec_index, step_in_sec, col_0_to_7, sustain_steps);
+        self.ok_response("Nota actualizada")
     }
 
     pub fn import_audio_track(&mut self, slot: usize, path: PathBuf) -> String {
@@ -451,13 +603,71 @@ impl EngineSession {
         self.ok_response("Configuración de pista actualizada")
     }
 
+    /// Si la entidad ya tiene `Animation.json` + `spritemap1.json` + textura (`.astc` o `.png`),
+    /// hornea automáticamente los frames compuestos a un spritesheet RGBA en caché y actualiza su atlas.
+    fn try_bake_animate_for_entity(&mut self, entity_id: &str) -> Result<Option<String>, String> {
+        let (doc, spritemap, raw_img_path) = {
+            let Some(ent) = self.project.stage.entities.iter().find(|e| e.id == entity_id) else {
+                return Ok(None);
+            };
+            let (Some(doc), Some(sm)) = (ent.animate_doc.clone(), ent.animate_spritemap.clone()) else {
+                return Ok(None);
+            };
+            let Some(img_path) = ent.raw_image_path.clone().or_else(|| ent.image_path.clone()) else {
+                return Ok(None);
+            };
+            (doc, sm, img_path)
+        };
+
+        let src_img = load_sprite_image(&raw_img_path)?;
+        let (baked_sheet, baked_atlas) = bake_animate_atlas(&doc, &sm, &src_img)?;
+        let anim_count = baked_atlas.animations.len();
+
+        let baked_dir = self.cache_dir.join("animate_baked");
+        let _ = std::fs::create_dir_all(&baked_dir);
+        let baked_path = baked_dir.join(format!("{}_baked.png", entity_id));
+        baked_sheet
+            .save_with_format(&baked_path, ImageFormat::Png)
+            .map_err(|e| format!("Error guardando spritesheet Animate horneado: {}", e))?;
+
+        if let Some(ent) = self.project.stage.find_mut(entity_id) {
+            ent.image_path = Some(baked_path);
+            ent.atlas = Some(baked_atlas);
+        }
+
+        Ok(Some(format!(
+            "Rig Adobe Animate ensamblado en Rust: {} animaciones listas",
+            anim_count
+        )))
+    }
+
     pub fn import_sprite_png(&mut self, entity_id: &str, path: PathBuf) -> String {
         if !path.exists() {
-            return self.err_response("Archivo PNG no encontrado");
+            return self.err_response("Archivo de textura no encontrado");
         }
-        let dims = image::image_dimensions(&path).ok();
+
+        let is_astc = is_astc_path(&path);
+        let display_png_path = if is_astc {
+            match load_sprite_image(&path) {
+                Ok(decoded) => {
+                    let dec_dir = self.cache_dir.join("decoded_textures");
+                    let _ = std::fs::create_dir_all(&dec_dir);
+                    let out_png = dec_dir.join(format!("{}.png", entity_id));
+                    if let Err(e) = decoded.save_with_format(&out_png, ImageFormat::Png) {
+                        return self.err_response(format!("Error guardando caché ASTC->PNG: {}", e));
+                    }
+                    out_png
+                }
+                Err(e) => return self.err_response(format!("Error decodificando .astc: {}", e)),
+            }
+        } else {
+            path.clone()
+        };
+
+        let dims = read_sprite_dimensions(&display_png_path).or_else(|| read_sprite_dimensions(&path));
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
-            ent.image_path = Some(path);
+            ent.raw_image_path = Some(path);
+            ent.image_path = Some(display_png_path);
             if let Some((w, h)) = dims {
                 if ent.atlas.is_none() && w > 0 && h > 0 {
                     // Ajustar tamaño lógico inicial manteniendo proporción razonable dentro de 1280x720.
@@ -467,31 +677,110 @@ impl EngineSession {
                     ent.height = (h as f32 * norm).max(64.0);
                 }
             }
-            self.ok_response("Hoja PNG vinculada en Rust")
         } else {
-            self.err_response("Objeto de escenario no encontrado")
+            return self.err_response("Objeto de escenario no encontrado");
+        }
+
+        match self.try_bake_animate_for_entity(entity_id) {
+            Ok(Some(msg)) => self.ok_response(msg),
+            Ok(None) => self.ok_response(if is_astc {
+                "Textura .astc decodificada y vinculada en Rust"
+            } else {
+                "Hoja de textura vinculada en Rust"
+            }),
+            Err(e) => self.err_response(e),
         }
     }
 
     pub fn import_sparrow_xml(&mut self, entity_id: &str, path: PathBuf) -> String {
-        match std::fs::read_to_string(&path) {
-            Ok(xml) => match SparrowAtlas::from_xml_str(&xml) {
-                Ok(atlas) => {
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => return self.err_response(format!("No se pudo leer el descriptor: {}", e)),
+        };
+
+        let is_json = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("json"))
+            .unwrap_or(false)
+            || raw.trim_start().starts_with('{')
+            || raw.trim_start().starts_with('[');
+
+        if is_json {
+            match parse_sprite_json_str(&raw) {
+                Ok(DetectedSpriteJson::DirectAtlas(atlas)) => {
                     let count = atlas.animations.len();
                     if let Some(ent) = self.project.stage.find_mut(entity_id) {
                         ent.xml_path = Some(path);
+                        ent.animate_spritemap = None;
+                        ent.animate_doc = None;
+                        ent.animate_json_path = None;
                         ent.atlas = Some(atlas);
-                        self.ok_response(format!(
-                            "XML Sparrow ensamblado automáticamente: {} animaciones",
+                        return self.ok_response(format!(
+                            "Atlas JSON cargado automáticamente: {} animaciones",
                             count
-                        ))
-                    } else {
-                        self.err_response("Objeto de escenario no encontrado")
+                        ));
                     }
+                    return self.err_response("Objeto de escenario no encontrado");
                 }
-                Err(e) => self.err_response(format!("Error XML Sparrow: {}", e)),
-            },
-            Err(e) => self.err_response(format!("No se pudo leer el XML: {}", e)),
+                Ok(DetectedSpriteJson::AnimateSpritemap(sm)) => {
+                    let piece_count = sm.sprites.len();
+                    let fallback = sm.to_fallback_sparrow();
+                    if let Some(ent) = self.project.stage.find_mut(entity_id) {
+                        ent.xml_path = Some(path);
+                        ent.animate_spritemap = Some(sm);
+                        ent.atlas = Some(fallback);
+                    } else {
+                        return self.err_response("Objeto de escenario no encontrado");
+                    }
+                    return match self.try_bake_animate_for_entity(entity_id) {
+                        Ok(Some(msg)) => self.ok_response(msg),
+                        Ok(None) => self.ok_response(format!(
+                            "spritemap1.json cargado ({} piezas). Falta Animation.json o textura para hornear el rig.",
+                            piece_count
+                        )),
+                        Err(e) => self.err_response(e),
+                    };
+                }
+                Ok(DetectedSpriteJson::AnimateDocument(doc)) => {
+                    let anim_count = doc.detected_animations.len();
+                    if let Some(ent) = self.project.stage.find_mut(entity_id) {
+                        ent.animate_json_path = Some(path);
+                        ent.animate_doc = Some(doc);
+                    } else {
+                        return self.err_response("Objeto de escenario no encontrado");
+                    }
+                    return match self.try_bake_animate_for_entity(entity_id) {
+                        Ok(Some(msg)) => self.ok_response(msg),
+                        Ok(None) => self.ok_response(format!(
+                            "Animation.json cargado ({} animaciones). Importa spritemap1.json y la textura (.astc/.png).",
+                            anim_count
+                        )),
+                        Err(e) => self.err_response(e),
+                    };
+                }
+                Err(e) => return self.err_response(e),
+            }
+        }
+
+        match SparrowAtlas::from_xml_str(&raw) {
+            Ok(atlas) => {
+                let count = atlas.animations.len();
+                if let Some(ent) = self.project.stage.find_mut(entity_id) {
+                    ent.xml_path = Some(path);
+                    ent.animate_spritemap = None;
+                    ent.animate_doc = None;
+                    ent.animate_json_path = None;
+                    ent.atlas = Some(atlas);
+                    self.ok_response(format!(
+                        "XML Sparrow ensamblado automáticamente: {} animaciones",
+                        count
+                    ))
+                } else {
+                    self.err_response("Objeto de escenario no encontrado")
+                }
+            }
+            Err(e) => self.err_response(format!("Error XML Sparrow: {}", e)),
         }
     }
 
@@ -505,7 +794,7 @@ impl EngineSession {
                 return self.ok_response("Animación asignada");
             }
         }
-        self.err_response("El objeto no tiene un atlas Sparrow cargado")
+        self.err_response("El objeto no tiene un atlas cargado")
     }
 
     pub fn get_sparrow_frame_info(&self, entity_id: &str, kind_key: &str, elapsed_sec: f32) -> String {
@@ -531,6 +820,7 @@ impl EngineSession {
                 frame_y: f.frame_y,
                 frame_width: f.frame_width,
                 frame_height: f.frame_height,
+                rotated: f.rotated,
             },
             None => SparrowFrameJson {
                 found: false,
@@ -543,6 +833,7 @@ impl EngineSession {
                 frame_y: 0,
                 frame_width: 0,
                 frame_height: 0,
+                rotated: false,
             },
         };
         serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string())
@@ -807,7 +1098,9 @@ impl EngineSession {
                 .duck_on_miss
                 .store(cfg.duck_on_player_miss, Ordering::Relaxed);
         }
-        self.audio_engine.mixer.seek_ms(0.0);
+        self.audio_engine
+            .mixer
+            .start_countdown(self.project.chart.bpm);
         self.audio_engine.mixer.play();
 
         let note_len = self.project.chart.notes.len();
@@ -824,8 +1117,8 @@ impl EngineSession {
             hits: 0,
             misses: 0,
             health: 0.5,
-            last_judgement: "¡Listo!".to_string(),
-            last_beat: -1,
+            last_judgement: "¡Prepárate!".to_string(),
+            last_beat: -10,
             paused: false,
             finished: false,
             last_logs: Vec::new(),
@@ -846,7 +1139,11 @@ impl EngineSession {
                 song_pos_ms: 0.0,
                 duration_ms: 0.0,
                 scroll_speed: 1.8,
+                active_bpm: 120.0,
                 downscroll: false,
+                countdown_stage: -1,
+                countdown_label: String::new(),
+                countdown_progress: 0.0,
                 camera_zoom: 1.0,
                 camera_shake: 0.0,
                 camera_x: 640.0,
@@ -871,10 +1168,33 @@ impl EngineSession {
         };
 
         let dt = dt_sec.clamp(0.0, 0.05);
-        let song_pos_ms = self.audio_engine.mixer.position_ms() - self.project.audio_offset_ms;
-        let bpm = self.project.chart.bpm.max(40.0);
-        let beat_ms = 60_000.0 / bpm;
+        let raw_mixer_ms = self.audio_engine.mixer.position_ms();
+        let in_countdown = raw_mixer_ms < 0.0;
+        let song_pos_ms = if in_countdown {
+            raw_mixer_ms
+        } else {
+            raw_mixer_ms - self.project.audio_offset_ms
+        };
+        let active_bpm = self.project.chart.bpm_at_ms(song_pos_ms.max(0.0)).max(40.0);
+        let beat_ms = 60_000.0 / active_bpm;
         let current_beat = (song_pos_ms / beat_ms).floor() as i32;
+
+        let (countdown_stage, countdown_label, countdown_progress) = if in_countdown {
+            let cd_beat_ms = 60_000.0 / self.project.chart.bpm.max(40.0);
+            let total_cd_ms = cd_beat_ms * 4.0;
+            let elapsed_cd = (total_cd_ms + raw_mixer_ms).clamp(0.0, total_cd_ms - 0.001);
+            let stage = ((elapsed_cd / cd_beat_ms).floor() as i32).clamp(0, 3);
+            let progress = ((elapsed_cd % cd_beat_ms) / cd_beat_ms) as f32;
+            let label = match stage {
+                0 => "3",
+                1 => "2",
+                2 => "1",
+                _ => "¡YA!",
+            };
+            (stage, label.to_string(), progress.clamp(0.0, 1.0))
+        } else {
+            (-1, String::new(), 0.0)
+        };
 
         let mut just_pressed = [
             (lane_just_pressed_mask & 1) != 0,
@@ -1046,6 +1366,7 @@ impl EngineSession {
                         frame_y: f.frame_y,
                         frame_width: f.frame_width,
                         frame_height: f.frame_height,
+                        rotated: f.rotated,
                     });
                 GameplayEntityFrameJson {
                     id: ent.id.clone(),
@@ -1094,7 +1415,11 @@ impl EngineSession {
             song_pos_ms,
             duration_ms: self.project.chart.stats.duration_ms,
             scroll_speed: self.project.chart.speed,
+            active_bpm,
             downscroll: self.project.downscroll,
+            countdown_stage,
+            countdown_label,
+            countdown_progress,
             camera_zoom: self.project.stage.camera_zoom,
             camera_shake: self.project.stage.camera_shake,
             camera_x: self.project.stage.camera_x,

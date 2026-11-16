@@ -231,7 +231,7 @@ impl SparrowAtlas {
 }
 
 /// Elimina el contador numérico final de 3-4 dígitos (ej. `Hero idle0000` -> `Hero idle`).
-fn strip_trailing_frame_digits(name: &str) -> String {
+pub fn strip_trailing_frame_digits(name: &str) -> String {
     let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
     let cleaned = trimmed.trim_end_matches('_').trim();
     if cleaned.is_empty() {

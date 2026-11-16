@@ -38,9 +38,10 @@ oxc_codegen = "0.158.0"
 oxc_span = "0.158.0"
 oxc_semantic = "0.158.0"
 
-# Procesamiento de XML Sparrow, imagenes y skins SVG (MIT / Apache-2.0)
+# Procesamiento de XML Sparrow, imagenes, texturas .astc y skins SVG (MIT / Apache-2.0)
 roxmltree = "0.21.2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+texture2ddecoder = "0.1.2" # Decodificador ASTC 100% Rust puro (MIT OR Apache-2.0)
 resvg = "0.50.0"
 
 # Concurrencia, paralelismo en caliente y serializacion (MIT / Apache-2.0)

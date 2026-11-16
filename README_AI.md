@@ -10,12 +10,12 @@ Cuando pidas cambios o mejoras a una IA sobre este proyecto, indica siempre qué
 
 | Capa | Ruta | Lenguaje | Qué cubre |
 | :--- | :--- | :--- | :--- |
-| Núcleo del motor | `engine/crates/pulse_core` | Rust | Charts `.json`, Sparrow `.xml`, escenario Z-order, SVG `resvg`, compilador en caliente `rayon` |
-| Audio baja latencia | `engine/crates/pulse_audio` | Rust puro (`dlopen` AAudio) | Mezclador 1–3 pistas, decodificación OGG/WAV/MP3, reloj maestro por muestras (sin C++) |
+| Núcleo del motor | `engine/crates/pulse_core` | Rust | `chart.json` completo/export, Sparrow `.xml`, `.astc` (`astc_loader.rs`), `.json` Animate/TexturePacker (`atlas_json.rs`), escenario Z-order, `resvg`, `rayon` |
+| Audio baja latencia | `engine/crates/pulse_audio` | Rust puro (`dlopen` AAudio) | Mezclador 1–3 pistas, decodificación OGG/WAV/MP3, reloj maestro por muestras y cuenta regresiva BPM (`3, 2, 1, ¡YA!`) |
 | Scripting Mods | `engine/crates/pulse_scripting` | Rust + Lua + TS + JS | `mlua` (Lua 5.4), `oxc` (TypeScript), `rquickjs` (QuickJS-NG), puente de comandos |
-| Puente JNI & Sesión | `engine/crates/pulse_android` | Rust (`jni` 0.21) | `EngineSession` + funciones JNI `NativeEngineBridge_*` + caché PNG para Compose |
-| Interfaz Android | `android/app/src/main/kotlin/com/beatforge/studio/` | Kotlin (Jetpack Compose) | `MainActivity`, `StudioViewModel` (`Dispatchers.IO`), Material 3 + Icons Extended, pantallas y popup SVG |
-| SDK y Pruebas | `sdk/` | TypeScript / SVG / Lua / JS | Contratos `.d.ts`, utilidades testeadas con `node:test`, flechas originales |
+| Puente JNI & Sesión | `engine/crates/pulse_android` | Rust (`jni` 0.21) | `EngineSession` + JNI `NativeEngineBridge_*` + caché PNG para `.astc` y rigs `Animation.json` horneados |
+| Interfaz Android | `android/app/src/main/kotlin/com/beatforge/studio/` | Kotlin (Jetpack Compose) | `MainActivity` (SAF Open/CreateDocument), `StudioViewModel` (`Dispatchers.IO`), Material 3 + Icons Extended, overlay countdown y pantallas modulares |
+| SDK y Pruebas | `sdk/` | TypeScript / SVG / Lua / JS | Contratos `.d.ts`, utilidades testeadas con `node:test` (`chart.json`, countdown, `.astc`, `.json`), flechas originales |
 | Compilación APK | `.github/workflows/build-apk.yml` | YAML | Workflow manual `workflow_dispatch` con caché y 2 artefactos Debug |
 
 ---

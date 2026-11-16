@@ -6,6 +6,7 @@
 //! - Posicionamiento con botones de flecha (`nudge`), escala (grande/pequeño), opacidad
 //!   (0.0 a 1.0), rotación, volteo horizontal y orden Z (poner encima o debajo de otro objeto).
 
+use crate::atlas_json::{AnimateDocument, AnimateSpritemap};
 use crate::sparrow::{CharacterAnimKind, SparrowAtlas};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -57,8 +58,14 @@ pub struct StageEntity {
     pub display_name: String,
     pub role: EntityRole,
     pub image_path: Option<PathBuf>,
+    pub raw_image_path: Option<PathBuf>,
     pub xml_path: Option<PathBuf>,
+    pub animate_json_path: Option<PathBuf>,
     pub atlas: Option<SparrowAtlas>,
+    #[serde(skip)]
+    pub animate_spritemap: Option<AnimateSpritemap>,
+    #[serde(skip)]
+    pub animate_doc: Option<AnimateDocument>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -81,8 +88,12 @@ impl StageEntity {
             display_name: display_name.into(),
             role,
             image_path: None,
+            raw_image_path: None,
             xml_path: None,
+            animate_json_path: None,
             atlas: None,
+            animate_spritemap: None,
+            animate_doc: None,
             x: 640.0,
             y: 360.0,
             width: 220.0,

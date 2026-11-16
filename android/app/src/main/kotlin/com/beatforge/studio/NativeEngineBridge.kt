@@ -44,6 +44,51 @@ object NativeEngineBridge {
     external fun nativeRestoreDemoChart(): String
 
     @JvmStatic
+    external fun nativeSetChartBpm(bpm: Double): String
+
+    @JvmStatic
+    external fun nativeExportChartJson(): String
+
+    @JvmStatic
+    external fun nativeUpdateChartDetails(
+        title: String,
+        speed: Double,
+        player1: String,
+        player2: String,
+        gfVersion: String,
+        stage: String,
+        needsVoices: Boolean
+    ): String
+
+    @JvmStatic
+    external fun nativeSetSectionBpm(secIndex: Int, bpm: Double, changeBpm: Boolean): String
+
+    @JvmStatic
+    external fun nativeAddChartEvent(
+        timeMs: Double,
+        name: String,
+        value1: String,
+        value2: String
+    ): String
+
+    @JvmStatic
+    external fun nativeRemoveChartEvent(index: Int): String
+
+    @JvmStatic
+    external fun nativeAddChartSection(mustHit: Boolean): String
+
+    @JvmStatic
+    external fun nativeToggleSectionMustHit(secIndex: Int): String
+
+    @JvmStatic
+    external fun nativeToggleChartNote(
+        secIndex: Int,
+        stepInSec: Int,
+        col0To7: Int,
+        sustainSteps: Int
+    ): String
+
+    @JvmStatic
     external fun nativeImportAudioTrack(slot: Int, path: String): String
 
     @JvmStatic
@@ -58,7 +103,7 @@ object NativeEngineBridge {
     ): String
 
     @JvmStatic
-    external fun nativeToggleAudioPreview(play: Boolean): Boolean
+    external fun nativeToggleAudioPreview(play: Boolean, startMs: Double): Boolean
 
     @JvmStatic
     external fun nativeImportSpriteSheetPng(entityId: String, path: String): String

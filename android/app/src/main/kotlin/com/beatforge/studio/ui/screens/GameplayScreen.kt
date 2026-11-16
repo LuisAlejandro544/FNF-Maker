@@ -46,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -161,14 +163,20 @@ fun GameplayScreen(
                                 srcH = bmp.height
                             }
 
-                            drawImage(
-                                image = bmp,
-                                srcOffset = IntOffset(srcX, srcY),
-                                srcSize = IntSize(srcW, srcH),
-                                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                                dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
-                                alpha = ent.opacity.coerceIn(0f, 1f)
-                            )
+                            withTransform({
+                                if (f != null && f.found && f.rotated) {
+                                    rotate(-90f, pivot = Offset(cx, cy))
+                                }
+                            }) {
+                                drawImage(
+                                    image = bmp,
+                                    srcOffset = IntOffset(srcX, srcY),
+                                    srcSize = IntSize(srcW, srcH),
+                                    dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                                    dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
+                                    alpha = ent.opacity.coerceIn(0f, 1f)
+                                )
+                            }
                         } else {
                             val boxColor = when (ent.role) {
                                 "background" -> Color(0xFF172033)
@@ -416,6 +424,67 @@ fun GameplayScreen(
                     fontSize = 10.sp,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                 )
+            }
+        }
+
+        // Animación central de cuenta regresiva sincronizada con el BPM ("3, 2, 1, ¡YA!")
+        if (step.countdownStage in 0..3 && !step.paused && !step.finished) {
+            val p = step.countdownProgress.coerceIn(0f, 1f)
+            val popScale = if (p < 0.25f) {
+                1.42f - (p / 0.25f) * 0.42f
+            } else {
+                1.0f - (p - 0.25f) * 0.12f
+            }
+            val fadeAlpha = if (p > 0.72f) {
+                (1f - (p - 0.72f) / 0.28f).coerceIn(0f, 1f)
+            } else {
+                1f
+            }
+            val stageColor = when (step.countdownStage) {
+                0 -> StudioColors.AccentCoral
+                1 -> StudioColors.AccentAmber
+                2 -> StudioColors.AccentCyan
+                else -> StudioColors.AccentEmerald
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .scale(popScale)
+                    .alpha(fadeAlpha),
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(modifier = Modifier.size(160.dp)) {
+                    val pulseRadius = (size.minDimension * 0.32f) + (size.minDimension * 0.18f * p)
+                    drawCircle(
+                        color = stageColor.copy(alpha = (1f - p) * 0.55f),
+                        radius = pulseRadius,
+                        style = Stroke(width = 6f)
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = StudioColors.BgPanel.copy(alpha = 0.92f),
+                    border = BorderStroke(2.5.dp, stageColor)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 30.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = step.countdownLabel,
+                            color = stageColor,
+                            fontSize = if (step.countdownStage == 3) 44.sp else 54.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = "${step.activeBpm.roundToInt()} BPM",
+                            color = StudioColors.TextMuted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
 

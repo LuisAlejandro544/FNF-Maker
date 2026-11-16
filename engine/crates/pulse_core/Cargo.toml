@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 roxmltree.workspace = true
 image.workspace = true
+texture2ddecoder.workspace = true
 resvg.workspace = true
 rayon.workspace = true
 serde.workspace = true

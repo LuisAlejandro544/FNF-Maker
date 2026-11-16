@@ -1,7 +1,7 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/theme/StudioTheme.kt
-// Propósito: Paleta oscura de estudio de producción (Material 3 Dark) para BeatForge Studio.
-// Define colores de alto contraste pensados para pantallas horizontales de teléfono,
-// preservando legibilidad en editores de sprites, líneas de tiempo, scripts y gameplay.
+// Propósito: Paleta gráfica de estudio hardware (carbón mate, grafito cálido, naranja estudio,
+// ámbar y verde limpio) diseñada para evitar el aspecto genérico azul-neón y ofrecer máxima
+// legibilidad en pantallas horizontales de teléfonos.
 
 package com.beatforge.studio.ui.theme
 
@@ -15,42 +15,43 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 object StudioColors {
-    val BgDark = Color(0xFF0B0F17)
-    val BgPanel = Color(0xFF131A26)
-    val BgCard = Color(0xFF1A2334)
-    val BgElevated = Color(0xFF222D42)
-    val BorderSubtle = Color(0xFF2D3A52)
+    val BgDark = Color(0xFF101012)
+    val BgPanel = Color(0xFF18181B)
+    val BgCard = Color(0xFF212126)
+    val BgElevated = Color(0xFF2B2B32)
+    val BorderSubtle = Color(0xFF3A3A44)
 
-    val TextPrimary = Color(0xFFF1F5F9)
-    val TextMuted = Color(0xFF94A3B8)
+    val TextPrimary = Color(0xFFF4F4F5)
+    val TextMuted = Color(0xFFA1A1AA)
 
-    val AccentCyan = Color(0xFF22D3EE)
-    val AccentEmerald = Color(0xFF34D399)
-    val AccentIndigo = Color(0xFF818CF8)
-    val AccentAmber = Color(0xFFFBBF24)
-    val AccentCoral = Color(0xFFFB7185)
-    val AccentPurple = Color(0xFFC084FC)
+    // Acentos cálidos y sobrios estilo estudio musical / consola DAW
+    val AccentCyan = Color(0xFFF97316)     // Acento principal: Naranja Estudio
+    val AccentEmerald = Color(0xFF10B981)  // Verde acción / Jugar / Válido
+    val AccentIndigo = Color(0xFFF59E0B)   // Ámbar dorado / Capas / Selección
+    val AccentAmber = Color(0xFFEAB308)    // Oro cálido / BPM / Sprites
+    val AccentCoral = Color(0xFFEF4444)    // Rojo limpio / Error / Oponente
+    val AccentPurple = Color(0xFFEC4899)   // Magenta estudio / Skins / Scripts
 
-    // Colores clásicos de los 4 carriles rítmicos (Izq, Abajo, Arriba, Der)
+    // Colores clásicos de las 4 flechas rítmicas (Izq, Abajo, Arriba, Der)
     val LaneColors = listOf(
-        Color(0xFFC084FC),
-        Color(0xFF22D3EE),
-        Color(0xFF34D399),
-        Color(0xFFFB7185)
+        Color(0xFFD946EF),
+        Color(0xFF06B6D4),
+        Color(0xFF22C55E),
+        Color(0xFFF43F5E)
     )
 }
 
 private val BeatForgeDarkScheme = darkColorScheme(
     primary = StudioColors.AccentCyan,
-    onPrimary = Color(0xFF041C24),
-    primaryContainer = Color(0xFF123847),
-    onPrimaryContainer = StudioColors.AccentCyan,
+    onPrimary = Color(0xFF1F0C00),
+    primaryContainer = Color(0xFF3D1D08),
+    onPrimaryContainer = Color(0xFFFDBA74),
     secondary = StudioColors.AccentEmerald,
-    onSecondary = Color(0xFF042419),
-    secondaryContainer = Color(0xFF133A2E),
-    onSecondaryContainer = StudioColors.AccentEmerald,
-    tertiary = StudioColors.AccentIndigo,
-    onTertiary = Color(0xFF14163D),
+    onSecondary = Color(0xFF032116),
+    secondaryContainer = Color(0xFF0F3628),
+    onSecondaryContainer = Color(0xFF6EE7B7),
+    tertiary = StudioColors.AccentAmber,
+    onTertiary = Color(0xFF231800),
     background = StudioColors.BgDark,
     onBackground = StudioColors.TextPrimary,
     surface = StudioColors.BgPanel,
@@ -59,12 +60,12 @@ private val BeatForgeDarkScheme = darkColorScheme(
     onSurfaceVariant = StudioColors.TextMuted,
     outline = StudioColors.BorderSubtle,
     error = StudioColors.AccentCoral,
-    onError = Color(0xFF2B0710)
+    onError = Color(0xFF290505)
 )
 
 private val BeatForgeTypography = Typography(
     titleLarge = TextStyle(
-        fontSize = 20.sp,
+        fontSize = 19.sp,
         fontWeight = FontWeight.Bold,
         color = StudioColors.TextPrimary
     ),

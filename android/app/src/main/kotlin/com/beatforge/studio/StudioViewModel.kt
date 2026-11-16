@@ -55,18 +55,78 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private var pendingImportKind: ImportKind? = null
     private var launchPickerCallback: ((Array<String>) -> Unit)? = null
+    private var launchExportChartCallback: ((String) -> Unit)? = null
 
     init {
+        _uiState.update { it.copy(selectedTier = detectOptimalDeviceTier()) }
         initializeEngine()
+    }
+
+    /**
+     * Detecta automáticamente la capacidad del teléfono (arquitectura 32/64 bits y RAM total)
+     * para elegir el límite óptimo de texturas durante la compilación en caliente sin molestar al usuario.
+     */
+    private fun detectOptimalDeviceTier(): DeviceTier {
+        return try {
+            val app = getApplication<Application>()
+            val am = app.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            val memInfo = android.app.ActivityManager.MemoryInfo()
+            am?.getMemoryInfo(memInfo)
+            val totalGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
+            val is32BitOnly = android.os.Build.SUPPORTED_64_BIT_ABIS.isEmpty()
+
+            when {
+                is32BitOnly || totalGb <= 3.5 -> DeviceTier.LowRam32Bit
+                totalGb >= 7.5 -> DeviceTier.HighQuality
+                else -> DeviceTier.Balanced
+            }
+        } catch (_: Throwable) {
+            DeviceTier.Balanced
+        }
     }
 
     fun registerPickerLauncher(launcher: (Array<String>) -> Unit) {
         launchPickerCallback = launcher
     }
 
+    fun registerExportChartLauncher(launcher: (String) -> Unit) {
+        launchExportChartCallback = launcher
+    }
+
     fun requestImport(kind: ImportKind) {
         pendingImportKind = kind
         launchPickerCallback?.invoke(kind.mimeTypes)
+    }
+
+    fun requestExportChartJson() {
+        val safeTitle = _uiState.value.snapshot.chart.title
+            .lowercase()
+            .replace(Regex("[^a-z0-9_-]+"), "_")
+            .trim('_')
+            .ifBlank { "chart" }
+        launchExportChartCallback?.invoke("$safeTitle.json")
+    }
+
+    fun exportChartToUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            setBusy(true)
+            try {
+                val jsonText = NativeEngineBridge.nativeExportChartJson()
+                val os = getApplication<Application>().contentResolver.openOutputStream(uri)
+                if (os == null) {
+                    postBanner("No se pudo abrir destino para exportar chart.json", isError = true)
+                } else {
+                    os.use { stream ->
+                        stream.write(jsonText.toByteArray(Charsets.UTF_8))
+                        stream.flush()
+                    }
+                    postBanner("chart.json completo exportado correctamente", isError = false)
+                }
+            } catch (e: Exception) {
+                postBanner("Error exportando chart.json: ${e.message}", isError = true)
+            }
+            setBusy(false)
+        }
     }
 
     fun onUriPicked(uri: Uri) {
@@ -97,7 +157,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             applyActionJson(rawJson)
             if (kind is ImportKind.ArrowSvg) {
                 reloadArrowBitmaps()
-            } else if (kind is ImportKind.SpritePng) {
+            } else if (kind is ImportKind.SpritePng || kind is ImportKind.SparrowXml) {
                 reloadEntityBitmaps(_uiState.value.snapshot.stageEntities)
             }
             setBusy(false)
@@ -150,10 +210,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(arrowSkinDialogOpen = open) }
     }
 
-    fun setDeviceTier(tier: DeviceTier) {
-        _uiState.update { it.copy(selectedTier = tier) }
-    }
-
     fun dismissBanner() {
         _uiState.update { it.copy(statusBanner = null) }
     }
@@ -183,6 +239,80 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun setChartBpm(bpm: Double) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(NativeEngineBridge.nativeSetChartBpm(bpm), silentOk = true)
+        }
+    }
+
+    fun updateChartDetails(
+        title: String,
+        speed: Double,
+        player1: String,
+        player2: String,
+        gfVersion: String,
+        stage: String,
+        needsVoices: Boolean
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(
+                NativeEngineBridge.nativeUpdateChartDetails(
+                    title,
+                    speed,
+                    player1,
+                    player2,
+                    gfVersion,
+                    stage,
+                    needsVoices
+                )
+            )
+        }
+    }
+
+    fun setSectionBpm(secIndex: Int, bpm: Double, changeBpm: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(
+                NativeEngineBridge.nativeSetSectionBpm(secIndex, bpm, changeBpm),
+                silentOk = true
+            )
+        }
+    }
+
+    fun addChartEvent(timeMs: Double, name: String, value1: String, value2: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(
+                NativeEngineBridge.nativeAddChartEvent(timeMs, name, value1, value2)
+            )
+        }
+    }
+
+    fun removeChartEvent(index: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(NativeEngineBridge.nativeRemoveChartEvent(index), silentOk = true)
+        }
+    }
+
+    fun addChartSection(mustHit: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(NativeEngineBridge.nativeAddChartSection(mustHit))
+        }
+    }
+
+    fun toggleSectionMustHit(secIndex: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(NativeEngineBridge.nativeToggleSectionMustHit(secIndex), silentOk = true)
+        }
+    }
+
+    fun toggleChartNote(secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            applyActionJson(
+                NativeEngineBridge.nativeToggleChartNote(secIndex, stepInSec, col0To7, sustainSteps),
+                silentOk = true
+            )
+        }
+    }
+
     fun removeAudioTrack(slot: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             applyActionJson(NativeEngineBridge.nativeRemoveAudioTrack(slot))
@@ -196,10 +326,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun toggleAudioPreview() {
+    fun toggleAudioPreview(startMs: Double = 0.0) {
         viewModelScope.launch(Dispatchers.IO) {
             val nextPlay = !_uiState.value.audioPreviewPlaying
-            val playing = NativeEngineBridge.nativeToggleAudioPreview(nextPlay)
+            val playing = NativeEngineBridge.nativeToggleAudioPreview(nextPlay, startMs)
             _uiState.update { it.copy(audioPreviewPlaying = playing) }
         }
     }

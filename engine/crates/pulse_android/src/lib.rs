@@ -114,6 +114,136 @@ mod jni_exports {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetChartBpm<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        bpm: jdouble,
+    ) -> JString<'local> {
+        let json = session().lock().set_chart_bpm(bpm);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeExportChartJson<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().export_chart_json();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateChartDetails<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        title: JString<'local>,
+        speed: jdouble,
+        player1: JString<'local>,
+        player2: JString<'local>,
+        gf_version: JString<'local>,
+        stage: JString<'local>,
+        needs_voices: jboolean,
+    ) -> JString<'local> {
+        let t = read_str(&mut env, &title);
+        let p1 = read_str(&mut env, &player1);
+        let p2 = read_str(&mut env, &player2);
+        let gf = read_str(&mut env, &gf_version);
+        let st = read_str(&mut env, &stage);
+        let json = session().lock().update_chart_details(
+            &t,
+            speed,
+            &p1,
+            &p2,
+            &gf,
+            &st,
+            needs_voices != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetSectionBpm<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        sec_index: jint,
+        bpm: jdouble,
+        change_bpm: jboolean,
+    ) -> JString<'local> {
+        let json = session().lock().set_section_bpm(
+            sec_index.max(0) as usize,
+            bpm,
+            change_bpm != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddChartEvent<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        time_ms: jdouble,
+        name: JString<'local>,
+        value1: JString<'local>,
+        value2: JString<'local>,
+    ) -> JString<'local> {
+        let n = read_str(&mut env, &name);
+        let v1 = read_str(&mut env, &value1);
+        let v2 = read_str(&mut env, &value2);
+        let json = session().lock().add_chart_event(time_ms, &n, &v1, &v2);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRemoveChartEvent<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        index: jint,
+    ) -> JString<'local> {
+        let json = session().lock().remove_chart_event(index.max(0) as usize);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddChartSection<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        must_hit: jboolean,
+    ) -> JString<'local> {
+        let json = session().lock().add_chart_section(must_hit != 0);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeToggleSectionMustHit<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        sec_index: jint,
+    ) -> JString<'local> {
+        let json = session()
+            .lock()
+            .toggle_section_must_hit(sec_index.max(0) as usize);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeToggleChartNote<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        sec_index: jint,
+        step_in_sec: jint,
+        col_0_to_7: jint,
+        sustain_steps: jint,
+    ) -> JString<'local> {
+        let json = session().lock().toggle_chart_note(
+            sec_index.max(0) as usize,
+            step_in_sec.max(0) as u32,
+            col_0_to_7.clamp(0, 7) as u8,
+            sustain_steps.max(0) as u32,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportAudioTrack<'local>(
         mut env: JNIEnv<'local>,
         _cls: JClass<'local>,
@@ -158,6 +288,7 @@ mod jni_exports {
         _env: JNIEnv,
         _cls: JClass,
         play: jboolean,
+        start_ms: jdouble,
     ) -> jboolean {
         let mut guard = session().lock();
         if play != 0 {
@@ -168,7 +299,11 @@ mod jni_exports {
                 .mixer
                 .use_demo_synth
                 .store(!any_audio, std::sync::atomic::Ordering::Relaxed);
-            guard.audio_engine.mixer.seek_ms(0.0);
+            guard.audio_engine.mixer.demo_bpm_bits.store(
+                (guard.project.chart.bpm as f32).to_bits(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            guard.audio_engine.mixer.seek_ms(start_ms.max(0.0));
             guard.audio_engine.mixer.play();
             1
         } else {

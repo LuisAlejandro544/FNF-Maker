@@ -160,7 +160,7 @@ where
         .par_iter()
         .filter_map(|entity| {
             let path = entity.image_path.as_ref()?;
-            let img = image::open(path).ok()?;
+            let img = crate::astc_loader::load_sprite_image(path).ok()?;
             let orig_w = img.width();
             let orig_h = img.height();
             let largest = orig_w.max(orig_h);
