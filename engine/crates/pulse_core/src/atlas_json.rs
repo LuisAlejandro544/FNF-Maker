@@ -7,7 +7,7 @@
 //!    limpio en caché y genera un `SparrowAtlas` listo para `SpriteLab` y `Gameplay`.
 
 use crate::sparrow::{AnimSet, SparrowAtlas, SparrowFrame, strip_trailing_frame_digits};
-use image::{DynamicImage, GenericImageView, RgbaImage};
+use image::{DynamicImage, RgbaImage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -463,44 +463,55 @@ fn parse_timeline(tl: &Value) -> AnimateTimeline {
                     let mut elements = Vec::new();
                     if let Some(el_arr) = fr.get("E").or_else(|| fr.get("elements")).and_then(|v| v.as_array()) {
                         for el in el_arr {
-                            if let Some(si) = el.get("SI").or_else(|| el.get("SPRITE_Instance")) {
-                                if let Some(sp_name) = si.get("N").or_else(|| si.get("name")).and_then(|v| v.as_str()) {
-                                    let matrix = parse_matrix(si);
+                            // `ASI` / `ATLAS_SPRITE_instance` referencia una pieza atómica en `spritemap1.json`
+                            if let Some(asi) = el.get("ASI").or_else(|| el.get("ATLAS_SPRITE_instance")).or_else(|| el.get("SPRITE_Instance")) {
+                                if let Some(sp_name) = asi.get("N").or_else(|| asi.get("name")).and_then(|v| v.as_str()) {
+                                    let matrix = parse_matrix(asi);
                                     elements.push(AnimateElement::Sprite {
                                         name: sp_name.to_string(),
                                         matrix,
                                     });
                                 }
-                            } else if let Some(asi) = el.get("ASI").or_else(|| el.get("ATLAS_SPRITE_instance")) {
-                                let sym_name = asi
-                                    .get("N")
-                                    .or_else(|| asi.get("name"))
-                                    .or_else(|| asi.get("SN"))
+                            // `SI` / `SYMBOL_Instance` referencia un símbolo anidado en `SD.S` (usa `SN` o `SYMBOL_name`)
+                            } else if let Some(si) = el.get("SI").or_else(|| el.get("SYMBOL_Instance")) {
+                                let sym_name = si
+                                    .get("SN")
+                                    .or_else(|| si.get("SYMBOL_name"))
+                                    .or_else(|| si.get("N"))
+                                    .or_else(|| si.get("name"))
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
                                 if !sym_name.is_empty() {
-                                    let matrix = parse_matrix(asi);
-                                    let lp = asi
-                                        .get("LP")
-                                        .or_else(|| asi.get("loop"))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("LP");
-                                    let loop_mode = match lp.to_ascii_uppercase().as_str() {
-                                        "PO" | "PLAYONCE" | "PLAY_ONCE" => SymbolLoopMode::PlayOnce,
-                                        "SF" | "SINGLEFRAME" | "SINGLE_FRAME" => SymbolLoopMode::SingleFrame,
-                                        _ => SymbolLoopMode::Loop,
-                                    };
-                                    let first_frame = asi
-                                        .get("FF")
-                                        .or_else(|| asi.get("firstFrame"))
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0) as usize;
-                                    elements.push(AnimateElement::Symbol {
-                                        name: sym_name.to_string(),
-                                        matrix,
-                                        loop_mode,
-                                        first_frame,
-                                    });
+                                    let matrix = parse_matrix(si);
+                                    // Si `SI` no tiene `SN` pero sí `N` sin símbolo (algunos exportadores antiguos), permitir sprite fallback
+                                    if si.get("SN").is_none() && si.get("SYMBOL_name").is_none() && si.get("LP").is_none() && si.get("ST").is_none() {
+                                        elements.push(AnimateElement::Sprite {
+                                            name: sym_name.to_string(),
+                                            matrix,
+                                        });
+                                    } else {
+                                        let lp = si
+                                            .get("LP")
+                                            .or_else(|| si.get("loop"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("LP");
+                                        let loop_mode = match lp.to_ascii_uppercase().as_str() {
+                                            "PO" | "PLAYONCE" | "PLAY_ONCE" => SymbolLoopMode::PlayOnce,
+                                            "SF" | "SINGLEFRAME" | "SINGLE_FRAME" => SymbolLoopMode::SingleFrame,
+                                            _ => SymbolLoopMode::Loop,
+                                        };
+                                        let first_frame = si
+                                            .get("FF")
+                                            .or_else(|| si.get("firstFrame"))
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0) as usize;
+                                        elements.push(AnimateElement::Symbol {
+                                            name: sym_name.to_string(),
+                                            matrix,
+                                            loop_mode,
+                                            first_frame,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -527,16 +538,43 @@ fn parse_timeline(tl: &Value) -> AnimateTimeline {
 }
 
 fn parse_matrix(obj: &Value) -> Affine2D {
-    if let Some(m3d) = obj.get("M3D").or_else(|| obj.get("Matrix3D")).and_then(|v| v.as_array()) {
-        if m3d.len() >= 14 {
-            let f = |i: usize| m3d.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    // Formato Better Texture Atlas (BTA 1.1.0+): `MX: [a, b, c, d, tx, ty]`
+    if let Some(mx) = obj.get("MX").and_then(|v| v.as_array()) {
+        if mx.len() >= 6 {
+            let f = |i: usize| mx.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             return Affine2D {
                 a: f(0),
                 b: f(1),
-                c: f(4),
-                d: f(5),
-                tx: f(12),
-                ty: f(13),
+                c: f(2),
+                d: f(3),
+                tx: f(4),
+                ty: f(5),
+            };
+        }
+    }
+    // Formato estándar Adobe Animate: `M3D` o `Matrix3D` como arreglo de 16 floats column-major
+    if let Some(m3d_val) = obj.get("M3D").or_else(|| obj.get("Matrix3D")) {
+        if let Some(m3d) = m3d_val.as_array() {
+            if m3d.len() >= 14 {
+                let f = |i: usize| m3d.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                return Affine2D {
+                    a: f(0),
+                    b: f(1),
+                    c: f(4),
+                    d: f(5),
+                    tx: f(12),
+                    ty: f(13),
+                };
+            }
+        } else if let Some(mobj) = m3d_val.as_object() {
+            let f = |k: &str, def: f32| mobj.get(k).and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(def);
+            return Affine2D {
+                a: f("m00", 1.0),
+                b: f("m01", 0.0),
+                c: f("m10", 0.0),
+                d: f("m11", 1.0),
+                tx: f("m30", 0.0),
+                ty: f("m31", 0.0),
             };
         }
     }
@@ -553,6 +591,19 @@ fn parse_matrix(obj: &Value) -> Affine2D {
             };
         }
     }
+    // Instancias simplificadas con `POS: { x, y }`
+    if let Some(pos) = obj.get("POS").and_then(|v| v.as_object()) {
+        let tx = pos.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        let ty = pos.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        return Affine2D {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx,
+            ty,
+        };
+    }
     Affine2D::identity()
 }
 
@@ -566,7 +617,7 @@ fn extract_animation_segments<'a>(
     main_tl: &'a AnimateTimeline,
     symbols: &'a HashMap<String, AnimateTimeline>,
 ) -> Vec<(String, AnimSegmentSource<'a>)> {
-    // 1. Buscar etiquetas de frame (`N`) en el timeline principal (formato clásico Animate FNF).
+    // 1. Buscar etiquetas de frame (`N`) en el timeline principal (formato clásico y BTA Animate).
     let mut labeled: Vec<(usize, usize, String)> = Vec::new();
     for layer in &main_tl.layers {
         for fr in &layer.frames {
@@ -581,8 +632,13 @@ fn extract_animation_segments<'a>(
         for i in 0..labeled.len() {
             let (start, own_end, ref lbl) = labeled[i];
             let next_start = labeled.get(i + 1).map(|x| x.0).unwrap_or(main_tl.total_frames);
-            let end = own_end.max(next_start).min(main_tl.total_frames);
-            let len = end.saturating_sub(start).clamp(1, 72);
+            // Si el label dura 1 frame actúa como marcador hasta la siguiente etiqueta; si tiene DU > 1 respeta su duración sin invadir la siguiente.
+            let end = if own_end <= start + 1 {
+                next_start.min(main_tl.total_frames)
+            } else {
+                own_end.min(next_start).min(main_tl.total_frames)
+            };
+            let len = end.saturating_sub(start).clamp(1, 60);
             out.push((lbl.clone(), AnimSegmentSource::MainRange { start, len }));
         }
         return out;
@@ -973,12 +1029,12 @@ mod tests {
         let sm_raw = r#"{
             "ATLAS": {
                 "SPRITES": [
-                    { "SPRITE": { "name": "0000", "x": 0, "y": 0, "w": 8, "h": 8, "rotated": false } }
+                    { "SPRITE": { "name": "0", "x": 0, "y": 0, "w": 8, "h": 8, "rotated": false } }
                 ]
             }
         }"#;
         let anim_raw = r#"{
-            "MD": { "FRT": 24 },
+            "MD": { "V": "BTA 1.1.0", "FRT": 24 },
             "AN": {
                 "N": "TestRig",
                 "TL": {
@@ -986,13 +1042,38 @@ mod tests {
                         {
                             "LN": "Labels",
                             "FR": [
-                                { "I": 0, "DU": 2, "N": "idle", "E": [
-                                    { "SI": { "N": "0000", "M3D": [1,0,0,0, 0,1,0,0, 0,0,1,0, 10,12,0,1] } }
+                                { "I": 0, "DU": 2, "N": "idle", "E": [] }
+                            ]
+                        },
+                        {
+                            "LN": "Anim",
+                            "FR": [
+                                { "I": 0, "DU": 2, "E": [
+                                    { "SI": { "SN": "PartIdle", "FF": 0, "LP": "LP", "MX": [1,0,0,1, 10,12] } }
                                 ]}
                             ]
                         }
                     ]
                 }
+            },
+            "SD": {
+                "S": [
+                    {
+                        "SN": "PartIdle",
+                        "TL": {
+                            "L": [
+                                {
+                                    "LN": "Sprite",
+                                    "FR": [
+                                        { "I": 0, "DU": 2, "E": [
+                                            { "ASI": { "N": "0", "MX": [1,0,0,1, 4,6] } }
+                                        ]}
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
             }
         }"#;
 

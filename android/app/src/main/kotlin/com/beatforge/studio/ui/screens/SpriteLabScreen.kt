@@ -204,13 +204,20 @@ fun SpriteLabScreen(
                                 color = if (entity.xmlPath != null) StudioColors.AccentCyan else StudioColors.TextMuted,
                                 fontSize = 11.sp
                             )
-                            if (entity.animateJsonPath != null || (entity.xmlPath?.contains("spritemap", ignoreCase = true) == true)) {
+                            val xmlIsJson = entity.xmlPath?.endsWith(".json", ignoreCase = true) == true
+                            if (entity.animateJsonPath != null || xmlIsJson) {
                                 Text(
                                     text = "Animate Rig: ${entity.animateJsonPath?.substringAfterLast('/') ?: "Falta importar Animation.json"}",
                                     color = if (entity.animateJsonPath != null) StudioColors.AccentAmber else StudioColors.TextMuted,
                                     fontSize = 11.sp
                                 )
                             }
+                            Text(
+                                text = "Compatible con .xml Sparrow, .json y 3 archivos Animate (Animation.json + spritemap1.json + PNG/.astc)",
+                                color = StudioColors.TextMuted,
+                                fontSize = 10.sp,
+                                lineHeight = 13.sp
+                            )
                         }
                     }
 
@@ -365,24 +372,53 @@ fun SpriteLabScreen(
                             srcY = (currentFrame.y * scaleY).roundToInt().coerceIn(0, bmp.height - 1)
                             srcW = (currentFrame.width * scaleX).roundToInt().coerceIn(1, bmp.width - srcX)
                             srcH = (currentFrame.height * scaleY).roundToInt().coerceIn(1, bmp.height - srcY)
+
+                            val visW = if (currentFrame.rotated) currentFrame.height else currentFrame.width
+                            val visH = if (currentFrame.rotated) currentFrame.width else currentFrame.height
+                            val logicalW = currentFrame.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                            val logicalH = currentFrame.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                            val fit = min((size.width * 0.85f) / logicalW, (size.height * 0.85f) / logicalH)
+
+                            val boxW = logicalW * fit
+                            val boxH = logicalH * fit
+                            val boxLeft = (size.width - boxW) / 2f
+                            val boxTop = (size.height - boxH) / 2f
+
+                            val visDrawW = visW * fit
+                            val visDrawH = visH * fit
+                            val visLeft = boxLeft + (-currentFrame.frameX * fit)
+                            val visTop = boxTop + (-currentFrame.frameY * fit)
+                            val centerX = visLeft + visDrawW / 2f
+                            val centerY = visTop + visDrawH / 2f
+
+                            val dstW = (currentFrame.width * fit).roundToInt().coerceAtLeast(1)
+                            val dstH = (currentFrame.height * fit).roundToInt().coerceAtLeast(1)
+                            val dstX = (centerX - dstW / 2f).roundToInt()
+                            val dstY = (centerY - dstH / 2f).roundToInt()
+
+                            withTransform({
+                                if (currentFrame.rotated) {
+                                    rotate(-90f, pivot = Offset(centerX, centerY))
+                                }
+                            }) {
+                                drawImage(
+                                    image = bmp,
+                                    srcOffset = IntOffset(srcX, srcY),
+                                    srcSize = IntSize(srcW, srcH),
+                                    dstOffset = IntOffset(dstX, dstY),
+                                    dstSize = IntSize(dstW, dstH)
+                                )
+                            }
                         } else {
                             srcX = 0
                             srcY = 0
                             srcW = bmp.width
                             srcH = bmp.height
-                        }
-
-                        val fit = min((size.width * 0.85f) / srcW, (size.height * 0.85f) / srcH)
-                        val dstW = (srcW * fit).roundToInt().coerceAtLeast(1)
-                        val dstH = (srcH * fit).roundToInt().coerceAtLeast(1)
-                        val dstX = ((size.width - dstW) / 2f).roundToInt()
-                        val dstY = ((size.height - dstH) / 2f).roundToInt()
-
-                        withTransform({
-                            if (currentFrame.found && currentFrame.rotated) {
-                                rotate(-90f, pivot = Offset(size.width / 2f, size.height / 2f))
-                            }
-                        }) {
+                            val fit = min((size.width * 0.85f) / srcW, (size.height * 0.85f) / srcH)
+                            val dstW = (srcW * fit).roundToInt().coerceAtLeast(1)
+                            val dstH = (srcH * fit).roundToInt().coerceAtLeast(1)
+                            val dstX = ((size.width - dstW) / 2f).roundToInt()
+                            val dstY = ((size.height - dstH) / 2f).roundToInt()
                             drawImage(
                                 image = bmp,
                                 srcOffset = IntOffset(srcX, srcY),

@@ -96,18 +96,23 @@ impl SparrowAtlas {
     pub fn from_xml_str(xml_text: &str) -> Result<Self, SparrowError> {
         let doc = roxmltree::Document::parse(xml_text)?;
         let root = doc.root_element();
-        if root.tag_name().name() != "TextureAtlas" {
+        let root_name = root.tag_name().name();
+        if !matches!(root_name, "TextureAtlas" | "Atlas" | "ATLAS" | "spritemap") {
             return Err(SparrowError::MissingAtlasRoot);
         }
 
         let image_path_hint = root
             .attribute("imagePath")
+            .or_else(|| root.attribute("image"))
             .unwrap_or("spritesheet.png")
             .to_string();
 
         let mut grouped: BTreeMap<String, Vec<SparrowFrame>> = BTreeMap::new();
 
-        for node in root.children().filter(|n| n.is_element() && n.tag_name().name() == "SubTexture") {
+        for node in root
+            .descendants()
+            .filter(|n| n.is_element() && matches!(n.tag_name().name(), "SubTexture" | "SPRITE" | "sprite" | "Sprite"))
+        {
             let raw_name = match node.attribute("name") {
                 Some(n) if !n.trim().is_empty() => n.trim().to_string(),
                 _ => continue,
@@ -115,16 +120,18 @@ impl SparrowAtlas {
 
             let x = parse_u32(node.attribute("x"));
             let y = parse_u32(node.attribute("y"));
-            let width = parse_u32(node.attribute("width")).max(1);
-            let height = parse_u32(node.attribute("height")).max(1);
+            let width = parse_u32(node.attribute("width").or_else(|| node.attribute("w"))).max(1);
+            let height = parse_u32(node.attribute("height").or_else(|| node.attribute("h"))).max(1);
             let frame_x = parse_i32(node.attribute("frameX"));
             let frame_y = parse_i32(node.attribute("frameY"));
-            let frame_width = parse_u32(node.attribute("frameWidth")).max(width);
-            let frame_height = parse_u32(node.attribute("frameHeight")).max(height);
             let rotated = node
                 .attribute("rotated")
-                .map(|r| r.eq_ignore_ascii_case("true"))
+                .map(|r| r.eq_ignore_ascii_case("true") || r.trim() == "1")
                 .unwrap_or(false);
+            let visual_w = if rotated { height } else { width };
+            let visual_h = if rotated { width } else { height };
+            let frame_width = parse_u32(node.attribute("frameWidth")).max(visual_w);
+            let frame_height = parse_u32(node.attribute("frameHeight")).max(visual_h);
 
             let prefix = strip_trailing_frame_digits(&raw_name);
 

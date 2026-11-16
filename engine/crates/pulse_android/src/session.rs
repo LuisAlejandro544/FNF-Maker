@@ -620,7 +620,7 @@ impl EngineSession {
         };
 
         let src_img = load_sprite_image(&raw_img_path)?;
-        let (baked_sheet, baked_atlas) = bake_animate_atlas(&doc, &sm, &src_img)?;
+        let (baked_sheet, baked_atlas) = bake_animate_atlas(&doc, &spritemap, &src_img)?;
         let anim_count = baked_atlas.animations.len();
 
         let baked_dir = self.cache_dir.join("animate_baked");

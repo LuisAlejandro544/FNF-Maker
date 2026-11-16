@@ -365,13 +365,43 @@ export function detectSpriteJsonFormat(rawJson: string): SpriteJsonFormat {
   if (parsed?.ATLAS?.SPRITES && Array.isArray(parsed.ATLAS.SPRITES)) {
     return 'animate_spritemap';
   }
-  if (parsed?.AN && parsed?.SD) {
+  if ((parsed?.AN || parsed?.ANIMATION) && (parsed?.SD || parsed?.AN?.TL || parsed?.ANIMATION?.TIMELINE)) {
     return 'animate_animation';
   }
   if (parsed?.frames && typeof parsed.frames === 'object') {
     return Array.isArray(parsed.frames) ? 'texture_packer_array' : 'texture_packer_hash';
   }
   throw new Error('JSON de sprites no reconocido (esperado TexturePacker, spritemap1.json o Animation.json)');
+}
+
+export interface TrimmedFramePlacement {
+  visualWidth: number;
+  visualHeight: number;
+  logicalWidth: number;
+  logicalHeight: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+export function computeTrimmedFramePlacement(frame: {
+  width: number;
+  height: number;
+  frameX: number;
+  frameY: number;
+  frameWidth: number;
+  frameHeight: number;
+  rotated: boolean;
+}): TrimmedFramePlacement {
+  const visualWidth = frame.rotated ? frame.height : frame.width;
+  const visualHeight = frame.rotated ? frame.width : frame.height;
+  return {
+    visualWidth,
+    visualHeight,
+    logicalWidth: Math.max(frame.frameWidth, visualWidth, 1),
+    logicalHeight: Math.max(frame.frameHeight, visualHeight, 1),
+    offsetX: -frame.frameX,
+    offsetY: -frame.frameY,
+  };
 }
 
 export function autoBindSparrowPrefixes(prefixes: string[]): SparrowBindings {

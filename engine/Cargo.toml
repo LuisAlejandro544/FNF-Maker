@@ -17,7 +17,6 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-authors = ["BeatForge Studio Contributors"]
 
 [workspace.dependencies]
 # Audio de baja latencia 100% en Rust puro para Android via C ABI de AAudio (dlopen, cero C++)

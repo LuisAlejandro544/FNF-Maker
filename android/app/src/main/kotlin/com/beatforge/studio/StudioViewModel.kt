@@ -442,7 +442,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun startCompileAndPlay() {
         viewModelScope.launch(Dispatchers.IO) {
             if (_uiState.value.audioPreviewPlaying) {
-                NativeEngineBridge.nativeToggleAudioPreview(false)
+                NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
             }
             _uiState.update {
                 it.copy(

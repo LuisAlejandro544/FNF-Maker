@@ -52,10 +52,11 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 
 ### C. Ensamblado de Spritesheets y Formatos Exóticos (`.png`, `.astc`, `.xml`, `.json`)
 - **Imágenes (`.png`, `.jpg`, `.webp`, `.astc`)**: `astc_loader.rs` valida la cabecera mágica `[0x13, 0xAB, 0xA1, 0x5C]`, decodifica bloques `.astc` vía `texture2ddecoder::decode_astc` a `RGBA8` y `session.rs` guarda una copia PNG en `cacheDir/decoded_textures/<id>.png` para que Compose la cargue con `BitmapFactory` y `HotCompile` pueda reescalarla sin ruta extra.
-- **Atlas (`.xml` y `.json`)**: `atlas_json.rs` autodetecta:
-  1. **TexturePacker / Aseprite JSON** (Hash o Array), convirtiéndolo a `SparrowAtlas` (incluyendo soporte de frames `rotated = true`, rotados `-90°` al renderizar en `SpriteLabScreen.kt` y `GameplayScreen.kt`).
-  2. **Adobe Animate `spritemap1.json`** (`ATLAS.SPRITES`): genera spritesheet de respaldo y registra sus piezas atómicas.
-  3. **Adobe Animate `Animation.json`** (`AN`/`SD`/`TL`/`M3D`/`M`): cuando una entidad posee tanto `spritemap1` como `Animation.json` (en cualquier orden de importación), `try_bake_animate_for_entity` rasteriza las poses mediante transformaciones afines en software, las empaqueta con *shelf packing* en `<cacheDir>/animate_baked/<id>_baked.png` y construye su `SparrowAtlas` listo para `Idle`, `Left`, `Down`, `Up`, `Right`.
+- **Atlas (`.xml` y `.json`)**:
+  1. **Sparrow / Starling `.xml` y XML Spritemaps (`<TextureAtlas>` / `<ATLAS>`)**: `sparrow.rs` lee `<SubTexture>` y `<SPRITE>` con soporte para `width`/`w`, `height`/`h`, `frameX`, `frameY`, `frameWidth`, `frameHeight` y `rotated` (`true`/`1`); `SpriteLabScreen.kt` y `GameplayScreen.kt` aplican los offsets de recorte y rotación `-90°` sin deformar la relación de aspecto.
+  2. **TexturePacker / Aseprite JSON** (Hash o Array), convirtiéndolo a `SparrowAtlas`.
+  3. **Adobe Animate `spritemap1.json`** (`ATLAS.SPRITES`): genera spritesheet de respaldo y registra sus piezas atómicas.
+  4. **Adobe Animate `Animation.json`** (`AN`/`SD`/`TL`, tanto `M3D` clásico como `BTA 1.1.0` con `MX`, `SI` para símbolos `SN` y `ASI` para piezas `N`): cuando una entidad posee tanto `spritemap1` como `Animation.json` (en cualquier orden de importación), `try_bake_animate_for_entity` rasteriza las poses mediante transformaciones afines en software, las empaqueta con *shelf packing* en `<cacheDir>/animate_baked/<id>_baked.png` y construye su `SparrowAtlas` listo para `Idle`, `Left`, `Down`, `Up`, `Right`.
 
 ### D. Compilación en Caliente (`Hot Compile`)
 - Disparada por `StudioViewModel.startCompileAndPlay()` en `Dispatchers.IO`, detectando automáticamente la RAM total del teléfono y el ABI (32 vs 64 bits) para elegir `tierCode` e invocando `NativeEngineBridge.nativeHotCompile(tierCode)` sobre `rayon::par_iter()`:

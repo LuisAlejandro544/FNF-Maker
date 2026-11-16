@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   autoBindSparrowPrefixes,
   computeCountdownState,
+  computeTrimmedFramePlacement,
   detectSpriteJsonFormat,
   parseAstcHeader,
   parseChartJson,
@@ -186,6 +187,24 @@ test('detectSpriteJsonFormat classifies TexturePacker, spritemap1.json and Anima
     detectSpriteJsonFormat(JSON.stringify({ AN: { N: 'idle', TL: { L: [] } }, SD: { S: [] } })),
     'animate_animation',
   );
+});
+
+test('computeTrimmedFramePlacement un-rotates dimensions and applies negative frameX/frameY offsets', () => {
+  const placed = computeTrimmedFramePlacement({
+    width: 360,
+    height: 160,
+    frameX: -20,
+    frameY: -30,
+    frameWidth: 200,
+    frameHeight: 400,
+    rotated: true,
+  });
+  assert.equal(placed.visualWidth, 160);
+  assert.equal(placed.visualHeight, 360);
+  assert.equal(placed.logicalWidth, 200);
+  assert.equal(placed.logicalHeight, 400);
+  assert.equal(placed.offsetX, 20);
+  assert.equal(placed.offsetY, 30);
 });
 
 test('autoBindSparrowPrefixes maps Idle, Left, Down, Up, Right automatically', () => {

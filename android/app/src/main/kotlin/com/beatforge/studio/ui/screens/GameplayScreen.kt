@@ -156,18 +156,45 @@ fun GameplayScreen(
                                 srcY = (f.y * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
                                 srcW = (f.width * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
                                 srcH = (f.height * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
+
+                                val visW = if (f.rotated) f.height else f.width
+                                val visH = if (f.rotated) f.width else f.height
+                                val logicalW = f.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                                val logicalH = f.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                                val scaleToBoxX = w / logicalW
+                                val scaleToBoxY = h / logicalH
+
+                                val visDrawW = visW * scaleToBoxX
+                                val visDrawH = visH * scaleToBoxY
+                                val visLeft = left + (-f.frameX * scaleToBoxX)
+                                val visTop = top + (-f.frameY * scaleToBoxY)
+                                val frameCenterX = visLeft + visDrawW / 2f
+                                val frameCenterY = visTop + visDrawH / 2f
+
+                                val dstW = (f.width * scaleToBoxX).roundToInt().coerceAtLeast(2)
+                                val dstH = (f.height * scaleToBoxY).roundToInt().coerceAtLeast(2)
+                                val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
+                                val dstTop = (frameCenterY - dstH / 2f).roundToInt()
+
+                                withTransform({
+                                    if (f.rotated) {
+                                        rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
+                                    }
+                                }) {
+                                    drawImage(
+                                        image = bmp,
+                                        srcOffset = IntOffset(srcX, srcY),
+                                        srcSize = IntSize(srcW, srcH),
+                                        dstOffset = IntOffset(dstLeft, dstTop),
+                                        dstSize = IntSize(dstW, dstH),
+                                        alpha = ent.opacity.coerceIn(0f, 1f)
+                                    )
+                                }
                             } else {
                                 srcX = 0
                                 srcY = 0
                                 srcW = bmp.width
                                 srcH = bmp.height
-                            }
-
-                            withTransform({
-                                if (f != null && f.found && f.rotated) {
-                                    rotate(-90f, pivot = Offset(cx, cy))
-                                }
-                            }) {
                                 drawImage(
                                     image = bmp,
                                     srcOffset = IntOffset(srcX, srcY),
