@@ -10,7 +10,10 @@ use eframe::egui;
 use pulse_core::DeviceResourceTier;
 
 pub fn draw_hub_screen(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.columns(2, |cols| {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.columns(2, |cols| {
         // Columna izquierda: Resumen del proyecto y accesos directos modulares
         theme::card_frame().show(&mut cols[0], |ui| {
             ui.label(
@@ -204,12 +207,16 @@ pub fn draw_hub_screen(ui: &mut egui::Ui, state: &mut AppState) {
                 )
                 .fill(theme::ACCENT_EMERALD)
                 .corner_radius(8.0);
-                if ui.add_sized([ui.available_width(), 42.0], launch_btn).clicked() {
+                if ui
+                    .add_sized([ui.available_width().max(140.0), 42.0], launch_btn)
+                    .clicked()
+                {
                     state.start_hot_compile();
                 }
             });
         });
-    });
+            });
+        });
 }
 
 fn stat_chip(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Color32) {

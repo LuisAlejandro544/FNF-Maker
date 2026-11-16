@@ -160,7 +160,7 @@ impl AppState {
             screen: ActiveScreen::Hub,
             project,
             resource_tier: DeviceResourceTier::Balanced,
-            audio_engine: AudioEngineHandle::start_default(),
+            audio_engine: AudioEngineHandle::new_deferred(),
             decoded_tracks: [None, None, None],
             selected_entity_id,
             selected_script_id,
@@ -222,6 +222,7 @@ impl AppState {
 
     /// Inicia la compilación en caliente en segundo plano mientras muestra la pantalla de carga.
     pub fn start_hot_compile(&mut self) {
+        self.audio_engine.ensure_started();
         self.audio_engine.mixer.pause();
         self.compile_progress = 0.02;
         self.compile_status_text = "Preparando compilación en caliente...".to_string();
@@ -389,6 +390,7 @@ impl AppState {
                     self.toast_message = Some(e);
                     return;
                 }
+                self.audio_engine.ensure_started();
                 let target_sr = self
                     .audio_engine
                     .mixer

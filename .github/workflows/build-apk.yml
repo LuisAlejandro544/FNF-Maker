@@ -80,7 +80,7 @@ jobs:
           echo "=== Verificando todos los crates en 64 bits (arm64-v8a) ==="
           (cd engine && cargo ndk -t arm64-v8a --platform 24 check --workspace --keep-going) || true
           echo "=== Verificando compilación Kotlin y recursos Android ==="
-          (cd android && ./gradlew compileDebugKotlin --no-daemon --continue -x buildRustDebug -x copyCppShared) || true
+          (cd android && ./gradlew compileDebugKotlin --no-daemon --continue -x buildRustDebug) || true
 
       - name: Subir APK 64 bits (arm64-v8a Debug)
         uses: actions/upload-artifact@v4

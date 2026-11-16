@@ -9,21 +9,16 @@ package com.beatforge.studio
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Process
 import android.view.WindowManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import com.google.androidgamesdk.GameActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : GameActivity() {
-
-    companion object {
-        init {
-            System.loadLibrary("c++_shared")
-            System.loadLibrary("pulse_android")
-        }
-    }
 
     private var pendingKindCode: Int = 1
 
@@ -41,8 +36,57 @@ class MainActivity : GameActivity() {
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Captura excepciones Kotlin/Java no controladas (incluyendo UnsatisfiedLinkError)
+        // antes de inicializar GameActivity para evitar cierres silenciosos en el teléfono.
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            launchCrashScreen(
+                "Error inesperado al iniciar BeatForge Studio",
+                throwable.stackTraceToString()
+            )
+            Process.killProcess(Process.myPid())
+        }
+
+        try {
+            // pulse_android enlaza c++_static unificado con android-activity y Oboe,
+            // por lo que no se carga libc++_shared.so por separado.
+            System.loadLibrary("pulse_android")
+        } catch (t: Throwable) {
+            launchCrashScreen(
+                "No se pudo cargar el motor nativo (libpulse_android.so)",
+                t.stackTraceToString()
+            )
+            finish()
+            Process.killProcess(Process.myPid())
+            return
+        }
+
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun launchCrashScreen(title: String, details: String) {
+        try {
+            File(filesDir, "last_java_crash.txt").writeText("$title\n\n$details")
+        } catch (_: Throwable) {
+        }
+
+        val intent = Intent(this, CrashReportActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            putExtra(CrashReportActivity.EXTRA_TITLE, title)
+            putExtra(CrashReportActivity.EXTRA_DETAILS, details)
+        }
+        startActivity(intent)
+    }
+
+    /**
+     * Método invocado desde Rust vía JNI (`pulse_android`) si ocurre un panic o fallo de OpenGL ES.
+     */
+    @Suppress("unused")
+    fun reportNativeCrash(details: String) {
+        runOnUiThread {
+            launchCrashScreen("Error en el motor nativo Rust", details)
+            finish()
+        }
     }
 
     /**
@@ -60,7 +104,11 @@ class MainActivity : GameActivity() {
                 30, 31, 32, 33 -> arrayOf("image/svg+xml", "*/*")
                 else -> arrayOf("*/*")
             }
-            openDocLauncher.launch(mimeTypes)
+            try {
+                openDocLauncher.launch(mimeTypes)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 }

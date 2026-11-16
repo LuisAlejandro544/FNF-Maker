@@ -70,6 +70,29 @@ fn call_kotlin_saf_picker(kind_code: i32) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "android")]
+fn call_kotlin_report_crash(details: &str) -> Result<(), String> {
+    let ctx = ndk_context::android_context();
+    if ctx.vm().is_null() || ctx.context().is_null() {
+        return Err("Contexto Android no inicializado".to_string());
+    }
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
+    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+    let _ = env.exception_clear();
+    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let jdetails = env.new_string(details).map_err(|e| e.to_string())?;
+
+    env.call_method(
+        &activity,
+        "reportNativeCrash",
+        "(Ljava/lang/String;)V",
+        &[jni::objects::JValue::Object(&*jdetails)],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Callback JNI llamado desde `SafFileBridge.kt` cuando la corrutina `Dispatchers.IO`
 /// termina de copiar el archivo seleccionado a almacenamiento interno.
 #[cfg(target_os = "android")]
@@ -100,15 +123,52 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
             .with_tag("BeatForgeEngine"),
     );
 
+    let crash_dir = app.internal_data_path();
+    let panic_dir = crash_dir.clone();
+
+    // Capturar cualquier panic de Rust y mostrarlo en pantalla en caso de fallo crítico en móvil.
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "ubicacion desconocida".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Panic sin mensaje legible".to_string()
+        };
+        let msg = format!("PANIC NATIVO ({}): {}", location, payload);
+        log::error!("{}", msg);
+        if let Some(dir) = &panic_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(dir.join("last_native_crash.txt"), &msg);
+        }
+        let _ = call_kotlin_report_crash(&msg);
+    }));
+
+    // run_and_return = false y persist_window = false evitan reutilizar EventLoop obsoletos
+    // si Android recrea la Activity dentro del mismo proceso.
     let options = eframe::NativeOptions {
         android_app: Some(app),
+        run_and_return: false,
+        persist_window: false,
         ..Default::default()
     };
 
     let picker: Arc<dyn PlatformFilePicker> = Arc::new(AndroidSafPicker);
-    let _ = eframe::run_native(
+    if let Err(err) = eframe::run_native(
         "BeatForge Studio",
         options,
         Box::new(move |cc| Ok(Box::new(BeatForgeApp::new(cc, picker)))),
-    );
+    ) {
+        let msg = format!("Error iniciando motor grafico eframe/OpenGL ES: {}", err);
+        log::error!("{}", msg);
+        if let Some(dir) = &crash_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(dir.join("last_native_crash.txt"), &msg);
+        }
+        let _ = call_kotlin_report_crash(&msg);
+    }
 }

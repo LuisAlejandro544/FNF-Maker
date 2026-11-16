@@ -7,42 +7,82 @@ use crate::mixer::AudioMixerState;
 use std::sync::Arc;
 
 /// Manejador vivo del stream de Oboe. Mientras permanezca en memoria, el audio fluye.
+/// Se inicializa de forma diferida (`new_deferred` + `ensure_started`) para no bloquear ni
+/// provocar fallos de AAudio/OEM durante el arranque inicial de la actividad Android.
 pub struct AudioEngineHandle {
     pub mixer: Arc<AudioMixerState>,
     #[cfg(target_os = "android")]
     _stream: Option<oboe::AudioStreamAsync<oboe::Output, OboeCallback>>,
+    #[cfg(target_os = "android")]
+    start_attempted: bool,
 }
 
 impl AudioEngineHandle {
-    /// Inicializa el motor de audio de baja latencia Oboe (48 kHz estéreo f32 en Android).
-    pub fn start_default() -> Self {
+    /// Crea el estado del mezclador sin abrir todavía hardware de audio Android.
+    pub fn new_deferred() -> Self {
         let default_sr = 48_000_u32;
         let mixer = AudioMixerState::new(default_sr);
+        Self {
+            mixer,
+            #[cfg(target_os = "android")]
+            _stream: None,
+            #[cfg(target_os = "android")]
+            start_attempted: false,
+        }
+    }
 
+    /// Inicializa inmediatamente el motor de audio (útil en pruebas o invocación directa).
+    pub fn start_default() -> Self {
+        let mut handle = Self::new_deferred();
+        handle.ensure_started();
+        handle
+    }
+
+    /// Abre el stream de baja latencia Google Oboe bajo demanda (idempotente) con fallback
+    /// seguro si el modo LowLatency o 48 kHz falla en algún dispositivo Android específico.
+    pub fn ensure_started(&mut self) {
         #[cfg(target_os = "android")]
         {
+            if self._stream.is_some() || self.start_attempted {
+                return;
+            }
+            self.start_attempted = true;
+
             use oboe::{
                 AudioStream, AudioStreamBase, AudioStreamBuilder, PerformanceMode, SharingMode,
                 Stereo,
             };
 
-            let callback = OboeCallback {
-                mixer: Arc::clone(&mixer),
+            let try_open = |low_latency: bool, explicit_sr: Option<i32>| {
+                let callback = OboeCallback {
+                    mixer: Arc::clone(&self.mixer),
+                };
+                let mut builder = AudioStreamBuilder::default()
+                    .set_performance_mode(if low_latency {
+                        PerformanceMode::LowLatency
+                    } else {
+                        PerformanceMode::None
+                    })
+                    .set_sharing_mode(SharingMode::Shared)
+                    .set_format::<f32>()
+                    .set_channel_count::<Stereo>();
+                if let Some(sr) = explicit_sr {
+                    builder = builder.set_sample_rate(sr);
+                }
+                builder.set_callback(callback).open_stream()
             };
 
-            match AudioStreamBuilder::default()
-                .set_performance_mode(PerformanceMode::LowLatency)
-                .set_sharing_mode(SharingMode::Shared)
-                .set_format::<f32>()
-                .set_channel_count::<Stereo>()
-                .set_sample_rate(default_sr as i32)
-                .set_callback(callback)
-                .open_stream()
-            {
+            let opened = try_open(true, Some(48_000))
+                .or_else(|err| {
+                    log::warn!("Oboe LowLatency 48kHz falló ({:?}); reintentando con perfil seguro...", err);
+                    try_open(false, None)
+                });
+
+            match opened {
                 Ok(mut stream) => {
                     let actual_sr = stream.get_sample_rate() as u32;
                     if actual_sr > 0 {
-                        mixer
+                        self.mixer
                             .sample_rate
                             .store(actual_sr, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -51,21 +91,12 @@ impl AudioEngineHandle {
                     } else {
                         log::info!("Stream Oboe iniciado a {} Hz", actual_sr);
                     }
-                    return Self {
-                        mixer,
-                        _stream: Some(stream),
-                    };
+                    self._stream = Some(stream);
                 }
                 Err(err) => {
-                    log::error!("No se pudo abrir Oboe AudioStream: {:?}", err);
+                    log::error!("No se pudo abrir Oboe AudioStream (continuando en modo silencioso): {:?}", err);
                 }
             }
-        }
-
-        Self {
-            mixer,
-            #[cfg(target_os = "android")]
-            _stream: None,
         }
     }
 }

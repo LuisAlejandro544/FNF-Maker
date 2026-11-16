@@ -1,9 +1,8 @@
 //! Archivo: engine/crates/pulse_android/build.rs
-//! Propósito: Script de compilación de Cargo. En Android enlaza explícitamente `libc++_shared`
-//! requerido por Google Oboe (`liboboe` C++) en arquitecturas de 32 bits y 64 bits.
+//! Propósito: Script de compilación de Cargo para `pulse_android`.
+//! Mantiene la alineación con `c++_static` usado por `android-activity` y `oboe`
+//! evitando mezclar `libc++_static` y `libc++_shared` en `libpulse_android.so`.
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
-        println!("cargo:rustc-link-lib=c++_shared");
-    }
+    println!("cargo:rerun-if-changed=build.rs");
 }

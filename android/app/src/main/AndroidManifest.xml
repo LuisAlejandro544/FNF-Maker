@@ -36,5 +36,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".CrashReportActivity"
+            android:exported="false"
+            android:process=":crash"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
     </application>
 </manifest>

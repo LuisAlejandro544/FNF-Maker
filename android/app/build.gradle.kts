@@ -2,13 +2,10 @@
 // Propósito: Script de compilación del módulo `:app`.
 // Puntos clave:
 // 1. Invoca obligatoriamente `cargo ndk` dentro de `preBuild` para compilar todo el motor Rust
-//    (UI egui, Oboe, Lua 5.4, QuickJS-NG, oxc TypeScript, resvg, Sparrow XML) en 32-bit (`armeabi-v7a`)
-//    y 64-bit (`arm64-v8a`, `x86_64`).
-// 2. Copia `libc++_shared.so` del NDK a `jniLibs/<abi>/` requerido por Oboe.
-// 3. Configura `androidx.games:games-activity:4.4.2` (`prefab = true`) y corrutinas Kotlin.
-// 4. Prepara salida APK lista para distribuirse en Uptodown o tiendas APK de terceros.
-
-import java.io.File
+//    (UI egui, Oboe con c++_static, Lua 5.4, QuickJS-NG, oxc TypeScript, resvg, Sparrow XML)
+//    en 32-bit (`armeabi-v7a`) y 64-bit (`arm64-v8a`).
+// 2. Configura `androidx.games:games-activity:2.0.2` (`prefab = true`) y corrutinas Kotlin.
+// 3. Prepara salida APK lista para distribuirse en Uptodown o tiendas APK de terceros.
 
 plugins {
     id("com.android.application")
@@ -68,7 +65,6 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
-            pickFirsts += listOf("**/libc++_shared.so")
         }
     }
 }
@@ -118,29 +114,6 @@ val buildRustRelease by tasks.registering(Exec::class) {
     )
 }
 
-// Copia libc++_shared.so del NDK si cargo-ndk no lo incluyó, evitando fallos de carga en Oboe
-val copyCppShared by tasks.registering {
-    dependsOn(if (isReleaseRequested) buildRustRelease else buildRustDebug)
-    doLast {
-        val ndkHome = System.getenv("ANDROID_NDK_HOME")
-            ?: android.ndkDirectory.absolutePath
-        val abiMap = mapOf(
-            "armeabi-v7a" to "arm-linux-androideabi",
-            "arm64-v8a" to "aarch64-linux-android"
-        )
-        val prebuiltDir = File(ndkHome, "toolchains/llvm/prebuilt")
-        val hostDir = prebuiltDir.listFiles()?.firstOrNull { it.isDirectory } ?: return@doLast
-        for ((abi, triple) in abiMap) {
-            val src = File(hostDir, "sysroot/usr/lib/$triple/libc++_shared.so")
-            val dst = project.file("src/main/jniLibs/$abi/libc++_shared.so")
-            if (src.exists() && !dst.exists()) {
-                dst.parentFile.mkdirs()
-                src.copyTo(dst, overwrite = true)
-            }
-        }
-    }
-}
-
 tasks.named("preBuild") {
-    dependsOn(copyCppShared)
+    dependsOn(if (isReleaseRequested) buildRustRelease else buildRustDebug)
 }
