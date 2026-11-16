@@ -96,7 +96,7 @@ pub extern "C" fn Java_com_beatforge_studio_SafFileBridge_nativeOnFilePicked(
 pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
-            .with_min_level(log::LevelFilter::Info)
+            .with_max_level(log::LevelFilter::Info)
             .with_tag("BeatForgeEngine"),
     );
 

@@ -69,17 +69,18 @@ jobs:
           gradle wrapper --gradle-version 8.11.1
           ./gradlew assembleDebug --no-daemon --stacktrace --continue
 
-      - name: Recopilar todos los errores restantes sin detenerse (32 y 64 bits)
+      - name: Recopilar todos los errores restantes sin detenerse (Rust 32/64b + Kotlin)
         if: failure()
-        working-directory: engine
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
           ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
           echo "=== Verificando todos los crates en 32 bits (armeabi-v7a) ==="
-          cargo ndk -t armeabi-v7a --platform 24 check --workspace --keep-going || true
+          (cd engine && cargo ndk -t armeabi-v7a --platform 24 check --workspace --keep-going) || true
           echo "=== Verificando todos los crates en 64 bits (arm64-v8a) ==="
-          cargo ndk -t arm64-v8a --platform 24 check --workspace --keep-going || true
+          (cd engine && cargo ndk -t arm64-v8a --platform 24 check --workspace --keep-going) || true
+          echo "=== Verificando compilación Kotlin y recursos Android ==="
+          (cd android && ./gradlew compileDebugKotlin --no-daemon --continue -x buildRustDebug -x copyCppShared) || true
 
       - name: Subir APK 64 bits (arm64-v8a Debug)
         uses: actions/upload-artifact@v4
