@@ -395,7 +395,7 @@ fn write_entry_to_blob_stream(
                 .map_err(|e| format!("Error vaciando buffer de '{}': {}", rel_path, e))?;
         }
         VanillaEntryCodec::Zstd => {
-            let mut encoder = zstd::stream::Encoder::new(blob_writer, level)
+            let mut encoder = zstd::stream::Encoder::new(&mut *blob_writer, level)
                 .map_err(|e| format!("Error iniciando Zstd para '{}': {}", rel_path, e))?;
             match payload {
                 PayloadSource::Bytes(bytes) => {
