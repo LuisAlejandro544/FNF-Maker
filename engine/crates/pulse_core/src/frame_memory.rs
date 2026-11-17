@@ -349,6 +349,7 @@ impl NoteSlidingWindow {
     }
 }
 
+#[derive(Debug)]
 struct LruSlot<V> {
     value: V,
     bytes: usize,
