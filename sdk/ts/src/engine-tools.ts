@@ -455,3 +455,139 @@ export function shouldDiscardInvisibleEntity(
     entity.y - halfH > virtualHeight + margin
   );
 }
+
+export function stripTrailingFrameDigits(rawName: string): string {
+  const withoutExt = rawName.trim().replace(/\.(png|jpg|jpeg|webp|astc)$/i, '');
+  return withoutExt.replace(/\d+$/, '').trim();
+}
+
+export function compareNaturalFrameNames(a: string, b: string): number {
+  const pa = stripTrailingFrameDigits(a);
+  const pb = stripTrailingFrameDigits(b);
+  if (pa !== pb) return pa.localeCompare(pb);
+  const na = Number(a.replace(/\.(png|jpg|jpeg|webp|astc)$/i, '').slice(pa.length) || '0');
+  const nb = Number(b.replace(/\.(png|jpg|jpeg|webp|astc)$/i, '').slice(pb.length) || '0');
+  return na !== nb ? na - nb : a.localeCompare(b);
+}
+
+export function mapRotatedSpriteSample(
+  lx: number,
+  ly: number,
+  rectW: number,
+  rectH: number,
+  rotated: boolean,
+): { u: number; v: number } {
+  const maxU = Math.max(0, rectW - 1);
+  const maxV = Math.max(0, rectH - 1);
+  if (rotated) {
+    // +90° CW empacado -> inversa u = (w - 1) - (ly - 0.5), v = lx - 0.5
+    return {
+      u: Math.min(maxU, Math.max(0, maxU - (ly - 0.5))),
+      v: Math.min(maxV, Math.max(0, lx - 0.5)),
+    };
+  }
+  return {
+    u: Math.min(maxU, Math.max(0, lx - 0.5)),
+    v: Math.min(maxV, Math.max(0, ly - 0.5)),
+  };
+}
+
+export interface PoseInput {
+  signature: string;
+  width: number;
+  height: number;
+}
+
+export interface PackedBoundedAtlasResult {
+  uniqueCount: number;
+  sheetWidth: number;
+  sheetHeight: number;
+  worldScale: number;
+  frameToPoseIndex: number[];
+}
+
+export function packPosesIntoBoundedAtlas(
+  poses: PoseInput[],
+  maxAtlasDim = 4096,
+  pad = 2,
+): PackedBoundedAtlasResult {
+  const unique: Array<{ width: number; height: number }> = [];
+  const sigMap = new Map<string, number>();
+  const frameToPoseIndex: number[] = [];
+
+  let maxSide = 1;
+  for (const p of poses) {
+    let idx = sigMap.get(p.signature);
+    if (idx === undefined) {
+      idx = unique.length;
+      sigMap.set(p.signature, idx);
+      unique.push({ width: Math.max(1, p.width), height: Math.max(1, p.height) });
+      maxSide = Math.max(maxSide, p.width, p.height);
+    }
+    frameToPoseIndex.push(idx);
+  }
+
+  let worldScale = Math.min(1, 640 / maxSide);
+  let sheetWidth = 64;
+  let sheetHeight = 64;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const sized = unique
+      .map((u, i) => ({
+        i,
+        w: Math.max(4, Math.ceil(u.width * worldScale)),
+        h: Math.max(4, Math.ceil(u.height * worldScale)),
+      }))
+      .sort((a, b) => b.h - a.h || b.w - a.w);
+
+    let curX = pad;
+    let curY = pad;
+    let rowH = 0;
+    let sw = 64;
+    for (const item of sized) {
+      if (curX + item.w + pad > maxAtlasDim && curX > pad) {
+        curX = pad;
+        curY += rowH + pad;
+        rowH = 0;
+      }
+      sw = Math.max(sw, curX + item.w + pad);
+      curX += item.w + pad;
+      rowH = Math.max(rowH, item.h);
+    }
+    const sh = Math.max(64, curY + rowH + pad);
+    sheetWidth = sw;
+    sheetHeight = sh;
+    if (sh <= 3840) break;
+    const shrink = Math.min(0.92, Math.max(0.35, Math.sqrt(3600 / sh) * 0.94));
+    worldScale = Math.max(0.22, worldScale * shrink);
+  }
+
+  return {
+    uniqueCount: unique.length,
+    sheetWidth,
+    sheetHeight,
+    worldScale,
+    frameToPoseIndex,
+  };
+}
+
+export function computeUniformCharacterDrawBox(
+  entityBox: { cx: number; top: number; w: number; h: number },
+  frame: { width: number; height: number; frameWidth: number; frameHeight: number; rotated: boolean },
+): { boxLeft: number; boxTop: number; boxW: number; boxH: number; fit: number } {
+  const visW = frame.rotated ? frame.height : frame.width;
+  const visH = frame.rotated ? frame.width : frame.height;
+  const logicalW = Math.max(1, frame.frameWidth, visW);
+  const logicalH = Math.max(1, frame.frameHeight, visH);
+  const fit = Math.min(entityBox.w / logicalW, entityBox.h / logicalH);
+  const boxW = logicalW * fit;
+  const boxH = logicalH * fit;
+  return {
+    boxLeft: entityBox.cx - boxW / 2,
+    boxTop: entityBox.top + entityBox.h - boxH,
+    boxW,
+    boxH,
+    fit,
+  };
+}
+

@@ -569,7 +569,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val out = linkedMapOf<String, LoadedEntityBitmap>()
         for (ent in entities) {
             val path = ent.imagePath ?: continue
-            decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = 2048)?.let { loaded ->
+            decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = 4096)?.let { loaded ->
                 out[ent.id] = loaded
             }
         }
@@ -613,7 +613,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             sampleSize *= 2
         }
 
-        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+            inScaled = false
+        }
         val bmp = BitmapFactory.decodeFile(loadPath, decodeOpts) ?: return null
         return LoadedEntityBitmap(
             bitmap = bmp.asImageBitmap(),

@@ -52,6 +52,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -66,6 +67,7 @@ import com.beatforge.studio.GameplayStep
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.ui.theme.StudioColors
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -161,18 +163,22 @@ fun GameplayScreen(
                                 val visH = if (f.rotated) f.width else f.height
                                 val logicalW = f.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
                                 val logicalH = f.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
-                                val scaleToBoxX = w / logicalW
-                                val scaleToBoxY = h / logicalH
+                                val fit = min(w / logicalW, h / logicalH)
 
-                                val visDrawW = visW * scaleToBoxX
-                                val visDrawH = visH * scaleToBoxY
-                                val visLeft = left + (-f.frameX * scaleToBoxX)
-                                val visTop = top + (-f.frameY * scaleToBoxY)
+                                val boxW = logicalW * fit
+                                val boxH = logicalH * fit
+                                val boxLeft = cx - boxW / 2f
+                                val boxTop = (top + h) - boxH
+
+                                val visDrawW = visW * fit
+                                val visDrawH = visH * fit
+                                val visLeft = boxLeft + (-f.frameX * fit)
+                                val visTop = boxTop + (-f.frameY * fit)
                                 val frameCenterX = visLeft + visDrawW / 2f
                                 val frameCenterY = visTop + visDrawH / 2f
 
-                                val dstW = (f.width * scaleToBoxX).roundToInt().coerceAtLeast(2)
-                                val dstH = (f.height * scaleToBoxY).roundToInt().coerceAtLeast(2)
+                                val dstW = (f.width * fit).roundToInt().coerceAtLeast(2)
+                                val dstH = (f.height * fit).roundToInt().coerceAtLeast(2)
                                 val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
                                 val dstTop = (frameCenterY - dstH / 2f).roundToInt()
 
@@ -187,7 +193,8 @@ fun GameplayScreen(
                                         srcSize = IntSize(srcW, srcH),
                                         dstOffset = IntOffset(dstLeft, dstTop),
                                         dstSize = IntSize(dstW, dstH),
-                                        alpha = ent.opacity.coerceIn(0f, 1f)
+                                        alpha = ent.opacity.coerceIn(0f, 1f),
+                                        filterQuality = FilterQuality.Medium
                                     )
                                 }
                             } else {
@@ -201,7 +208,8 @@ fun GameplayScreen(
                                     srcSize = IntSize(srcW, srcH),
                                     dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
                                     dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
-                                    alpha = ent.opacity.coerceIn(0f, 1f)
+                                    alpha = ent.opacity.coerceIn(0f, 1f),
+                                    filterQuality = FilterQuality.Medium
                                 )
                             }
                         } else {

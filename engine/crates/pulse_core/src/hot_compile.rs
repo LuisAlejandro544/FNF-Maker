@@ -23,9 +23,9 @@ use std::time::Instant;
 /// Perfil de optimización según la memoria/arquitectura del teléfono del usuario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceResourceTier {
-    /// Teléfonos 32-bit o poca RAM: máximo 1024px por textura.
+    /// Teléfonos 32-bit o poca RAM: protege atlas multi-frame hasta 3072px y fondos hasta 2048px.
     LowRam32Bit,
-    /// Teléfonos gama media 64-bit: máximo 2048px por textura.
+    /// Teléfonos gama media 64-bit: protege atlas hasta 4096px y fondos hasta 2560px.
     Balanced,
     /// Gama alta: hasta 4096px sin pérdida visible.
     HighQuality,
@@ -34,16 +34,30 @@ pub enum DeviceResourceTier {
 impl DeviceResourceTier {
     pub fn max_texture_dim(self) -> u32 {
         match self {
-            DeviceResourceTier::LowRam32Bit => 1024,
-            DeviceResourceTier::Balanced => 2048,
+            DeviceResourceTier::LowRam32Bit => 2048,
+            DeviceResourceTier::Balanced => 2560,
             DeviceResourceTier::HighQuality => 4096,
+        }
+    }
+
+    /// Los atlas multi-frame (Sparrow/Animate) dividen la hoja entre decenas de cuadros,
+    /// por lo que reducirlos agresivamente destruye la nitidez del personaje.
+    pub fn max_dim_for_entity(self, has_atlas: bool) -> u32 {
+        if has_atlas {
+            match self {
+                DeviceResourceTier::LowRam32Bit => 3072,
+                DeviceResourceTier::Balanced => 4096,
+                DeviceResourceTier::HighQuality => 4096,
+            }
+        } else {
+            self.max_texture_dim()
         }
     }
 
     pub fn label_es(self) -> &'static str {
         match self {
-            DeviceResourceTier::LowRam32Bit => "Económico (32-bit / <=1024px)",
-            DeviceResourceTier::Balanced => "Balanceado (<=2048px)",
+            DeviceResourceTier::LowRam32Bit => "Económico (32-bit / Atlas <=3072px)",
+            DeviceResourceTier::Balanced => "Balanceado HD (Atlas <=4096px)",
             DeviceResourceTier::HighQuality => "Máxima Calidad (<=4096px)",
         }
     }
@@ -150,7 +164,6 @@ where
 
     on_progress(0.35, "Optimizando y escalando hojas de sprites en paralelo...");
 
-    let max_dim = tier.max_texture_dim();
     let total_entities = active_entities.len().max(1);
     let done_counter = Arc::new(AtomicUsize::new(0));
     let vram_saved_bytes = Arc::new(AtomicUsize::new(0));
@@ -164,6 +177,7 @@ where
             let orig_w = img.width();
             let orig_h = img.height();
             let largest = orig_w.max(orig_h);
+            let max_dim = tier.max_dim_for_entity(entity.atlas.is_some());
 
             let (final_img, scale_applied) = if largest > max_dim {
                 let ratio = (max_dim as f32) / (largest as f32);
@@ -173,7 +187,7 @@ where
                 let new_bytes = (new_w as usize) * (new_h as usize) * 4;
                 vram_saved_bytes.fetch_add(orig_bytes.saturating_sub(new_bytes), Ordering::Relaxed);
                 downscaled_count.fetch_add(1, Ordering::Relaxed);
-                (img.resize_exact(new_w, new_h, FilterType::Triangle), ratio)
+                (img.resize_exact(new_w, new_h, FilterType::CatmullRom), ratio)
             } else {
                 (img, 1.0)
             };

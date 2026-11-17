@@ -669,7 +669,7 @@ impl EngineSession {
             ent.raw_image_path = Some(path);
             ent.image_path = Some(display_png_path);
             if let Some((w, h)) = dims {
-                if ent.atlas.is_none() && w > 0 && h > 0 {
+                if ent.atlas.is_none() && ent.role != EntityRole::Background && w > 0 && h > 0 {
                     // Ajustar tamaño lógico inicial manteniendo proporción razonable dentro de 1280x720.
                     let max_side = w.max(h) as f32;
                     let norm = (320.0 / max_side).min(1.0);

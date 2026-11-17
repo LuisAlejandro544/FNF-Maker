@@ -20,9 +20,9 @@ enum class StudioScreen(val label: String) {
 }
 
 enum class DeviceTier(val code: Int, val label: String, val subtitle: String) {
-    LowRam32Bit(0, "32-bit / RAM Baja", "Texturas máx 1024px, ideal teléfonos modestos"),
-    Balanced(1, "Equilibrado", "Texturas máx 2048px, fluido en 32/64 bits"),
-    HighQuality(2, "Alta Calidad", "Texturas máx 4096px, máxima nitidez HD")
+    LowRam32Bit(0, "32-bit / RAM Baja", "Fondos <=2048px, atlas <=3072px para móviles modestos"),
+    Balanced(1, "Equilibrado HD", "Atlas hasta 4096px y fondos <=2560px en 32/64 bits"),
+    HighQuality(2, "Alta Calidad", "Texturas y atlas hasta 4096px, máxima nitidez HD")
 }
 
 sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {

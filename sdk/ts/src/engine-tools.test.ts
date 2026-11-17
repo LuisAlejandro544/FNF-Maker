@@ -10,13 +10,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   autoBindSparrowPrefixes,
+  compareNaturalFrameNames,
   computeCountdownState,
   computeTrimmedFramePlacement,
+  computeUniformCharacterDrawBox,
   detectSpriteJsonFormat,
+  mapRotatedSpriteSample,
+  packPosesIntoBoundedAtlas,
   parseAstcHeader,
   parseChartJson,
   serializeChartJson,
   shouldDiscardInvisibleEntity,
+  stripTrailingFrameDigits,
   validateAudioTrackCount,
 } from './engine-tools';
 
@@ -251,3 +256,49 @@ test('shouldDiscardInvisibleEntity culls permanently invisible assets unless ref
     false,
   );
 });
+
+test('mapRotatedSpriteSample inverts +90 deg CW packed piece coordinates accurately', () => {
+  // Original visual piece 4x8 rotated +90 CW -> packed rect 8x4 (w=8, h=4)
+  // Top-left pixel center (lx=0.5, ly=0.5) maps to right edge (u=7, v=0)
+  const topLeft = mapRotatedSpriteSample(0.5, 0.5, 8, 4, true);
+  assert.equal(topLeft.u, 7);
+  assert.equal(topLeft.v, 0);
+
+  // Bottom-right pixel center (lx=3.5, ly=7.5) maps to (u=0, v=3)
+  const bottomRight = mapRotatedSpriteSample(3.5, 7.5, 8, 4, true);
+  assert.equal(bottomRight.u, 0);
+  assert.equal(bottomRight.v, 3);
+});
+
+test('stripTrailingFrameDigits and compareNaturalFrameNames sort TexturePacker and Sparrow frames naturally', () => {
+  assert.equal(stripTrailingFrameDigits('hero_idle0004.png'), 'hero_idle');
+  assert.equal(stripTrailingFrameDigits('spritemap_up12.astc'), 'spritemap_up');
+
+  const sorted = ['idle10.png', 'idle2.png', 'idle1.png', 'idle0.png'].sort(compareNaturalFrameNames);
+  assert.deepEqual(sorted, ['idle0.png', 'idle1.png', 'idle2.png', 'idle10.png']);
+});
+
+test('packPosesIntoBoundedAtlas deduplicates identical poses and stays within 4096x4096', () => {
+  const poses = Array.from({ length: 180 }, (_, i) => ({
+    signature: `pose_${i % 28}`,
+    width: 480,
+    height: 540,
+  }));
+  const packed = packPosesIntoBoundedAtlas(poses, 4096, 2);
+  assert.equal(packed.uniqueCount, 28);
+  assert.equal(packed.frameToPoseIndex.length, 180);
+  assert.ok(packed.sheetWidth <= 4096);
+  assert.ok(packed.sheetHeight <= 4096);
+});
+
+test('computeUniformCharacterDrawBox preserves character aspect ratio and bottom-center anchor', () => {
+  const res = computeUniformCharacterDrawBox(
+    { cx: 940, top: 210, w: 320, h: 320 },
+    { width: 250, height: 500, frameWidth: 250, frameHeight: 500, rotated: false },
+  );
+  assert.ok(Math.abs(res.boxW - 160) < 0.01);
+  assert.ok(Math.abs(res.boxH - 320) < 0.01);
+  assert.ok(Math.abs(res.boxLeft - (940 - 80)) < 0.01);
+  assert.ok(Math.abs(res.boxTop - 210) < 0.01);
+});
+

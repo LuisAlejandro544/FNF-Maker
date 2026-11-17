@@ -155,7 +155,7 @@ impl SparrowAtlas {
 
         let mut animations = BTreeMap::new();
         for (prefix, mut frames) in grouped {
-            frames.sort_by(|a, b| a.raw_name.cmp(&b.raw_name));
+            frames.sort_by(|a, b| natural_frame_cmp(&a.raw_name, &b.raw_name));
             let lower = prefix.to_ascii_lowercase();
             let looped = lower.contains("idle") || lower.contains("dance") || lower.contains("loop");
             animations.insert(
@@ -237,12 +237,55 @@ impl SparrowAtlas {
     }
 }
 
-/// Elimina el contador numérico final de 3-4 dígitos (ej. `Hero idle0000` -> `Hero idle`).
+/// Ordena nombres de frames numéricamente para que `idle2` preceda a `idle10`.
+pub fn natural_frame_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let strip_ext = |s: &str| -> &str {
+        for ext in [".png", ".jpg", ".jpeg", ".webp", ".astc"] {
+            if s.len() > ext.len() && s[s.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+                return &s[..s.len() - ext.len()];
+            }
+        }
+        s
+    };
+    let sa = strip_ext(a);
+    let sb = strip_ext(b);
+    let split_num = |s: &str| -> (&str, Option<u64>) {
+        let idx = s
+            .rfind(|c: char| !c.is_ascii_digit())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let (pref, digits) = s.split_at(idx);
+        let num = if digits.is_empty() {
+            None
+        } else {
+            digits.parse::<u64>().ok()
+        };
+        (pref, num)
+    };
+    let (pa, na) = split_num(sa);
+    let (pb, nb) = split_num(sb);
+    match pa.cmp(pb) {
+        std::cmp::Ordering::Equal => match (na, nb) {
+            (Some(va), Some(vb)) => va.cmp(&vb).then_with(|| a.cmp(b)),
+            _ => a.cmp(b),
+        },
+        other => other,
+    }
+}
+
+/// Elimina extensión de imagen y contador numérico final (ej. `Hero idle0000.png` -> `Hero idle`).
 pub fn strip_trailing_frame_digits(name: &str) -> String {
-    let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let mut base = name.trim();
+    for ext in [".png", ".jpg", ".jpeg", ".webp", ".astc"] {
+        if base.len() > ext.len() && base[base.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+            base = &base[..base.len() - ext.len()];
+            break;
+        }
+    }
+    let trimmed = base.trim_end_matches(|c: char| c.is_ascii_digit());
     let cleaned = trimmed.trim_end_matches('_').trim();
     if cleaned.is_empty() {
-        name.to_string()
+        base.to_string()
     } else {
         cleaned.to_string()
     }
