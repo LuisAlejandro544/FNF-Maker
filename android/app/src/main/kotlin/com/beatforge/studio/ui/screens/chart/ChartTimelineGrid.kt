@@ -630,6 +630,7 @@ private fun StepNumberCueCell(
                             StepCueKind.Swap -> StudioColors.AccentEmerald
                             StepCueKind.Character -> StudioColors.AccentPurple
                             StepCueKind.Preload -> Color(0xFF06B6D4)
+                            StepCueKind.UiBlackout -> StudioColors.AccentCoral
                             StepCueKind.Other -> StudioColors.TextMuted
                         }
                         Box(

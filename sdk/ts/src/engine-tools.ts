@@ -972,8 +972,21 @@ const NECESSARY_ENGINE_APIS = [
   'setScrollSpeed',
   'setDownscroll',
   'setHudVisible',
+  'getHudVisible',
   'setHudOpacity',
+  'getHudOpacity',
   'setHudZoom',
+  'getHudZoom',
+  'tweenHudProp',
+  'tweenHudOpacity',
+  'setArrowsVisible',
+  'getArrowsVisible',
+  'setArrowsOpacity',
+  'getArrowsOpacity',
+  'tweenArrowsOpacity',
+  'setScreenBlackout',
+  'getScreenBlackout',
+  'tweenScreenBlackout',
   'setTrackVolume',
   'setTrackMute',
   'getSongPosMs',
@@ -984,6 +997,7 @@ const NECESSARY_ENGINE_APIS = [
   'retireEntity',
   'swapEntity',
   'setActiveCharacter',
+  'onSongStart',
 ] as const;
 
 function stripCommentsForApiScan(body: string): string {
@@ -1424,6 +1438,9 @@ export interface DecodedBinaryGameplayFrame {
   hasHudStrings: boolean;
   hudVisible: boolean;
   flashOverHud: boolean;
+  arrowsVisible: boolean;
+  arrowsOpacity: number;
+  screenBlackoutAlpha: number;
   hudRevision: number;
   holdingLanesMask: number;
   opponentHoldingLanesMask: number;
@@ -1660,6 +1677,9 @@ export function decodeBinaryGameplayFrame(
     hasHudStrings,
     hudVisible: (flags & (1 << 6)) !== 0,
     flashOverHud: (flags & (1 << 7)) !== 0,
+    arrowsVisible: (flags & (1 << 8)) === 0,
+    arrowsOpacity: 1 - (((flags >>> 24) & 0xff) / 255),
+    screenBlackoutAlpha: ((flags >>> 16) & 0xff) / 255,
     hudRevision,
     holdingLanesMask: masks & 0xff,
     opponentHoldingLanesMask: (masks >> 8) & 0xff,
@@ -3227,6 +3247,254 @@ export function parseModDescriptor(raw: string): DetectedModDescriptor {
   }
   throw new Error('Formato no reconocido (se esperaba JSON o XML de personaje/escenario)');
 }
+
+export type UiBlackoutAction = 'intro' | 'hide' | 'show' | 'toggle' | 'fade';
+
+export interface UiBlackoutCueSpec {
+  isUiBlackoutEvent: boolean;
+  isIntroBlackout: boolean;
+  action: UiBlackoutAction;
+  blackAlpha: number;
+  hudAlpha: number;
+  arrowsAlpha: number;
+  durationSec: number;
+  revealDelayMs: number;
+  revealOnSongStart: boolean;
+  ease: string;
+}
+
+const UI_BLACKOUT_EVENT_NAMES = new Set([
+  'ui blackout',
+  'blackout',
+  'screen fade',
+  'camera fade',
+  'hide ui',
+  'show ui',
+  'toggle ui',
+  'fade ui',
+  'hud fade',
+  'hide hud',
+  'show hud',
+]);
+
+/**
+ * Indica si el nombre de evento de chart corresponde a control de pantalla negra / visibilidad UI
+ * (incluyendo eventos comunitarios de FNF/Psych como "Screen Fade", "Camera Fade", "Hide UI" o "Toggle UI").
+ */
+export function isUiBlackoutEventName(name: string): boolean {
+  return UI_BLACKOUT_EVENT_NAMES.has(name.trim().toLowerCase());
+}
+
+function parseOptionalBoolFlag(raw: string): boolean | null {
+  switch (raw.trim().toLowerCase()) {
+    case '1':
+    case 'true':
+    case 'si':
+    case 'sí':
+    case 'yes':
+    case 'on':
+      return true;
+    case '0':
+    case 'false':
+    case 'no':
+    case 'off':
+      return false;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Construye `name`, `value1` y `value2` para un evento `"UI Blackout"` compatible con
+ * `ui_blackout.lua` y el diálogo `#` del Chart Editor.
+ */
+export function buildUiBlackoutEventParams(params: {
+  action: UiBlackoutAction;
+  blackAlpha?: number;
+  hideHud?: boolean;
+  hideArrows?: boolean;
+  durationSec?: number;
+  revealDelayMs?: number;
+  revealOnSongStart?: boolean;
+  ease?: string;
+}): { name: string; value1: string; value2: string } {
+  const action = params.action;
+  const targetBlack =
+    action === 'show'
+      ? 0
+      : Math.min(1, Math.max(0, Number.isFinite(params.blackAlpha) ? (params.blackAlpha as number) : 1));
+  const targetHud = action === 'show' ? 1 : (params.hideHud ?? true) ? 0 : 1;
+  const targetArrows = action === 'show' ? 1 : (params.hideArrows ?? true) ? 0 : 1;
+  const dur = Math.min(25, Math.max(0, Number.isFinite(params.durationSec) ? (params.durationSec as number) : 0.65));
+  const revealMs =
+    action === 'intro'
+      ? Math.min(60000, Math.max(0, Number.isFinite(params.revealDelayMs) ? (params.revealDelayMs as number) : 0))
+      : 0;
+  const onStart = params.revealOnSongStart ?? true;
+  const ease = params.ease?.trim();
+  const parts = [
+    `black=${targetBlack.toFixed(2)}`,
+    `hud=${targetHud.toFixed(2)}`,
+    `arrows=${targetArrows.toFixed(2)}`,
+    `dur=${dur.toFixed(2)}`,
+    `revealMs=${Math.round(revealMs)}`,
+    `onStart=${onStart ? 1 : 0}`,
+  ];
+  if (ease) {
+    parts.push(`ease=${ease}`);
+  }
+  return {
+    name: 'UI Blackout',
+    value1: action,
+    value2: parts.join(';'),
+  };
+}
+
+/**
+ * Parsea un evento de chart hacia la especificación usada por `render_ui_blackout_lua_script`
+ * en Rust (`pulse_core::project`), soportando tanto el formato nativo BeatForge como charts externos.
+ */
+export function parseUiBlackoutEvent(ev: {
+  timeMs?: number;
+  name: string;
+  value1: string;
+  value2: string;
+}): UiBlackoutCueSpec {
+  const lowerName = ev.name.trim().toLowerCase();
+  const timeMs = Math.max(0, ev.timeMs ?? 0);
+  if (!isUiBlackoutEventName(lowerName)) {
+    return {
+      isUiBlackoutEvent: false,
+      isIntroBlackout: false,
+      action: 'fade',
+      blackAlpha: -1,
+      hudAlpha: -1,
+      arrowsAlpha: -1,
+      durationSec: 0.6,
+      revealDelayMs: 0,
+      revealOnSongStart: true,
+      ease: 'sineInOut',
+    };
+  }
+
+  const v1Lower = ev.value1.trim().toLowerCase();
+  let action: UiBlackoutAction =
+    lowerName === 'hide ui' || lowerName === 'hide hud'
+      ? 'hide'
+      : lowerName === 'show ui' || lowerName === 'show hud'
+        ? 'show'
+        : lowerName === 'toggle ui'
+          ? 'toggle'
+          : v1Lower === 'intro' || v1Lower === 'hide' || v1Lower === 'show' || v1Lower === 'toggle' || v1Lower === 'fade'
+            ? v1Lower
+            : v1Lower === 'reveal'
+              ? 'show'
+              : 'fade';
+
+  let blackAlpha =
+    action === 'intro' || action === 'hide'
+      ? lowerName === 'hide ui' || lowerName === 'hide hud'
+        ? -1
+        : 1
+      : action === 'show'
+        ? 0
+        : -1;
+  let hudAlpha = action === 'intro' || action === 'hide' ? 0 : action === 'show' ? 1 : -1;
+  let arrowsAlpha = action === 'intro' || action === 'hide' ? 0 : action === 'show' ? 1 : -1;
+  let durationSec = action === 'hide' && timeMs <= 50 ? 0 : 0.6;
+  let revealDelayMs = 0;
+  let revealOnSongStart = true;
+  let ease = 'sineInOut';
+
+  if (lowerName === 'screen fade' || lowerName === 'camera fade') {
+    const parts = ev.value1.split(',').map((s) => s.trim());
+    const candidate = parts.length === 1 ? Number(parts[0]) : Number(parts[parts.length - 1]);
+    if (Number.isFinite(candidate) && candidate >= 0 && candidate <= 1) {
+      blackAlpha = candidate;
+    }
+    if (blackAlpha < 0) blackAlpha = 1;
+    const d = Number(ev.value2.trim());
+    if (Number.isFinite(d) && d >= 0) {
+      durationSec = Math.min(20, d);
+    }
+  } else if (lowerName === 'fade ui' || lowerName === 'hud fade') {
+    const a = Number(ev.value1.trim());
+    if (Number.isFinite(a) && a >= 0) {
+      const clamped = Math.min(1, a);
+      hudAlpha = clamped;
+      arrowsAlpha = clamped;
+    }
+    const d = Number(ev.value2.trim());
+    if (Number.isFinite(d) && d >= 0) {
+      durationSec = Math.min(20, d);
+    }
+  }
+
+  for (const src of [ev.value1, ev.value2]) {
+    for (const token of src.split(';')) {
+      const idx = token.indexOf('=');
+      if (idx <= 0) continue;
+      const k = token.slice(0, idx).trim().toLowerCase();
+      const v = token.slice(idx + 1).trim();
+      if (!v) continue;
+
+      if (k === 'action' || k === 'mode') {
+        const m = v.toLowerCase();
+        if (m === 'reveal') action = 'show';
+        else if (m === 'intro' || m === 'hide' || m === 'show' || m === 'toggle' || m === 'fade') action = m;
+      } else if (k === 'black' || k === 'blackout') {
+        const num = Number(v);
+        if (Number.isFinite(num)) blackAlpha = num < 0 ? -1 : Math.min(1, num);
+        else {
+          const b = parseOptionalBoolFlag(v);
+          if (b !== null) blackAlpha = b ? 1 : 0;
+        }
+      } else if (k === 'hud') {
+        const num = Number(v);
+        if (Number.isFinite(num)) hudAlpha = num < 0 ? -1 : Math.min(1, num);
+        else {
+          const b = parseOptionalBoolFlag(v);
+          if (b !== null) hudAlpha = b ? 1 : 0;
+        }
+      } else if (k === 'arrows' || k === 'strums' || k === 'flechas') {
+        const num = Number(v);
+        if (Number.isFinite(num)) arrowsAlpha = num < 0 ? -1 : Math.min(1, num);
+        else {
+          const b = parseOptionalBoolFlag(v);
+          if (b !== null) arrowsAlpha = b ? 1 : 0;
+        }
+      } else if (k === 'dur' || k === 'duration') {
+        const num = Number(v);
+        if (Number.isFinite(num) && num >= 0) durationSec = Math.min(25, num);
+      } else if (k === 'revealms' || k === 'reveal_ms' || k === 'delayms') {
+        const num = Number(v);
+        if (Number.isFinite(num) && num >= 0) revealDelayMs = Math.min(60000, num);
+      } else if (k === 'onstart' || k === 'on_start') {
+        const b = parseOptionalBoolFlag(v);
+        if (b !== null) revealOnSongStart = b;
+      } else if (k === 'ease') {
+        ease = v;
+      }
+    }
+  }
+
+  const isIntroBlackout =
+    action === 'intro' || (timeMs <= 120 && blackAlpha >= 0.85 && hudAlpha >= 0 && hudAlpha <= 0.15);
+
+  return {
+    isUiBlackoutEvent: true,
+    isIntroBlackout,
+    action,
+    blackAlpha: isIntroBlackout && blackAlpha < 0 ? 1 : blackAlpha,
+    hudAlpha,
+    arrowsAlpha,
+    durationSec: isIntroBlackout && durationSec <= 0.01 ? 0.65 : durationSec,
+    revealDelayMs,
+    revealOnSongStart: isIntroBlackout ? revealOnSongStart || revealDelayMs > 0 : false,
+    ease,
+  };
+}
+
 
 
 

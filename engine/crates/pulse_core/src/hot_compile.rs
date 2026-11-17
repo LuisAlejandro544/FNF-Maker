@@ -32,7 +32,7 @@ use std::time::{Instant, UNIX_EPOCH};
 /// Versión del esquema de manifiesto incremental en `compiled_cache/manifest.json`.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 /// Versión del analizador de bucles en scripts; incrementarla invalida caché previa de scripts.
-pub const SCRIPT_OPTIMIZER_CACHE_VERSION: u32 = 2;
+pub const SCRIPT_OPTIMIZER_CACHE_VERSION: u32 = 3;
 
 /// Perfil de optimización según la memoria/arquitectura del teléfono del usuario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

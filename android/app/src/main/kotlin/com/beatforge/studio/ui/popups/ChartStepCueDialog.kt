@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -90,9 +91,10 @@ fun ChartStepCueDialog(
     onRemoveChartEvent: (globalIndex: Int) -> Unit,
     onMovePlayheadHere: (Double) -> Unit,
     onOpenStageEventsScript: () -> Unit,
+    onOpenUiBlackoutScript: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var activeTab by remember { mutableIntStateOf(0) } // 0=Escena/Visibilidad, 1=Flash, 2=Personajes/Precarga
+    var activeTab by remember { mutableIntStateOf(0) } // 0=Escena/Visibilidad, 1=Flash, 2=Personajes/Precarga, 3=UI/Negro
 
     // Tab 0: Visibilidad & Swap
     val visibilityChoices = remember(stepRow.globalStepIndex) {
@@ -113,6 +115,14 @@ fun ChartStepCueDialog(
     val manualPreloadIds = remember(stepRow.globalStepIndex) {
         mutableStateMapOf<String, Boolean>()
     }
+
+    // Tab 3: UI / Pantalla en Negro
+    var uiPresetAction by remember { mutableStateOf("intro") } // "intro", "hide", "show", "toggle"
+    var uiBlackAlpha by remember { mutableFloatStateOf(1.0f) }
+    var uiHideHud by remember { mutableStateOf(true) }
+    var uiHideArrows by remember { mutableStateOf(true) }
+    var uiFadeSec by remember { mutableFloatStateOf(0.65f) }
+    var uiIntroDelayMs by remember { mutableFloatStateOf(0.0f) }
 
     val secNum = stepRow.section.index + 1
     val secTimeText = String.format(Locale.US, "%.2fs", stepRow.stepTimeMs / 1000.0)
@@ -184,24 +194,31 @@ fun ChartStepCueDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     CueTabButton(
-                        label = "Visibilidad / Swap",
+                        label = "Visibilidad",
                         selected = activeTab == 0,
                         accent = StudioColors.AccentEmerald,
                         onClick = { activeTab = 0 },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(0.95f)
                     )
                     CueTabButton(
                         label = "Flash",
                         selected = activeTab == 1,
                         accent = StudioColors.AccentAmber,
                         onClick = { activeTab = 1 },
-                        modifier = Modifier.weight(0.7f)
+                        modifier = Modifier.weight(0.65f)
                     )
                     CueTabButton(
                         label = "Personajes",
                         selected = activeTab == 2,
                         accent = StudioColors.AccentPurple,
                         onClick = { activeTab = 2 },
+                        modifier = Modifier.weight(0.85f)
+                    )
+                    CueTabButton(
+                        label = "UI / Negro",
+                        selected = activeTab == 3,
+                        accent = StudioColors.AccentCoral,
+                        onClick = { activeTab = 3 },
                         modifier = Modifier.weight(0.85f)
                     )
                 }
@@ -513,6 +530,179 @@ fun ChartStepCueDialog(
                             ) {
                                 Text("Añadir Precarga IO en Paso #${stepRow.stepInSec}", fontSize = 11.sp)
                             }
+                        }
+                    }
+
+                    3 -> {
+                        Text(
+                            text = "Controla pantalla negra y visibilidad del HUD y flechas sin depender de programar desde cero. La intro negra oculta todo al arrancar dejando visible '3, 2, 1, ¡YA!' y aparece suave después.",
+                            color = StudioColors.TextMuted,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp
+                        )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            ActionChip(
+                                label = "Intro Negra",
+                                selected = uiPresetAction == "intro",
+                                color = StudioColors.AccentCoral,
+                                onClick = {
+                                    uiPresetAction = "intro"
+                                    uiBlackAlpha = 1.0f
+                                    uiHideHud = true
+                                    uiHideArrows = true
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ActionChip(
+                                label = "Apagar / Ocultar",
+                                selected = uiPresetAction == "hide",
+                                color = StudioColors.AccentAmber,
+                                onClick = {
+                                    uiPresetAction = "hide"
+                                    uiBlackAlpha = 1.0f
+                                    uiHideHud = true
+                                    uiHideArrows = true
+                                },
+                                modifier = Modifier.weight(1.1f)
+                            )
+                            ActionChip(
+                                label = "Mostrar Todo",
+                                selected = uiPresetAction == "show",
+                                color = StudioColors.AccentEmerald,
+                                onClick = {
+                                    uiPresetAction = "show"
+                                    uiBlackAlpha = 0.0f
+                                    uiHideHud = false
+                                    uiHideArrows = false
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ActionChip(
+                                label = "Alternar UI",
+                                selected = uiPresetAction == "toggle",
+                                color = StudioColors.AccentCyan,
+                                onClick = { uiPresetAction = "toggle" },
+                                modifier = Modifier.weight(0.95f)
+                            )
+                        }
+
+                        if (uiPresetAction != "show") {
+                            Text(
+                                text = "Oscuridad de pantalla negra: ${(uiBlackAlpha * 100).roundToInt()}%",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 11.sp
+                            )
+                            Slider(
+                                value = uiBlackAlpha,
+                                onValueChange = { uiBlackAlpha = it },
+                                valueRange = 0.0f..1.0f
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Ocultar barra de vida y puntaje (HUD)", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Switch(checked = uiHideHud, onCheckedChange = { uiHideHud = it })
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Ocultar flechas y notas", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Switch(checked = uiHideArrows, onCheckedChange = { uiHideArrows = it })
+                            }
+                        }
+
+                        Text(
+                            text = "Duración del desvanecimiento (fade): ${String.format(Locale.US, "%.2fs", uiFadeSec)}",
+                            color = StudioColors.TextPrimary,
+                            fontSize = 11.sp
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            listOf(0.0f to "Corte", 0.35f to "0.35s", 0.65f to "0.65s", 1.2f to "1.2s", 2.5f to "2.5s").forEach { (sec, label) ->
+                                ActionChip(
+                                    label = label,
+                                    selected = kotlin.math.abs(uiFadeSec - sec) < 0.05f,
+                                    color = StudioColors.AccentCoral,
+                                    onClick = { uiFadeSec = sec },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        if (uiPresetAction == "intro") {
+                            Text(
+                                text = "Esperar tras '¡YA!' antes de aparecer:",
+                                color = StudioColors.AccentAmber,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                listOf(0.0f to "Al ¡YA!", 500.0f to "+0.5s", 1000.0f to "+1.0s", 2000.0f to "+2.0s").forEach { (ms, label) ->
+                                    ActionChip(
+                                        label = label,
+                                        selected = kotlin.math.abs(uiIntroDelayMs - ms) < 10f,
+                                        color = StudioColors.AccentAmber,
+                                        onClick = { uiIntroDelayMs = ms },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                val targetBlack = if (uiPresetAction == "show") 0.0f else uiBlackAlpha
+                                val targetHud = when {
+                                    uiPresetAction == "show" -> 1.0f
+                                    uiHideHud -> 0.0f
+                                    else -> 1.0f
+                                }
+                                val targetArrows = when {
+                                    uiPresetAction == "show" -> 1.0f
+                                    uiHideArrows -> 0.0f
+                                    else -> 1.0f
+                                }
+                                val v2 = String.format(
+                                    Locale.US,
+                                    "black=%.2f;hud=%.2f;arrows=%.2f;dur=%.2f;revealMs=%.0f;onStart=1",
+                                    targetBlack,
+                                    targetHud,
+                                    targetArrows,
+                                    uiFadeSec,
+                                    if (uiPresetAction == "intro") uiIntroDelayMs else 0.0f
+                                )
+                                onAddChartEvent(stepRow.stepTimeMs, "UI Blackout", uiPresetAction, v2)
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StudioColors.AccentCoral,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.VisibilityOff, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = if (uiPresetAction == "intro") "Guardar Intro Pantalla en Negro" else "Aplicar Evento UI / Negro en Paso #${stepRow.stepInSec}",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                onDismiss()
+                                onOpenUiBlackoutScript()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.Code, null, tint = StudioColors.AccentCoral, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Editar script ui_blackout.lua", fontSize = 11.sp)
                         }
                     }
                 }

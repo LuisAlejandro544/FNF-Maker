@@ -271,6 +271,7 @@ mod jni_exports {
             guard.project.chart = pulse_core::ChartData::bundled_demo_chart();
             guard.project.chart_source_path = None;
             guard.project.sync_stage_events_script();
+            guard.project.sync_ui_blackout_script();
             guard.save_active_project_now();
             guard.ok_response("Chart demo restaurado")
         };

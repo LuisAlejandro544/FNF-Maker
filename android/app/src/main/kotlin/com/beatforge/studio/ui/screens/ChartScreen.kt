@@ -60,6 +60,7 @@ fun ChartScreen(
     onAddChartEvent: (timeMs: Double, name: String, value1: String, value2: String) -> Unit,
     onRemoveChartEvent: (index: Int) -> Unit,
     onOpenStageEventsScript: () -> Unit,
+    onOpenUiBlackoutScript: () -> Unit,
     onAddSection: (mustHit: Boolean) -> Unit,
     onToggleSectionMustHit: (secIndex: Int) -> Unit,
     onToggleChartNote: (secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) -> Unit,
@@ -290,6 +291,7 @@ fun ChartScreen(
             onRemoveChartEvent = onRemoveChartEvent,
             onMovePlayheadHere = seekPlayheadToStepMs,
             onOpenStageEventsScript = onOpenStageEventsScript,
+            onOpenUiBlackoutScript = onOpenUiBlackoutScript,
             onDismiss = { activeCueGlobalStep = null }
         )
     }

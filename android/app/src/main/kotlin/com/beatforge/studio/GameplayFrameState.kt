@@ -148,6 +148,9 @@ class GameplayFrameState {
     var hudVisible: Boolean = true
     var hudOpacity: Float = 1f
     var hudZoom: Float = 1f
+    var arrowsVisible: Boolean = true
+    var arrowsOpacity: Float = 1f
+    var screenBlackoutAlpha: Float = 0f
     var flashColorArgb: Int = -1
     var flashAlpha: Float = 0f
     var flashOverHud: Boolean = false
@@ -194,6 +197,9 @@ class GameplayFrameState {
         hudVisible = true
         hudOpacity = 1f
         hudZoom = 1f
+        arrowsVisible = true
+        arrowsOpacity = 1f
+        screenBlackoutAlpha = 0f
         flashColorArgb = -1
         flashAlpha = 0f
         flashOverHud = false
@@ -235,6 +241,9 @@ class GameplayFrameState {
         hudVisible = step.hudVisible
         hudOpacity = step.hudOpacity
         hudZoom = step.hudZoom
+        arrowsVisible = step.arrowsVisible
+        arrowsOpacity = step.arrowsOpacity
+        screenBlackoutAlpha = step.screenBlackoutAlpha
         flashColorArgb = step.flashColorArgb.toInt()
         flashAlpha = step.flashAlpha
         flashOverHud = step.flashOverHud
@@ -421,6 +430,9 @@ class GameplayFrameState {
         val hasHudStrings = (flags and (1 shl 5)) != 0
         hudVisible = (flags and (1 shl 6)) != 0
         flashOverHud = (flags and (1 shl 7)) != 0
+        arrowsVisible = (flags and (1 shl 8)) == 0
+        screenBlackoutAlpha = ((flags ushr 16) and 0xFF) / 255f
+        arrowsOpacity = 1f - (((flags ushr 24) and 0xFF) / 255f)
         hudOpacity = hudOpVal
         hudZoom = hudZoomVal
         health = healthVal

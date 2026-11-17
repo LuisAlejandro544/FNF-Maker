@@ -132,3 +132,21 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 ## 4. Política de Licencias y Propiedad Intelectual
 - **Cero licencias copyleft fuertes/débiles**: Todas las dependencias Rust y Android son **MIT**, **Apache-2.0**, **Zlib** o equivalentes permisivas. Se descartaron librerías MPL-2.0 / GPL / LGPL (por ejemplo, se usa `lewton` + `hound` + `rmp3` en lugar de `symphonia`, y `texture2ddecoder` es `MIT OR Apache-2.0`).
 - **Sin marcas registradas**: Prohibido incluir nombres de personajes, canciones o archivos con derechos de autor de terceros. La marca del proyecto es **BeatForge Studio** y las flechas por defecto son SVG geométricos originales (`sdk/assets/arrows/`).
+
+---
+
+## 5. Bonus: Pipeline Video Studio CLI (`tools/video-studio/`)
+
+Como capacidad adicional desacoplada del motor Android (sin modificar el cascarón web `Hello World` de `/src/App.tsx`), el repositorio provee una suite CLI reproducible orientada a ejecutar descargas, edición de `.mp4` largos/pesados por streaming y generación procedural de animaciones H.264/AAC:
+
+- **Instalación y Entorno (`setup-env.sh`)**:
+  - `yt-dlp` (`Unlicense`) + `yt-dlp-latest` y `deno` (`MIT`) enlazado junto a `node` en `/root/.config/yt-dlp/config` con `--remote-components ejs:github`.
+  - `uv` (`MIT/Apache-2.0`) gestionando `/opt/video-studio-venv` (Python 3.11) con `faster-whisper` (`MIT`, incluye Silero VAD), `scenedetect` (`BSD-3-Clause`), `opencv-python-headless` (`Apache-2.0`), `av` (`BSD-3-Clause`), `pillow` (`HPND`) y `numpy` (`BSD`), apoyados en `ffmpeg`/`ffprobe` del sistema. Cero binarios GPL como `bgutil` o incompatibles con `GLIBC 2.36`.
+- **Arquitectura Streaming para `.mp4` Pesados**:
+  - `ingest-long-video` extrae en un único paso por disco/pipe un proxy `480p` ligero, pista `audio_16k.wav`, mapa de silencios (`ffmpeg silencedetect` invertido en `video_pipeline_lib.py` a segmentos activos) y cortes visuales de escena (`PySceneDetect`), produciendo un plan declarativo `edit.json`.
+  - `transcribe-video` genera `.json`, `.srt` y `.ass` palabra por palabra mediante `faster-whisper` + Silero VAD.
+  - `render-edit` ejecuta recortes `copy` (sin recodificar en segundos), `draft` (`480p` + hojas de contacto `--qc`) o `master` (`1080p` / `9:16`, normalización `-14 LUFS`, música con *ducking* y subtítulos quemados).
+- **Motor Procedural de Animación (`stickman_fight_lib.py` + `render-stickman-fight`)**:
+  - Renderiza secuencias cuadro por cuadro por *pipe* directo hacia `ffmpeg` (H.264 `yuv420p` + audio AAC `48 kHz`) sin saturar disco con miles de PNG intermedios: cinemática articulada de stickman Azul vs Rojo, escenario dojo ciber-atardecer con paralaje, partículas/chispas, sacudida de cámara, HUD arcade y síntesis DSP de música (`138 BPM`) + SFX sincronizados a cada impacto.
+  - La demo generada (`20.0 s`, `1280×720`, `30 FPS`) queda publicada estáticamente en `public/videos/stickman_fight_20s.mp4` y reproducible/descargable desde teléfono en `/ver-video.html`.
+

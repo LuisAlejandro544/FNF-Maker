@@ -161,6 +161,26 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── svg/                             # Fuentes vectoriales (.svg): icono, redondo, foreground/background/monochrome, banner y miniatura
 │   └── png/                             # PNGs listos para Uptodown/tiendas (512, 1024, banner 1024x500) y miniaturas (1280x720, 640x360)
 │
+├── public/                              # Activos estáticos servidos directamente por Vite sin tocar `src/App.tsx`
+│   ├── ver-video.html                   # Reproductor HTML5 móvil para ver/descargar el combate stickman de 20s
+│   └── videos/
+│       └── stickman_fight_20s.mp4       # Video MP4 H.264/AAC (1280×720, 30 FPS, 20.0s) exportado por Video Studio CLI
+│
+├── tools/
+│   └── video-studio/                    # Bonus: suite CLI modular de descarga, edición de MP4 largos y animación procedural
+│       ├── setup-env.sh                 # Instalador reproducible (yt-dlp, deno, uv, faster-whisper, scenedetect, OpenCV, PyAV, Pillow)
+│       ├── download-video               # Descargador CLI con soporte JS runtime (deno/node) y --cookies opcional
+│       ├── ingest-long-video            # Ingesta en streaming para MP4 largos (proxy 480p, audio 16k, silencios, escenas y edit.json)
+│       ├── transcribe-video             # Transcripción offline con Silero VAD + subtítulos .json/.srt/.ass
+│       ├── render-edit                  # Renderizador modular (modos copy / draft / master + QC frames)
+│       ├── make-vertical-reel           # Atajo para extraer clips verticales 9:16 con subtítulos desde MP4 largos
+│       ├── render-stickman-fight        # CLI generador de combate stickman (Azul vs Rojo) con audio DSP BGM + SFX
+│       ├── video_pipeline_lib.py        # Lógica pura de intervalos, cortes, ffmpeg filters y planes edit.json
+│       ├── stickman_fight_lib.py        # Motor procedural de animación, cinemática stickman, partículas y síntesis BGM/SFX
+│       ├── test_video_pipeline.py       # Pruebas unitarias `unittest` del pipeline de video
+│       ├── README.md                    # Guía rápida de uso del Bonus Video Studio CLI
+│       └── workspace/                   # Salidas de trabajo locales (ignorado en git vía .gitignore)
+│
 └── Documentación raíz
     ├── README.md
     ├── ROADMAP.md

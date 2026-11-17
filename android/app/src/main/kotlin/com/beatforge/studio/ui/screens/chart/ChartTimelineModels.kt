@@ -36,6 +36,7 @@ enum class StepCueKind {
     Flash,
     Character,
     Preload,
+    UiBlackout,
     Other
 }
 
@@ -95,6 +96,17 @@ fun classifyChartEvent(event: ChartEventSnapshot): StepCueKind {
             StepCueKind.Flash
         lower == "preload sprite" -> StepCueKind.Preload
         lower == "change character" -> StepCueKind.Character
+        lower == "ui blackout" ||
+            lower == "blackout" ||
+            lower == "screen fade" ||
+            lower == "camera fade" ||
+            lower == "hide ui" ||
+            lower == "show ui" ||
+            lower == "toggle ui" ||
+            lower == "fade ui" ||
+            lower == "hud fade" ||
+            lower == "hide hud" ||
+            lower == "show hud" -> StepCueKind.UiBlackout
         lower == "stage swap" || lower == "swap stage" -> {
             val v1Lower = event.value1.lowercase()
             if (v1Lower.contains("player=") || v1Lower.contains("opp=") || v1Lower.contains("opponent=")) {
@@ -116,6 +128,31 @@ fun summarizeChartEvent(event: ChartEventSnapshot): String {
             val overHud = params["hud"] == "1" || params["hud"] == "true" || lower == "flash hud"
             val dur = params["dur"] ?: params["duration"] ?: "0.65"
             "Flash $col · ${dur}s" + if (overHud) " (HUD)" else " (Escena)"
+        }
+        StepCueKind.UiBlackout -> {
+            val params = parseSemiKv(event.value2)
+            val v1Lower = event.value1.trim().lowercase()
+            val action = params["action"] ?: v1Lower.ifBlank { lower }
+            val dur = params["dur"] ?: params["duration"] ?: event.value2.trim().takeIf { it.toDoubleOrNull() != null } ?: "0.60"
+            when (action) {
+                "intro" -> {
+                    val delayMs = params["revealms"]?.toDoubleOrNull() ?: 0.0
+                    val delayTag = if (delayMs > 0.0) " +${String.format(java.util.Locale.US, "%.1fs", delayMs / 1000.0)}" else ""
+                    "Intro Negra (3-2-1-¡YA! visible)$delayTag · fade ${dur}s"
+                }
+                "show", "reveal", "show ui", "show hud" -> "Mostrar Escena y UI/Flechas · ${dur}s"
+                "toggle", "toggle ui" -> "Alternar UI y Flechas · ${dur}s"
+                else -> {
+                    val blackVal = params["black"]?.toDoubleOrNull()
+                    val hudVal = params["hud"]?.toDoubleOrNull()
+                    val arrowsVal = params["arrows"]?.toDoubleOrNull()
+                    val tags = mutableListOf<String>()
+                    if (blackVal != null && blackVal >= 0.05) tags.add("Negro ${(blackVal * 100).roundToInt()}%")
+                    if (hudVal != null && hudVal <= 0.05) tags.add("Sin HUD")
+                    if (arrowsVal != null && arrowsVal <= 0.05) tags.add("Sin Flechas")
+                    if (tags.isEmpty()) "UI / Pantalla · ${event.name} (${dur}s)" else "${tags.joinToString(" + ")} · ${dur}s"
+                }
+            }
         }
         StepCueKind.Swap, StepCueKind.Character -> {
             val params = parseSemiKv(event.value1)

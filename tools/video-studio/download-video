@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# ============================================================================
+# Archivo: tools/video-studio/download-video
+# Propósito: Ejecutable para descargar videos en su última versión usando
+#            yt-dlp + Deno/Node EJS. Soporta --cookies <archivo.txt> si una
+#            plataforma restringe IPs de servidor, y guarda en workspace/raw/.
+# Uso: ./tools/video-studio/download-video [--cookies cookies.txt] [--out dir] URL
+# ============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT_DIR="$SCRIPT_DIR/workspace/raw"
+COOKIES_ARG=()
+EXTRA_ARGS=()
+TARGET_URL=""
+
+usage() {
+  cat << 'EOF'
+Uso: download-video [opciones] <URL>
+Opciones:
+  --out <carpeta>       Carpeta destino (por defecto: tools/video-studio/workspace/raw)
+  --cookies <ruta>      Archivo cookies.txt (Netscape) si la plataforma exige sesión
+  --audio-only          Descarga solo audio en WAV/M4A para transcripción o mezcla
+  --max-res <altura>    Limita altura máxima (ej: 1080 o 720)
+  -h, --help            Muestra esta ayuda
+EOF
+}
+
+AUDIO_ONLY=0
+MAX_RES=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out)
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --cookies)
+      COOKIES_ARG=(--cookies "$2")
+      shift 2
+      ;;
+    --audio-only)
+      AUDIO_ONLY=1
+      shift
+      ;;
+    --max-res)
+      MAX_RES="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      EXTRA_ARGS+=("$1")
+      shift
+      ;;
+    *)
+      TARGET_URL="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$TARGET_URL" ]]; then
+  usage
+  exit 1
+fi
+
+if ! command -v yt-dlp >/dev/null 2>&1; then
+  echo "[download-video] yt-dlp no está instalado. Ejecuta primero ./tools/video-studio/setup-env.sh" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+
+# Autoactualiza yt-dlp silenciosamente si hay nueva versión publicada
+yt-dlp -U >/dev/null 2>&1 || true
+
+FORMAT_ARGS=()
+if [[ "$AUDIO_ONLY" -eq 1 ]]; then
+  FORMAT_ARGS=(-f "bestaudio/best" -x --audio-format m4a)
+elif [[ -n "$MAX_RES" ]]; then
+  FORMAT_ARGS=(-f "bv*[height<=${MAX_RES}][ext=mp4]+ba[ext=m4a]/b[height<=${MAX_RES}][ext=mp4]/bv*+ba/b" --merge-output-format mp4)
+else
+  FORMAT_ARGS=(-f "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" --merge-output-format mp4)
+fi
+
+exec yt-dlp \
+  --no-playlist \
+  "${FORMAT_ARGS[@]}" \
+  "${COOKIES_ARG[@]}" \
+  "${EXTRA_ARGS[@]}" \
+  -o "${OUT_DIR}/%(title).80s [%(id)s].%(ext)s" \
+  "$TARGET_URL"

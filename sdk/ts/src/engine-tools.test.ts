@@ -22,6 +22,7 @@ import {
   buildBfaudCacheKey,
   buildFlashEffectEventParams,
   buildStageSwapEventParams,
+  buildUiBlackoutEventParams,
   clampEntityScale,
   classifySafImportStorage,
   compareNaturalFrameNames,
@@ -50,6 +51,7 @@ import {
   parseAstcHeader,
   parseCameraConfigFromLua,
   parseChartJson,
+  parseUiBlackoutEvent,
   planMultiProjectLruEviction,
   renderCameraLuaConfigBlock,
   resolveChartPlayheadStep,
@@ -813,6 +815,9 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   );
   assert.equal(fastFrame.hasHudStrings, false);
   assert.equal(fastFrame.lastJudgement, undefined);
+  assert.equal(fastFrame.arrowsVisible, true);
+  assert.equal(fastFrame.arrowsOpacity, 1);
+  assert.equal(fastFrame.screenBlackoutAlpha, 0);
 });
 
 test('clampEntityScale and sortProjectSummaries enforce valid bounds and active-first ordering', () => {
@@ -1446,6 +1451,79 @@ test('parseModDescriptor rejects empty or unrecognized mod descriptor payloads c
   assert.throws(() => parseModDescriptor('<TextureAtlas imagePath="sheet.png"></TextureAtlas>'));
   assert.throws(() => parseModDescriptor(JSON.stringify({ unrelated: true })));
 });
+
+test('decodeBinaryGameplayFrame decodes arrowsVisible, quantized arrowsOpacity and screenBlackoutAlpha', () => {
+  const buf = new Uint8Array(BINARY_GAMEPLAY_HEADER_BYTES);
+  const view = new DataView(buf.buffer);
+  view.setUint32(0, BINARY_GAMEPLAY_MAGIC, true);
+  // bit 0 (active=1), bit 8 (arrowsHidden=1), bits 16..23 (blackout=204 ~ 0.8), bits 24..31 (arrowsFadeOut=153 -> opacity ~ 0.4)
+  const flags = (1 | (1 << 8) | (204 << 16) | (153 << 24)) >>> 0;
+  view.setUint32(4, flags, true);
+
+  const decoded = decodeBinaryGameplayFrame(buf);
+  assert.equal(decoded.active, true);
+  assert.equal(decoded.hudVisible, false);
+  assert.equal(decoded.arrowsVisible, false);
+  assert.ok(Math.abs(decoded.screenBlackoutAlpha - 204 / 255) < 0.005);
+  assert.ok(Math.abs(decoded.arrowsOpacity - (1 - 153 / 255)) < 0.005);
+});
+
+test('UI Blackout helpers support intro blackout keeping 3-2-1-GO visible and external chart.json events', () => {
+  const introBuilt = buildUiBlackoutEventParams({
+    action: 'intro',
+    blackAlpha: 1,
+    hideHud: true,
+    hideArrows: true,
+    durationSec: 0.85,
+    revealDelayMs: 500,
+    revealOnSongStart: true,
+  });
+  assert.equal(introBuilt.name, 'UI Blackout');
+  const introParsed = parseUiBlackoutEvent({ timeMs: 0, ...introBuilt });
+  assert.equal(introParsed.isUiBlackoutEvent, true);
+  assert.equal(introParsed.isIntroBlackout, true);
+  assert.equal(introParsed.blackAlpha, 1);
+  assert.equal(introParsed.hudAlpha, 0);
+  assert.equal(introParsed.arrowsAlpha, 0);
+  assert.equal(introParsed.revealDelayMs, 500);
+  assert.equal(introParsed.revealOnSongStart, true);
+
+  const extScreenFade = parseUiBlackoutEvent({
+    timeMs: 12000,
+    name: 'Screen Fade',
+    value1: '0.75',
+    value2: '1.25',
+  });
+  assert.equal(extScreenFade.isUiBlackoutEvent, true);
+  assert.equal(extScreenFade.isIntroBlackout, false);
+  assert.equal(extScreenFade.blackAlpha, 0.75);
+  assert.equal(extScreenFade.durationSec, 1.25);
+
+  const extHideUi = parseUiBlackoutEvent({
+    timeMs: 32000,
+    name: 'Hide UI',
+    value1: '',
+    value2: '',
+  });
+  assert.equal(extHideUi.isUiBlackoutEvent, true);
+  assert.equal(extHideUi.action, 'hide');
+  assert.equal(extHideUi.hudAlpha, 0);
+  assert.equal(extHideUi.arrowsAlpha, 0);
+  assert.equal(extHideUi.blackAlpha, -1);
+
+  const luaOpt = optimizeScriptLoops(
+    'lua',
+    `function onSongStart()
+       for i = 1, 2 do
+         tweenScreenBlackout('intro', 0, 0.8, 'sineOut')
+         tweenArrowsOpacity('arrows', 1, 0.8, 'sineOut')
+       end
+     end`,
+  );
+  assert.equal(luaOpt.discardedLoops, 0);
+  assert.ok(luaOpt.optimizedSource.includes('tweenScreenBlackout'));
+});
+
 
 
 

@@ -356,6 +356,7 @@ impl EngineSession {
                 &session.runtime.state,
                 &self.project.stage,
                 &session.bundle.active_entities,
+                &session.dynamic_items,
                 &session.active_player_id,
                 &session.active_opponent_id,
                 &session.strum_overrides,
@@ -370,7 +371,18 @@ impl EngineSession {
                 session.accuracy_pct,
                 session.active_scroll_speed,
                 session.active_downscroll,
+                session.hud_visible,
+                session.hud_opacity,
+                session.hud_zoom,
+                session.arrows_visible,
+                session.arrows_opacity,
+                session.screen_blackout_alpha,
             );
+
+            if !in_countdown && !session.song_started {
+                session.song_started = true;
+                session.runtime.call_on_song_start();
+            }
 
             while session.next_event_idx < self.project.chart.events.len() {
                 let ev = &self.project.chart.events[session.next_event_idx];

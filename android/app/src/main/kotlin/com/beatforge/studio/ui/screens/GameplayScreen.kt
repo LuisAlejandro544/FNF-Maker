@@ -204,13 +204,18 @@ fun GameplayScreen(
 
         GameplayPauseButton(onPause = { onSetPaused(true) })
 
-        GameplayScriptBanner(hud = hud)
-
-        GameplayCountdownOverlay(hud = hud)
-
-        // Capa de flash sobre HUD (debajo de los diálogos de Pausa/Resultados)
+        // Cortina de pantalla en negro (`screenBlackoutAlpha`) y destello sobre HUD:
+        // cubre escenario, flechas y barra de vida, pero conserva visible el conteo "3, 2, 1, ¡YA!" y Pausa.
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (frameState.drawTick < 0L) return@Canvas
+            val blackoutAlpha = frameState.screenBlackoutAlpha.coerceIn(0f, 1f)
+            if (blackoutAlpha > 0.002f) {
+                drawRect(
+                    color = Color.Black.copy(alpha = blackoutAlpha),
+                    topLeft = Offset.Zero,
+                    size = size
+                )
+            }
             if (frameState.flashOverHud && frameState.flashAlpha > 0.002f) {
                 drawRect(
                     color = Color(frameState.flashColorArgb).copy(alpha = frameState.flashAlpha.coerceIn(0f, 1f)),
@@ -219,6 +224,10 @@ fun GameplayScreen(
                 )
             }
         }
+
+        GameplayScriptBanner(hud = hud)
+
+        GameplayCountdownOverlay(hud = hud)
 
         GameplayPauseDialog(
             hud = hud,

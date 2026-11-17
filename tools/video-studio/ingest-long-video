@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""
+Archivo: tools/video-studio/ingest-long-video
+Propósito: Prepara archivos .mp4 grandes o largos (varios GB / decenas de minutos o
+           horas) para que la IA pueda analizarlos sin saturar memoria ni tokens:
+           1. Inspecciona streams y duración real con ffprobe -> metadata.json
+           2. Genera un proxy ligero 480p (opcional con --skip-proxy)
+           3. Extrae audio WAV mono 16 kHz en streaming -> audio_16k.wav
+           4. Detecta silencios / pausas con ffmpeg silencedetect -> silences.json
+              y calcula segmentos activos recomendados -> edit_silences.json
+           5. Detecta cortes visuales de escena con PySceneDetect -> scenes.csv
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from video_pipeline_lib import build_edit_plan, invert_silences_to_keep_segments  # noqa: E402
+
+
+SILENCE_START_RE = re.compile(r"silence_start:\s*([0-9.]+)")
+SILENCE_END_RE = re.compile(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)")
+
+
+def run_cmd(cmd: list[str], capture: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+    )
+
+
+def probe_video(video_path: Path) -> dict:
+    proc = run_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(video_path),
+        ],
+        capture=True,
+    )
+    return json.loads(proc.stdout)
+
+
+def detect_silences_ffmpeg(audio_wav: Path, noise_db: str, min_silence_sec: float) -> list[tuple[float, float]]:
+    proc = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(audio_wav),
+            "-af",
+            f"silencedetect=noise={noise_db}:d={min_silence_sec}",
+            "-f",
+            "null",
+            "-",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    silences: list[tuple[float, float]] = []
+    current_start: float | None = None
+    for line in proc.stderr.splitlines():
+        m_start = SILENCE_START_RE.search(line)
+        if m_start:
+            current_start = float(m_start.group(1))
+            continue
+        m_end = SILENCE_END_RE.search(line)
+        if m_end and current_start is not None:
+            silences.append((current_start, float(m_end.group(1))))
+            current_start = None
+    return silences
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Ingesta y análisis por streaming para videos .mp4 largos/pesados")
+    parser.add_argument("video", help="Ruta al archivo .mp4 original")
+    parser.add_argument("--work-dir", default=str(SCRIPT_DIR / "workspace"), help="Carpeta base de trabajo")
+    parser.add_argument("--noise-db", default="-34dB", help="Umbral de silencio FFmpeg (ej: -34dB o -38dB)")
+    parser.add_argument("--min-silence", type=float, default=0.65, help="Silencio mínimo cortable en segundos")
+    parser.add_argument("--aspect", default="preserve", choices=["preserve", "vertical", "horizontal", "square"])
+    parser.add_argument("--skip-proxy", action="store_true", help="Omite generar el proxy 480p")
+    parser.add_argument("--skip-scenes", action="store_true", help="Omite detección visual de escenas")
+    args = parser.parse_args()
+
+    video_path = Path(args.video).expanduser().resolve()
+    if not video_path.exists():
+        print(f"[ingest] No existe el archivo: {video_path}", file=sys.stderr)
+        return 1
+
+    work_dir = Path(args.work_dir).resolve()
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", video_path.stem)[:60] or "video"
+    data_dir = work_dir / "data" / slug
+    proxy_dir = work_dir / "proxies"
+    edits_dir = work_dir / "edits"
+    for d in (data_dir, proxy_dir, edits_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    print(f"[1/4] Inspeccionando metadatos con ffprobe: {video_path.name}")
+    meta = probe_video(video_path)
+    duration = float(meta.get("format", {}).get("duration", 0.0))
+    size_mb = round(video_path.stat().st_size / (1024 * 1024), 2)
+    (data_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"      Duración: {duration:.2f}s | Peso: {size_mb} MB")
+
+    proxy_path = proxy_dir / f"{slug}_proxy480p.mp4"
+    if not args.skip_proxy:
+        print(f"[2/4] Generando proxy ligero 480p en streaming -> {proxy_path.name}")
+        run_cmd(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video_path),
+                "-vf",
+                "scale=-2:480",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "28",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "96k",
+                str(proxy_path),
+            ]
+        )
+    else:
+        print("[2/4] Proxy omitido (--skip-proxy)")
+
+    wav_path = data_dir / "audio_16k.wav"
+    print(f"[3/4] Extrayendo audio mono 16 kHz -> {wav_path.name}")
+    run_cmd(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(wav_path),
+        ]
+    )
+
+    print(f"[4/4] Detectando silencios (>{args.min_silence}s @ {args.noise_db})...")
+    silences = detect_silences_ffmpeg(wav_path, args.noise_db, args.min_silence)
+    keep_segments = invert_silences_to_keep_segments(
+        total_duration=duration,
+        silences=silences,
+        min_silence_duration=args.min_silence,
+    )
+    silence_report = {
+        "source": str(video_path),
+        "duration_sec": duration,
+        "silence_count": len(silences),
+        "silences": [{"start": s, "end": e, "duration": round(e - s, 3)} for s, e in silences],
+        "keep_segments": [{"start": seg.start, "end": seg.end} for seg in keep_segments],
+    }
+    (data_dir / "silences.json").write_text(json.dumps(silence_report, indent=2), encoding="utf-8")
+
+    if keep_segments:
+        edit_plan = build_edit_plan(str(video_path), keep_segments, aspect=args.aspect)
+        edit_path = edits_dir / f"{slug}_auto_edit.json"
+        edit_path.write_text(json.dumps(edit_plan, indent=2), encoding="utf-8")
+        kept_total = sum(seg.duration for seg in keep_segments)
+        print(f"      Cortes automáticos listos: {len(keep_segments)} bloques ({kept_total:.1f}s útiles de {duration:.1f}s)")
+        print(f"      Plan JSON: {edit_path}")
+
+    if not args.skip_scenes:
+        scenedetect_bin = os.environ.get("SCENEDETECT_BIN", "/opt/video-studio-venv/bin/scenedetect")
+        target_for_scenes = proxy_path if proxy_path.exists() else video_path
+        if Path(scenedetect_bin).exists():
+            print(f"[Extra] Detectando cambios de escena con PySceneDetect sobre {target_for_scenes.name}...")
+            subprocess.run(
+                [
+                    scenedetect_bin,
+                    "-i",
+                    str(target_for_scenes),
+                    "-o",
+                    str(data_dir),
+                    "detect-content",
+                    "--threshold",
+                    "27",
+                    "list-scenes",
+                ],
+                check=False,
+            )
+
+    print(f"\nIngesta terminada en: {data_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

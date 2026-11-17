@@ -320,6 +320,7 @@ impl JsScriptVm {
             {
                 let h = Arc::clone(&host);
                 bind_js!("setHudVisible", move |visible: bool| {
+                    *h.hud_visible.lock() = visible;
                     h.push_command(ScriptCommand::SetHudProp {
                         prop: "visible".to_string(),
                         value: if visible { 1.0 } else { 0.0 },
@@ -328,21 +329,86 @@ impl JsScriptVm {
             }
             {
                 let h = Arc::clone(&host);
+                bind_js!("getHudVisible", move || -> bool { *h.hud_visible.lock() });
+            }
+            {
+                let h = Arc::clone(&host);
                 bind_js!("setHudOpacity", move |alpha: f32| {
-                    h.push_command(ScriptCommand::SetHudProp {
-                        prop: "opacity".to_string(),
-                        value: alpha,
+                    if alpha.is_finite() {
+                        let clamped = alpha.clamp(0.0, 1.0);
+                        *h.hud_opacity.lock() = clamped;
+                        h.push_command(ScriptCommand::SetHudProp {
+                            prop: "opacity".to_string(),
+                            value: clamped,
+                        });
+                    }
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("getHudOpacity", move || -> f32 { *h.hud_opacity.lock() });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("setHudZoom", move |zoom: f32| {
+                    if zoom.is_finite() {
+                        let clamped = zoom.clamp(0.4, 2.5);
+                        *h.hud_zoom.lock() = clamped;
+                        h.push_command(ScriptCommand::SetHudProp {
+                            prop: "zoom".to_string(),
+                            value: clamped,
+                        });
+                    }
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("getHudZoom", move || -> f32 { *h.hud_zoom.lock() });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("setArrowsVisible", move |visible: bool| {
+                    *h.arrows_visible.lock() = visible;
+                    h.push_command(ScriptCommand::SetArrowsProp {
+                        prop: "visible".to_string(),
+                        value: if visible { 1.0 } else { 0.0 },
                     });
                 });
             }
             {
                 let h = Arc::clone(&host);
-                bind_js!("setHudZoom", move |zoom: f32| {
-                    h.push_command(ScriptCommand::SetHudProp {
-                        prop: "zoom".to_string(),
-                        value: zoom,
-                    });
+                bind_js!("getArrowsVisible", move || -> bool { *h.arrows_visible.lock() });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("setArrowsOpacity", move |alpha: f32| {
+                    if alpha.is_finite() {
+                        let clamped = alpha.clamp(0.0, 1.0);
+                        *h.arrows_opacity.lock() = clamped;
+                        h.push_command(ScriptCommand::SetArrowsProp {
+                            prop: "opacity".to_string(),
+                            value: clamped,
+                        });
+                    }
                 });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("getArrowsOpacity", move || -> f32 { *h.arrows_opacity.lock() });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("setScreenBlackout", move |alpha: f32| {
+                    if alpha.is_finite() {
+                        let clamped = alpha.clamp(0.0, 1.0);
+                        *h.screen_blackout_alpha.lock() = clamped;
+                        h.push_command(ScriptCommand::SetScreenBlackout(clamped));
+                    }
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("getScreenBlackout", move || -> f32 { *h.screen_blackout_alpha.lock() });
             }
 
             // --- Gráficos, Textos y Clonación dinámica ---
@@ -456,6 +522,53 @@ impl JsScriptVm {
                         tag,
                         strum_idx: strum_idx.clamp(0, 7) as usize,
                         prop,
+                        target,
+                        duration_sec: dur,
+                        ease,
+                    });
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("tweenHudProp", move |tag: String, prop: String, target: f32, dur: f32, ease: String| {
+                    h.push_command(ScriptCommand::TweenHudProp {
+                        tag,
+                        prop,
+                        target,
+                        duration_sec: dur,
+                        ease,
+                    });
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("tweenHudOpacity", move |tag: String, target: f32, dur: f32, ease: String| {
+                    h.push_command(ScriptCommand::TweenHudProp {
+                        tag,
+                        prop: "opacity".to_string(),
+                        target,
+                        duration_sec: dur,
+                        ease,
+                    });
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("tweenArrowsOpacity", move |tag: String, target: f32, dur: f32, ease: String| {
+                    h.push_command(ScriptCommand::TweenArrowsProp {
+                        tag,
+                        prop: "opacity".to_string(),
+                        target,
+                        duration_sec: dur,
+                        ease,
+                    });
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("tweenScreenBlackout", move |tag: String, target: f32, dur: f32, ease: String| {
+                    h.push_command(ScriptCommand::TweenScreenBlackout {
+                        tag,
                         target,
                         duration_sec: dur,
                         ease,

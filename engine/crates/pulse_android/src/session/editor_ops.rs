@@ -61,6 +61,7 @@ impl EngineSession {
                     self.project.chart = chart;
                     self.project.chart_source_path = Some(PathBuf::from(display_name));
                     self.project.sync_stage_events_script();
+                    self.project.sync_ui_blackout_script();
                     self.save_active_project_now();
                     self.ok_response(msg)
                 }
@@ -107,15 +108,17 @@ impl EngineSession {
     pub fn add_chart_event(&mut self, time_ms: f64, name: &str, value1: &str, value2: &str) -> String {
         self.project.chart.add_event(time_ms, name, value1, value2);
         self.project.sync_stage_events_script();
+        self.project.sync_ui_blackout_script();
         self.save_active_project_now();
-        self.ok_response("Evento de chart.json y stage_events.lua actualizados")
+        self.ok_response("Evento de chart.json y scripts de escena/UI actualizados")
     }
 
     pub fn remove_chart_event(&mut self, index: usize) -> String {
         self.project.chart.remove_event(index);
         self.project.sync_stage_events_script();
+        self.project.sync_ui_blackout_script();
         self.save_active_project_now();
-        self.ok_response("Evento eliminado y stage_events.lua actualizado")
+        self.ok_response("Evento eliminado y scripts de escena/UI actualizados")
     }
 
     pub fn add_chart_section(&mut self, must_hit: bool) -> String {

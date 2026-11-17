@@ -53,3 +53,12 @@ Hoja de ruta técnica y de producto para **BeatForge Studio** (`com.beatforge.st
   - Recursos `mipmap-*` originales libres de derechos para publicación limpia en Uptodown y tiendas APK alternativas.
 - [ ] **Pruebas Automatizadas Rust en CI**:
   - Paso adicional de `cargo test --workspace` en host Linux dentro de GitHub Actions antes del cross-compile Android.
+
+---
+
+## Bonus — Suite Multimedia CLI y Generador de Video (`tools/video-studio/`)
+
+- [x] **Pipeline CLI de Descarga, Edición de MP4 Largos y Animación Procedural**:
+  - Instalador reproducible (`setup-env.sh`) con `yt-dlp`, `deno`/`node`, `uv`, `faster-whisper` (Silero VAD), `scenedetect`, `opencv-python-headless`, `av`, `pillow` y `numpy` bajo licencias 100% permisivas.
+  - Flujo en streaming (`ingest-long-video`, `transcribe-video`, `render-edit`, `make-vertical-reel`, `download-video`) preparado para archivos `.mp4` largos sin saturar la RAM, más generador procedural (`render-stickman-fight`) con audio DSP y reproductor web directo en `/ver-video.html` (`/videos/stickman_fight_20s.mp4`).
+

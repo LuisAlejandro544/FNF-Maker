@@ -55,6 +55,19 @@ BeatForge Studio (`com.beatforge.studio`) es un **motor de creación de mods de 
 
 ---
 
+## Bonus: Estudio CLI de Video, Edición de MP4 Largos y Animación Procedural (`tools/video-studio/`)
+
+Además del motor nativo Android de BeatForge Studio, el repositorio incluye como **bonus** un conjunto modular de ejecutables CLI (`Unlicense`, `MIT`, `BSD-3-Clause`, `Apache-2.0`, `HPND`, cero dependencias copyleft) listo para reinstalar en cualquier contenedor Linux y producir, descargar, transcribir o editar videos `.mp4` directamente desde consola:
+
+- **Instalador reproducible (`tools/video-studio/setup-env.sh`)**: Instala o verifica `yt-dlp` (última versión + alias `yt-dlp-latest`), `deno` + puente `node` (`--remote-components ejs:github` para desafíos JS), `uv` + entorno `/opt/video-studio-venv` (`faster-whisper` con Silero VAD, `scenedetect`, `opencv-python-headless`, `av`, `pillow`, `numpy`) y `ffmpeg`/`ffprobe`.
+- **Descarga desde consola (`tools/video-studio/download-video`)**: Descarga videos públicos (con soporte opcional de `--cookies` Netscape cuando una plataforma restringe IPs de nube).
+- **Ingesta en streaming para `.mp4` largos y pesados (`tools/video-studio/ingest-long-video`)**: Procesa archivos de varios GB sin cargarlos completos en RAM generando proxy ligero `480p`, audio `16 kHz` mono, detección de silencios (`ffmpeg silencedetect`), cortes de escena (`PySceneDetect`) y plan declarativo `edit.json`.
+- **Transcripción + Subtítulos Karaoke (`tools/video-studio/transcribe-video`)**: Transcripción offline con `faster-whisper` + Silero VAD y exportación `.json`, `.srt` y `.ass`.
+- **Renderizado modular (`tools/video-studio/render-edit` y `make-vertical-reel`)**: Soporta modo `copy` (recorte instantáneo sin recodificar), `draft` (borrador `480p` + hojas de contacto `--qc`) y `master` (`1080p` / `9:16`, normalización `-14 LUFS`, música con *ducking* y subtítulos quemados).
+- **Generación procedural de animación + audio DSP (`tools/video-studio/render-stickman-fight`)**: Renderiza escenas animadas frame a frame en H.264/AAC (como la demo de combate **Stickman Azul vs Stickman Rojo** de `20.0 s` en `1280×720` @ `30 FPS`, con escenario dojo ciber-atardecer, cámara dinámica, partículas, BGM `138 BPM` y SFX sincronizados), visible directamente en `/ver-video.html` (MP4 directo en `/videos/stickman_fight_20s.mp4`) sin alterar el cascarón `Hello World` de `src/App.tsx`.
+
+---
+
 ## Compilar los 2 APKs Debug sin PC (GitHub Actions Manual)
 
 El proyecto está pensado para compilarse directamente en la nube desde tu teléfono y distribuirse en Uptodown o tiendas APK de terceros:

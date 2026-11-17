@@ -410,6 +410,7 @@ impl LuaScriptVm {
             globals.set(
                 "setHudVisible",
                 lua.create_function(move |_, visible: bool| {
+                    *h.hud_visible.lock() = visible;
                     h.push_command(ScriptCommand::SetHudProp {
                         prop: "visible".to_string(),
                         value: if visible { 1.0 } else { 0.0 },
@@ -421,11 +422,67 @@ impl LuaScriptVm {
         {
             let h = Arc::clone(&host);
             globals.set(
+                "getHudVisible",
+                lua.create_function(move |_, ()| Ok(*h.hud_visible.lock()))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
                 "setHudOpacity",
                 lua.create_function(move |_, alpha: f32| {
-                    h.push_command(ScriptCommand::SetHudProp {
-                        prop: "opacity".to_string(),
-                        value: alpha,
+                    if alpha.is_finite() {
+                        let clamped = alpha.clamp(0.0, 1.0);
+                        *h.hud_opacity.lock() = clamped;
+                        h.push_command(ScriptCommand::SetHudProp {
+                            prop: "opacity".to_string(),
+                            value: clamped,
+                        });
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getHudOpacity",
+                lua.create_function(move |_, ()| Ok(*h.hud_opacity.lock()))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setHudZoom",
+                lua.create_function(move |_, zoom: f32| {
+                    if zoom.is_finite() {
+                        let clamped = zoom.clamp(0.4, 2.5);
+                        *h.hud_zoom.lock() = clamped;
+                        h.push_command(ScriptCommand::SetHudProp {
+                            prop: "zoom".to_string(),
+                            value: clamped,
+                        });
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getHudZoom",
+                lua.create_function(move |_, ()| Ok(*h.hud_zoom.lock()))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setArrowsVisible",
+                lua.create_function(move |_, visible: bool| {
+                    *h.arrows_visible.lock() = visible;
+                    h.push_command(ScriptCommand::SetArrowsProp {
+                        prop: "visible".to_string(),
+                        value: if visible { 1.0 } else { 0.0 },
                     });
                     Ok(())
                 })?,
@@ -434,14 +491,53 @@ impl LuaScriptVm {
         {
             let h = Arc::clone(&host);
             globals.set(
-                "setHudZoom",
-                lua.create_function(move |_, zoom: f32| {
-                    h.push_command(ScriptCommand::SetHudProp {
-                        prop: "zoom".to_string(),
-                        value: zoom,
-                    });
+                "getArrowsVisible",
+                lua.create_function(move |_, ()| Ok(*h.arrows_visible.lock()))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setArrowsOpacity",
+                lua.create_function(move |_, alpha: f32| {
+                    if alpha.is_finite() {
+                        let clamped = alpha.clamp(0.0, 1.0);
+                        *h.arrows_opacity.lock() = clamped;
+                        h.push_command(ScriptCommand::SetArrowsProp {
+                            prop: "opacity".to_string(),
+                            value: clamped,
+                        });
+                    }
                     Ok(())
                 })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getArrowsOpacity",
+                lua.create_function(move |_, ()| Ok(*h.arrows_opacity.lock()))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setScreenBlackout",
+                lua.create_function(move |_, alpha: f32| {
+                    if alpha.is_finite() {
+                        let clamped = alpha.clamp(0.0, 1.0);
+                        *h.screen_blackout_alpha.lock() = clamped;
+                        h.push_command(ScriptCommand::SetScreenBlackout(clamped));
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getScreenBlackout",
+                lua.create_function(move |_, ()| Ok(*h.screen_blackout_alpha.lock()))?,
             )?;
         }
 
@@ -605,6 +701,77 @@ impl LuaScriptVm {
                             tag,
                             strum_idx: strum_idx.clamp(0, 7) as usize,
                             prop,
+                            target,
+                            duration_sec: dur,
+                            ease,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "tweenHudProp",
+                lua.create_function(
+                    move |_, (tag, prop, target, dur, ease): (String, String, f32, f32, String)| {
+                        h.push_command(ScriptCommand::TweenHudProp {
+                            tag,
+                            prop,
+                            target,
+                            duration_sec: dur,
+                            ease,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "tweenHudOpacity",
+                lua.create_function(
+                    move |_, (tag, target, dur, ease): (String, f32, f32, String)| {
+                        h.push_command(ScriptCommand::TweenHudProp {
+                            tag,
+                            prop: "opacity".to_string(),
+                            target,
+                            duration_sec: dur,
+                            ease,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "tweenArrowsOpacity",
+                lua.create_function(
+                    move |_, (tag, target, dur, ease): (String, f32, f32, String)| {
+                        h.push_command(ScriptCommand::TweenArrowsProp {
+                            tag,
+                            prop: "opacity".to_string(),
+                            target,
+                            duration_sec: dur,
+                            ease,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "tweenScreenBlackout",
+                lua.create_function(
+                    move |_, (tag, target, dur, ease): (String, f32, f32, String)| {
+                        h.push_command(ScriptCommand::TweenScreenBlackout {
+                            tag,
                             target,
                             duration_sec: dur,
                             ease,

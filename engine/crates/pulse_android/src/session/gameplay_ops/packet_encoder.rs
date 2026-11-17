@@ -199,6 +199,9 @@ impl EngineSession {
                 hud_visible: true,
                 hud_opacity: 1.0,
                 hud_zoom: 1.0,
+                arrows_visible: true,
+                arrows_opacity: 1.0,
+                screen_blackout_alpha: 0.0,
                 flash_color_argb: 0xFFFFFFFF,
                 flash_alpha: 0.0,
                 flash_over_hud: false,
@@ -371,6 +374,9 @@ impl EngineSession {
             hud_visible: session.hud_visible,
             hud_opacity: session.hud_opacity,
             hud_zoom: session.hud_zoom,
+            arrows_visible: session.arrows_visible,
+            arrows_opacity: session.arrows_opacity,
+            screen_blackout_alpha: session.screen_blackout_alpha,
             flash_color_argb: session.flash_color_argb,
             flash_alpha: session.flash_alpha,
             flash_over_hud: session.flash_over_hud,
@@ -566,6 +572,14 @@ impl EngineSession {
         if session.flash_over_hud {
             flags |= 1 << 7;
         }
+        if !session.arrows_visible {
+            flags |= 1 << 8;
+        }
+        let blackout_u8 = (session.screen_blackout_alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let arrows_inv_u8 =
+            ((1.0 - session.arrows_opacity.clamp(0.0, 1.0)) * 255.0).round() as u32;
+        flags |= (blackout_u8 & 0xFF) << 16;
+        flags |= (arrows_inv_u8 & 0xFF) << 24;
 
         let masks = (sim.player_holding_mask as u32)
             | ((sim.opp_holding_mask as u32) << 8)

@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""
+Archivo: tools/video-studio/make-vertical-reel
+Propósito: Atajo de un solo comando para extraer un clip vertical 9:16 (1080x1920)
+           desde un .mp4 largo/pesado, con opción de recortar rango (--start/--end),
+           quitar silencios, transcribir subtítulos palabra por palabra y normalizar
+           el volumen a -14 LUFS.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from video_pipeline_lib import TimeSegment, build_edit_plan  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Convierte un clip o fragmento de video largo en Reel 9:16")
+    parser.add_argument("video", help="Ruta al archivo .mp4")
+    parser.add_argument("--start", type=float, default=0.0, help="Inicio en segundos")
+    parser.add_argument("--end", type=float, required=True, help="Fin en segundos")
+    parser.add_argument("--out", help="Ruta de salida .mp4")
+    parser.add_argument("--subtitles", action="store_true", help="Transcribe con faster-whisper y quema subtítulos .ass")
+    parser.add_argument("--model", default="base", help="Modelo faster-whisper si se usa --subtitles")
+    parser.add_argument("--bgm", help="Ruta opcional a música de fondo")
+    parser.add_argument("--bgm-vol", type=float, default=0.10, help="Volumen relativo de música (0..1)")
+    args = parser.parse_args()
+
+    video_path = Path(args.video).expanduser().resolve()
+    if not video_path.exists():
+        print(f"[reel] Video no encontrado: {video_path}", file=sys.stderr)
+        return 1
+    if args.end <= args.start:
+        print("[reel] --end debe ser mayor que --start", file=sys.stderr)
+        return 1
+
+    work_dir = SCRIPT_DIR / "workspace"
+    edits_dir = work_dir / "edits"
+    exports_dir = work_dir / "exports"
+    data_dir = work_dir / "data" / f"{video_path.stem}_reel"
+    for d in (edits_dir, exports_dir, data_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    subs_path: str | None = None
+    if args.subtitles:
+        clip_wav = data_dir / "clip_16k.wav"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{args.start:.3f}",
+                "-i",
+                str(video_path),
+                "-t",
+                f"{args.end - args.start:.3f}",
+                "-vn",
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                str(clip_wav),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                str(SCRIPT_DIR / "transcribe-video"),
+                str(clip_wav),
+                "--out-dir",
+                str(data_dir),
+                "--model",
+                args.model,
+                "--vertical",
+            ],
+            check=True,
+        )
+        subs_path = str(data_dir / "subtitles.ass")
+
+    plan = build_edit_plan(
+        source_path=str(video_path),
+        segments=[TimeSegment(start=args.start, end=args.end, label="reel")],
+        aspect="vertical",
+        normalize_audio=True,
+        subtitles_path=subs_path,
+        bgm_path=args.bgm,
+        bgm_volume=args.bgm_vol,
+    )
+    plan_file = edits_dir / f"{video_path.stem}_reel.json"
+    plan_file.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+    out_mp4 = Path(args.out).resolve() if args.out else exports_dir / f"{video_path.stem}_reel_9x16.mp4"
+    subprocess.run(
+        [str(SCRIPT_DIR / "render-edit"), str(plan_file), "--out", str(out_mp4), "--mode", "master", "--qc"],
+        check=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

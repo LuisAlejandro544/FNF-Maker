@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Combate Stickman 20s — Video Studio CLI</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1116;
+        --panel: #171b22;
+        --border: #2a313d;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --accent: #f97316;
+        --accent-hover: #ea580c;
+        --blue: #38bdf8;
+        --red: #f87171;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: radial-gradient(circle at top, #1b2230 0%, var(--bg) 65%);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      .card {
+        width: 100%;
+        max-width: 960px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+      }
+      .header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .title-wrap h1 {
+        margin: 0;
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .title-wrap p {
+        margin: 4px 0 0;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+      .fighters {
+        display: flex;
+        gap: 10px;
+        font-size: 0.8rem;
+        font-weight: 600;
+      }
+      .tag-blue {
+        color: var(--blue);
+      }
+      .tag-red {
+        color: var(--red);
+      }
+      .player-box {
+        background: #05070b;
+        aspect-ratio: 16 / 9;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      video {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: contain;
+        background: #000;
+      }
+      .footer {
+        padding: 14px 20px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .specs {
+        font-size: 0.82rem;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 16px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #222834;
+        color: var(--text);
+        font-size: 0.88rem;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #0b0d12;
+      }
+      .btn-primary:hover {
+        background: var(--accent-hover);
+      }
+      .btn:hover {
+        filter: brightness(1.08);
+      }
+      @media (max-width: 600px) {
+        body {
+          padding: 10px;
+        }
+        .header,
+        .footer {
+          padding: 12px 14px;
+        }
+        .actions {
+          width: 100%;
+        }
+        .btn {
+          flex: 1 1 auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <header class="header">
+        <div class="title-wrap">
+          <h1>Combate Stickman 20s — Renderizado Local</h1>
+          <p>Escenario dojo ciber-atardecer, partículas, cámara dinámica, BGM 138 BPM y SFX sincronizados.</p>
+        </div>
+        <div class="fighters" aria-label="Combatientes">
+          <span class="tag-blue">Stickman Azul</span>
+          <span>VS</span>
+          <span class="tag-red">Stickman Rojo</span>
+        </div>
+      </header>
+
+      <div class="player-box">
+        <video
+          id="stickman-video"
+          controls
+          playsinline
+          preload="metadata"
+          src="/videos/stickman_fight_20s.mp4"
+        >
+          Tu navegador no soporta la reproducción directa de MP4. Usa el botón Descargar MP4.
+        </video>
+      </div>
+
+      <footer class="footer">
+        <div class="specs" id="video-specs">
+          MP4 H.264 · 1280×720 · 30 FPS · 20.0 s · Audio AAC 48 kHz estéreo
+        </div>
+        <div class="actions">
+          <button type="button" class="btn" id="btn-play-toggle">Reproducir con sonido</button>
+          <a class="btn btn-primary" href="/videos/stickman_fight_20s.mp4" download="stickman_fight_20s.mp4">
+            Descargar MP4
+          </a>
+        </div>
+      </footer>
+    </main>
+
+    <script>
+      (function () {
+        const video = document.getElementById('stickman-video');
+        const btn = document.getElementById('btn-play-toggle');
+        const specs = document.getElementById('video-specs');
+
+        function syncLabel() {
+          btn.textContent = video.paused ? 'Reproducir con sonido' : 'Pausar video';
+        }
+
+        btn.addEventListener('click', function () {
+          if (video.paused) {
+            video.muted = false;
+            video.play().catch(function () {
+              // Si el navegador móvil bloquea reproducción con audio por política, el control nativo sigue disponible.
+            });
+          } else {
+            video.pause();
+          }
+        });
+
+        video.addEventListener('play', syncLabel);
+        video.addEventListener('pause', syncLabel);
+        video.addEventListener('loadedmetadata', function () {
+          if (video.videoWidth && video.duration) {
+            specs.textContent =
+              'MP4 H.264 · ' +
+              video.videoWidth +
+              '×' +
+              video.videoHeight +
+              ' · ' +
+              video.duration.toFixed(1) +
+              ' s · Audio AAC 48 kHz estéreo';
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

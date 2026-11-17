@@ -221,20 +221,22 @@ internal fun DrawScope.drawClassicHitboxColumns(
     pressedMask: Int
 ) {
     if (frameState.controlMode != MobileControlMode.ClassicHitbox.key) return
+    val arrowsAlpha = if (frameState.arrowsVisible) frameState.arrowsOpacity.coerceIn(0f, 1f) else 0f
+    if (arrowsAlpha <= 0.01f) return
     val colW = size.width / 4f
     for (lane in 0..3) {
         val active = (pressedMask and (1 shl lane)) != 0 ||
             (frameState.holdingLanesMask and (1 shl lane)) != 0
         val col = StudioColors.LaneColors[lane]
         drawRect(
-            color = col.copy(alpha = if (active) 0.22f else 0.03f),
+            color = col.copy(alpha = (if (active) 0.22f else 0.03f) * arrowsAlpha),
             topLeft = Offset(lane * colW, 0f),
             size = Size(colW, size.height)
         )
         if (lane < 3) {
             val divX = (lane + 1) * colW
             drawLine(
-                color = Color.White.copy(alpha = 0.14f),
+                color = Color.White.copy(alpha = 0.14f * arrowsAlpha),
                 start = Offset(divX, 0f),
                 end = Offset(divX, size.height),
                 strokeWidth = 1.dp.toPx()
@@ -265,196 +267,200 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
 
     val oppNoteSize = if (useDownscrollTactileLayout) 58f * minOf(sx, sy) else 84f * minOf(sx, sy)
     val plrNoteSize = if (useDownscrollTactileLayout) 98f * minOf(sx, sy) else 84f * minOf(sx, sy)
+    val globalArrowsAlpha = if (frameState.arrowsVisible) frameState.arrowsOpacity.coerceIn(0f, 1f) else 0f
 
-    // 2. Carriles y receptores (aplica strumOverrides modchart 0..7)
-    for (dir in 0..3) {
-        val oppOverride = frameState.strumOverrides[dir]
-        val plrOverride = frameState.strumOverrides[4 + dir]
+    // 2. Carriles y receptores (aplica strumOverrides modchart 0..7 y visibilidad/opacidad global de flechas)
+    if (globalArrowsAlpha > 0.01f) {
+        for (dir in 0..3) {
+            val oppOverride = frameState.strumOverrides[dir]
+            val plrOverride = frameState.strumOverrides[4 + dir]
 
-        val oppX = resolveOpponentLaneBaseX(dir, useDownscrollTactileLayout, sx) + oppOverride.offsetX * sx
-        val oppY = baseOppY + oppOverride.offsetY * sy
-        val plrX = resolvePlayerLaneBaseX(dir, useDownscrollTactileLayout, sx) + plrOverride.offsetX * sx
-        val plrY = basePlrY + plrOverride.offsetY * sy
+            val oppX = resolveOpponentLaneBaseX(dir, useDownscrollTactileLayout, sx) + oppOverride.offsetX * sx
+            val oppY = baseOppY + oppOverride.offsetY * sy
+            val plrX = resolvePlayerLaneBaseX(dir, useDownscrollTactileLayout, sx) + plrOverride.offsetX * sx
+            val plrY = basePlrY + plrOverride.offsetY * sy
 
-        val coloredBmp = arrowBitmaps[dir]
-        val neutralBmp = receptorBitmaps[dir] ?: coloredBmp
-        val laneColor = StudioColors.LaneColors[dir]
+            val coloredBmp = arrowBitmaps[dir]
+            val neutralBmp = receptorBitmaps[dir] ?: coloredBmp
+            val laneColor = StudioColors.LaneColors[dir]
 
-        val oppHolding = (frameState.opponentHoldingLanesMask and (1 shl dir)) != 0
-        val oppAlpha = ((if (oppHolding) 0.98f else 0.72f) * oppOverride.alpha).coerceIn(0f, 1f)
-        if (oppAlpha > 0.01f) {
-            drawReceptor(
-                center = Offset(oppX, oppY),
-                sizePx = oppNoteSize * (if (oppHolding) 1.06f else 0.94f) * oppOverride.scale,
-                angleDeg = oppOverride.angle,
-                color = if (oppHolding) laneColor else Color(0xFF94A3B8),
-                bitmap = if (oppHolding) coloredBmp else neutralBmp,
-                alpha = oppAlpha
-            )
-        }
-
-        val isPressed = (pressedMask and (1 shl dir)) != 0
-        val isHolding = (frameState.holdingLanesMask and (1 shl dir)) != 0
-        val showColoredPlayer = isPressed || isHolding
-        val playerScale = when {
-            isHolding -> 1.08f
-            isPressed -> 0.92f
-            else -> 1f
-        } * plrOverride.scale
-        val plrAlpha = (when {
-            isHolding -> 1f
-            isPressed -> 0.96f
-            else -> 0.86f
-        } * plrOverride.alpha).coerceIn(0f, 1f)
-
-        if (plrAlpha > 0.01f) {
-            drawReceptor(
-                center = Offset(plrX, plrY),
-                sizePx = plrNoteSize * playerScale,
-                angleDeg = plrOverride.angle,
-                color = if (showColoredPlayer) laneColor else Color(0xFF94A3B8),
-                bitmap = if (showColoredPlayer) coloredBmp else neutralBmp,
-                alpha = plrAlpha
-            )
-        }
-    }
-
-    // 3. Notas visibles y colas sustain desplazándose hasta consumirse en el receptor
-    val pxPerMs = 0.44f * frameState.scrollSpeed.toFloat() * sy
-    val noteCount = frameState.visibleNoteCount
-    val curSongPosMs = frameState.songPosMs
-    for (i in 0 until noteCount) {
-        val note = frameState.notesPool[i]
-        val dir = note.direction.coerceIn(0, 3)
-        val strumOv = frameState.strumOverrides[if (note.isPlayer) 4 + dir else dir]
-        if (strumOv.alpha <= 0.01f) continue
-
-        val baseNoteX = if (note.isPlayer) {
-            resolvePlayerLaneBaseX(dir, useDownscrollTactileLayout, sx)
-        } else {
-            resolveOpponentLaneBaseX(dir, useDownscrollTactileLayout, sx)
-        }
-        val noteX = baseNoteX + strumOv.offsetX * sx
-        val receptorY = (if (note.isPlayer) basePlrY else baseOppY) + strumOv.offsetY * sy
-        val laneDownscroll = if (note.isPlayer) plrDownscroll else oppDownscroll
-        val notePxSize = (if (note.isPlayer) plrNoteSize else oppNoteSize) * strumOv.scale
-
-        val headDeltaMs = (note.timeMs - curSongPosMs).toFloat()
-        val tailEndDeltaMs = (note.timeMs + note.sustainMs - curSongPosMs).toFloat()
-        val headY = if (laneDownscroll) {
-            receptorY - headDeltaMs * pxPerMs
-        } else {
-            receptorY + headDeltaMs * pxPerMs
-        }
-        val tailEndY = if (laneDownscroll) {
-            receptorY - tailEndDeltaMs * pxPerMs
-        } else {
-            receptorY + tailEndDeltaMs * pxPerMs
-        }
-
-        val anchorY = if (note.headHit) receptorY else headY
-        val minY = minOf(anchorY, tailEndY)
-        val maxY = maxOf(anchorY, tailEndY)
-        if (maxY < -notePxSize || minY > size.height + notePxSize) continue
-
-        val noteAlpha = strumOv.alpha.coerceIn(0f, 1f)
-        if (note.sustainMs > 45.0) {
-            val tailTop = if (laneDownscroll) tailEndY else anchorY
-            val tailBottom = if (laneDownscroll) anchorY else tailEndY
-            val tailHeight = tailBottom - tailTop
-            if (tailHeight > 2f) {
-                val laneColor = StudioColors.LaneColors[dir]
-                val bodyWidth = notePxSize * 0.30f
-                val coreWidth = notePxSize * 0.11f
-                drawRoundRect(
-                    color = laneColor.copy(alpha = (if (note.headHit) 0.84f else 0.64f) * noteAlpha),
-                    topLeft = Offset(noteX - bodyWidth / 2f, tailTop),
-                    size = Size(bodyWidth, tailHeight),
-                    cornerRadius = CornerRadius(bodyWidth * 0.45f, bodyWidth * 0.45f)
+            val oppHolding = (frameState.opponentHoldingLanesMask and (1 shl dir)) != 0
+            val oppAlpha = ((if (oppHolding) 0.98f else 0.72f) * oppOverride.alpha * globalArrowsAlpha).coerceIn(0f, 1f)
+            if (oppAlpha > 0.01f) {
+                drawReceptor(
+                    center = Offset(oppX, oppY),
+                    sizePx = oppNoteSize * (if (oppHolding) 1.06f else 0.94f) * oppOverride.scale,
+                    angleDeg = oppOverride.angle,
+                    color = if (oppHolding) laneColor else Color(0xFF94A3B8),
+                    bitmap = if (oppHolding) coloredBmp else neutralBmp,
+                    alpha = oppAlpha
                 )
-                drawRoundRect(
-                    color = Color.White.copy(alpha = (if (note.headHit) 0.55f else 0.32f) * noteAlpha),
-                    topLeft = Offset(noteX - coreWidth / 2f, tailTop),
-                    size = Size(coreWidth, tailHeight),
-                    cornerRadius = CornerRadius(coreWidth * 0.5f, coreWidth * 0.5f)
+            }
+
+            val isPressed = (pressedMask and (1 shl dir)) != 0
+            val isHolding = (frameState.holdingLanesMask and (1 shl dir)) != 0
+            val showColoredPlayer = isPressed || isHolding
+            val playerScale = when {
+                isHolding -> 1.08f
+                isPressed -> 0.92f
+                else -> 1f
+            } * plrOverride.scale
+            val plrAlpha = (when {
+                isHolding -> 1f
+                isPressed -> 0.96f
+                else -> 0.86f
+            } * plrOverride.alpha * globalArrowsAlpha).coerceIn(0f, 1f)
+
+            if (plrAlpha > 0.01f) {
+                drawReceptor(
+                    center = Offset(plrX, plrY),
+                    sizePx = plrNoteSize * playerScale,
+                    angleDeg = plrOverride.angle,
+                    color = if (showColoredPlayer) laneColor else Color(0xFF94A3B8),
+                    bitmap = if (showColoredPlayer) coloredBmp else neutralBmp,
+                    alpha = plrAlpha
                 )
             }
         }
 
-        if (!note.headHit) {
-            val bmp = arrowBitmaps[dir]
-            withTransform({
-                if (strumOv.angle != 0f) {
-                    rotate(strumOv.angle, pivot = Offset(noteX, headY))
+        // 3. Notas visibles y colas sustain desplazándose hasta consumirse en el receptor
+        val pxPerMs = 0.44f * frameState.scrollSpeed.toFloat() * sy
+        val noteCount = frameState.visibleNoteCount
+        val curSongPosMs = frameState.songPosMs
+        for (i in 0 until noteCount) {
+            val note = frameState.notesPool[i]
+            val dir = note.direction.coerceIn(0, 3)
+            val strumOv = frameState.strumOverrides[if (note.isPlayer) 4 + dir else dir]
+            val noteAlpha = (strumOv.alpha * globalArrowsAlpha).coerceIn(0f, 1f)
+            if (noteAlpha <= 0.01f) continue
+
+            val baseNoteX = if (note.isPlayer) {
+                resolvePlayerLaneBaseX(dir, useDownscrollTactileLayout, sx)
+            } else {
+                resolveOpponentLaneBaseX(dir, useDownscrollTactileLayout, sx)
+            }
+            val noteX = baseNoteX + strumOv.offsetX * sx
+            val receptorY = (if (note.isPlayer) basePlrY else baseOppY) + strumOv.offsetY * sy
+            val laneDownscroll = if (note.isPlayer) plrDownscroll else oppDownscroll
+            val notePxSize = (if (note.isPlayer) plrNoteSize else oppNoteSize) * strumOv.scale
+
+            val headDeltaMs = (note.timeMs - curSongPosMs).toFloat()
+            val tailEndDeltaMs = (note.timeMs + note.sustainMs - curSongPosMs).toFloat()
+            val headY = if (laneDownscroll) {
+                receptorY - headDeltaMs * pxPerMs
+            } else {
+                receptorY + headDeltaMs * pxPerMs
+            }
+            val tailEndY = if (laneDownscroll) {
+                receptorY - tailEndDeltaMs * pxPerMs
+            } else {
+                receptorY + tailEndDeltaMs * pxPerMs
+            }
+
+            val anchorY = if (note.headHit) receptorY else headY
+            val minY = minOf(anchorY, tailEndY)
+            val maxY = maxOf(anchorY, tailEndY)
+            if (maxY < -notePxSize || minY > size.height + notePxSize) continue
+
+            if (note.sustainMs > 45.0) {
+                val tailTop = if (laneDownscroll) tailEndY else anchorY
+                val tailBottom = if (laneDownscroll) anchorY else tailEndY
+                val tailHeight = tailBottom - tailTop
+                if (tailHeight > 2f) {
+                    val laneColor = StudioColors.LaneColors[dir]
+                    val bodyWidth = notePxSize * 0.30f
+                    val coreWidth = notePxSize * 0.11f
+                    drawRoundRect(
+                        color = laneColor.copy(alpha = (if (note.headHit) 0.84f else 0.64f) * noteAlpha),
+                        topLeft = Offset(noteX - bodyWidth / 2f, tailTop),
+                        size = Size(bodyWidth, tailHeight),
+                        cornerRadius = CornerRadius(bodyWidth * 0.45f, bodyWidth * 0.45f)
+                    )
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = (if (note.headHit) 0.55f else 0.32f) * noteAlpha),
+                        topLeft = Offset(noteX - coreWidth / 2f, tailTop),
+                        size = Size(coreWidth, tailHeight),
+                        cornerRadius = CornerRadius(coreWidth * 0.5f, coreWidth * 0.5f)
+                    )
                 }
-            }) {
-                if (bmp != null) {
-                    val half = notePxSize / 2f
+            }
+
+            if (!note.headHit) {
+                val bmp = arrowBitmaps[dir]
+                withTransform({
+                    if (strumOv.angle != 0f) {
+                        rotate(strumOv.angle, pivot = Offset(noteX, headY))
+                    }
+                }) {
+                    if (bmp != null) {
+                        val half = notePxSize / 2f
+                        drawImage(
+                            image = bmp,
+                            dstOffset = IntOffset((noteX - half).roundToInt(), (headY - half).roundToInt()),
+                            dstSize = IntSize(notePxSize.roundToInt().coerceAtLeast(2), notePxSize.roundToInt().coerceAtLeast(2)),
+                            alpha = noteAlpha
+                        )
+                    } else {
+                        drawCircle(
+                            color = StudioColors.LaneColors[dir].copy(alpha = noteAlpha),
+                            radius = notePxSize * 0.4f,
+                            center = Offset(noteX, headY)
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4. Destellos de chispas (`Note Splash`) sobre las flechas al acertar notas perfectas (`Sick`)
+        for (sIdx in splashPool.slots.indices) {
+            val slot = splashPool.slots[sIdx]
+            if (!slot.active) continue
+            val ageSec = ((nowNs - slot.startNano) / 1_000_000_000.0).toFloat()
+            if (ageSec >= 0.28f) {
+                slot.active = false
+                continue
+            }
+            val lane = slot.lane.coerceIn(0, 3)
+            val plrOv = frameState.strumOverrides[4 + lane]
+            val splashX = resolvePlayerLaneBaseX(lane, useDownscrollTactileLayout, sx) + plrOv.offsetX * sx
+            val splashY = basePlrY + plrOv.offsetY * sy
+            val progress = (ageSec / 0.28f).coerceIn(0f, 1f)
+            val splashAlpha = ((1f - progress * progress) * globalArrowsAlpha).coerceIn(0f, 1f)
+            val splashSize = plrNoteSize * (1.25f + progress * 0.85f) * plrOv.scale
+            val laneColor = StudioColors.LaneColors[lane]
+
+            if (noteSplashBitmap != null) {
+                val halfSplash = splashSize / 2f
+                withTransform({
+                    rotate(slot.angleOffset + progress * 35f, pivot = Offset(splashX, splashY))
+                }) {
                     drawImage(
-                        image = bmp,
-                        dstOffset = IntOffset((noteX - half).roundToInt(), (headY - half).roundToInt()),
-                        dstSize = IntSize(notePxSize.roundToInt().coerceAtLeast(2), notePxSize.roundToInt().coerceAtLeast(2)),
-                        alpha = noteAlpha
-                    )
-                } else {
-                    drawCircle(
-                        color = StudioColors.LaneColors[dir].copy(alpha = noteAlpha),
-                        radius = notePxSize * 0.4f,
-                        center = Offset(noteX, headY)
+                        image = noteSplashBitmap,
+                        dstOffset = IntOffset((splashX - halfSplash).roundToInt(), (splashY - halfSplash).roundToInt()),
+                        dstSize = IntSize(splashSize.roundToInt().coerceAtLeast(4), splashSize.roundToInt().coerceAtLeast(4)),
+                        alpha = splashAlpha * 0.94f,
+                        colorFilter = ColorFilter.tint(laneColor, BlendMode.Modulate),
+                        filterQuality = FilterQuality.High
                     )
                 }
-            }
-        }
-    }
-
-    // 4. Destellos de chispas (`Note Splash`) sobre las flechas al acertar notas perfectas (`Sick`)
-    for (sIdx in splashPool.slots.indices) {
-        val slot = splashPool.slots[sIdx]
-        if (!slot.active) continue
-        val ageSec = ((nowNs - slot.startNano) / 1_000_000_000.0).toFloat()
-        if (ageSec >= 0.28f) {
-            slot.active = false
-            continue
-        }
-        val lane = slot.lane.coerceIn(0, 3)
-        val plrOv = frameState.strumOverrides[4 + lane]
-        val splashX = resolvePlayerLaneBaseX(lane, useDownscrollTactileLayout, sx) + plrOv.offsetX * sx
-        val splashY = basePlrY + plrOv.offsetY * sy
-        val progress = (ageSec / 0.28f).coerceIn(0f, 1f)
-        val splashAlpha = (1f - progress * progress).coerceIn(0f, 1f)
-        val splashSize = plrNoteSize * (1.25f + progress * 0.85f) * plrOv.scale
-        val laneColor = StudioColors.LaneColors[lane]
-
-        if (noteSplashBitmap != null) {
-            val halfSplash = splashSize / 2f
-            withTransform({
-                rotate(slot.angleOffset + progress * 35f, pivot = Offset(splashX, splashY))
-            }) {
-                drawImage(
-                    image = noteSplashBitmap,
-                    dstOffset = IntOffset((splashX - halfSplash).roundToInt(), (splashY - halfSplash).roundToInt()),
-                    dstSize = IntSize(splashSize.roundToInt().coerceAtLeast(4), splashSize.roundToInt().coerceAtLeast(4)),
-                    alpha = splashAlpha * 0.94f,
-                    colorFilter = ColorFilter.tint(laneColor, BlendMode.Modulate),
-                    filterQuality = FilterQuality.High
+            } else {
+                drawCircle(
+                    color = laneColor.copy(alpha = splashAlpha * 0.7f),
+                    radius = splashSize * 0.45f,
+                    center = Offset(splashX, splashY),
+                    style = Stroke(width = 6f * (1f - progress))
                 )
             }
-        } else {
-            drawCircle(
-                color = laneColor.copy(alpha = splashAlpha * 0.7f),
-                radius = splashSize * 0.45f,
-                center = Offset(splashX, splashY),
-                style = Stroke(width = 6f * (1f - progress))
-            )
         }
     }
 
     // 5. Gráficos y textos HUD creados dinámicamente desde scripts (`makeHudGraphic`, `makeText`)
-    if (frameState.hudVisible) {
+    val globalHudOpacity = frameState.hudOpacity.coerceIn(0f, 1f)
+    if (frameState.hudVisible && globalHudOpacity > 0.01f) {
         for (i in 0 until frameState.dynamicCount) {
             val item = frameState.dynamicPool[i]
             if (item.isHud && item.visible && item.opacity > 0.01f) {
-                drawDynamicItem(item, sx, sy, dynamicTextPaint)
+                drawDynamicItem(item, sx, sy, dynamicTextPaint, opacityScale = globalHudOpacity)
             }
         }
     }

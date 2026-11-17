@@ -357,6 +357,7 @@ impl EngineSession {
         if let Some(mut proj) = latest {
             proj.ensure_camera_script();
             proj.ensure_stage_events_script();
+            proj.ensure_ui_blackout_script();
             self.project = proj;
             let _ = std::fs::write(
                 self.active_project_marker(),
@@ -382,6 +383,7 @@ impl EngineSession {
             .map_err(|e| format!("Proyecto con formato inválido: {}", e))?;
         proj.ensure_camera_script();
         proj.ensure_stage_events_script();
+        proj.ensure_ui_blackout_script();
         self.project = proj;
         Ok(())
     }
@@ -600,6 +602,7 @@ impl EngineSession {
         cloned.updated_at_ms = current_epoch_ms();
         cloned.ensure_camera_script();
         cloned.ensure_stage_events_script();
+        cloned.ensure_ui_blackout_script();
 
         self.gameplay = None;
         self.compiled_bundle = None;

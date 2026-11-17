@@ -268,6 +268,7 @@ private fun BeatForgeRootContent(
                         },
                         onRemoveChartEvent = { idx -> viewModel.removeChartEvent(idx) },
                         onOpenStageEventsScript = { viewModel.openStageEventsScriptInStudio() },
+                        onOpenUiBlackoutScript = { viewModel.openUiBlackoutScriptInStudio() },
                         onAddSection = { viewModel.addChartSection(it) },
                         onToggleSectionMustHit = { viewModel.toggleSectionMustHit(it) },
                         onToggleChartNote = { sec, step, col, sustain ->

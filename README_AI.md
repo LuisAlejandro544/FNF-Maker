@@ -17,6 +17,7 @@ Cuando pidas cambios o mejoras a una IA sobre este proyecto, indica siempre qué
 | Interfaz Android | `android/app/src/main/kotlin/com/beatforge/studio/` | Kotlin (Jetpack Compose) | `MainActivity`, `StudioViewModel` (`Dispatchers.IO`, cuota `StorageManager` API 26+, staging SAF en `cacheDir/import_staging/`, carga perezosa + precarga 4s + reciclaje diferido 3 frames, `LruCache` 1:1 Sparrow), `ProjectsScreen` (`.mod`), `ChartTimelineGrid` (`ChartPlayheadState` + `ChartStepCueDialog`), `SpriteLabScreen` (`Posición (.json/.xml)`, `Offset Pose X/Y`, `ModFilesGuideDialog`), `StageLiveTransformState` (`Escena .json/.xml`) y `GameplayScreen` |
 | SDK y Pruebas | `sdk/` | TypeScript / SVG / Lua / JS | Contratos `.d.ts` completos, utilidades testeadas con `node:test` (**39 casos**: `chart.json`, countdown, `.astc`, `.json`, `Miss`, `low_32bit`, `BFGP` v2 `152B`, FNF HUD/splash, streaming audio, cámara Lua, Idle BPM, caché incremental, WebP lossless, watchdog, **sustain continuo multi-sección**, **hilo reproductor + seguimiento**, **ciclo RAM / precarga 4s / flash-swap**, **staging limpio**, **cuota LRU + `.bfaud`**, **Vanilla `.mod` + `zstd`** y **descriptores `.json/.xml`**), flechas originales |
 | Compilación APK | `.github/workflows/build-apk.yml` | YAML | Workflow manual `workflow_dispatch` con caché y 2 artefactos Debug |
+| **Bonus: Video Studio CLI** | `tools/video-studio/` + `public/` | Python / Bash / HTML5 | Descarga (`yt-dlp` + `deno`/`node`), ingesta streaming de `.mp4` largos (`ffmpeg`, `scenedetect`), transcripción/VAD (`faster-whisper`), render `copy`/`draft`/`master`, generador procedural (`render-stickman-fight`) y visor web directo `/ver-video.html` (`100%` licencias permisivas) |
 
 ---
 
@@ -32,6 +33,9 @@ npm run build
 
 # 3. Verificar tipos TypeScript / lint
 npm run lint
+
+# 4. (Bonus) Ejecutar pruebas unitarias del pipeline Video Studio CLI
+/opt/video-studio-venv/bin/python -m unittest -v tools/video-studio/test_video_pipeline.py
 ```
 
 ### En GitHub Actions (Compilación Nativa Android 32 y 64 bits)
@@ -66,4 +70,4 @@ npm run lint
 - [ ] `StageLiveTransformState` mantiene el editor de escenario sin commits JNI por píxel y `BFGP` v2 mantiene sincronizado el formato `152B` entre Rust, Kotlin y `sdk/ts`.
 - [ ] Se mantienen activas ambas arquitecturas: `arm64-v8a` (64 bits) y `armeabi-v7a` (32 bits).
 - [ ] `.github/workflows/build-apk.yml` permanece exclusivamente en `workflow_dispatch`.
-- [ ] Los tests de `sdk/ts/src/engine-tools.test.ts` (39 casos) y `npm run build` / `lint` pasan después del último cambio.
+- [ ] Los tests de `sdk/ts/src/engine-tools.test.ts` y `npm run build` / `lint` pasan después del último cambio (y `tools/video-studio/test_video_pipeline.py` si se modifica el pipeline de video).

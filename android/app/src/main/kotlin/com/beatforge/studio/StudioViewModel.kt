@@ -319,6 +319,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun openUiBlackoutScriptInStudio() {
+        val snap = _uiState.value.snapshot
+        val uiScriptId = snap.scripts.firstOrNull {
+            it.id == "script_ui_blackout" || it.name == "ui_blackout.lua"
+        }?.id ?: snap.scripts.firstOrNull()?.id ?: ""
+        editorDelegate.flushSaveAsync()
+        _uiState.update {
+            it.copy(
+                selectedScriptId = uiScriptId,
+                currentScreen = StudioScreen.ScriptStudio,
+                scriptValidationMsg = null,
+                statusBanner = null
+            )
+        }
+    }
+
     fun addScript(language: String) = editorDelegate.addScript(language)
 
     fun updateScript(scriptId: String, enabled: Boolean, sourceCode: String, silent: Boolean = true) =

@@ -39,6 +39,7 @@ impl EngineSession {
         self.gameplay = None;
         self.project.ensure_camera_script();
         self.project.ensure_stage_events_script();
+        self.project.ensure_ui_blackout_script();
         self.project
             .stage
             .apply_camera_config(self.project.stage.camera.clone());
@@ -206,6 +207,9 @@ impl EngineSession {
             hud_visible: true,
             hud_opacity: 1.0,
             hud_zoom: 1.0,
+            arrows_visible: true,
+            arrows_opacity: 1.0,
+            screen_blackout_alpha: 0.0,
             active_player_id,
             active_opponent_id,
             flash_color_argb: 0xFFFFFFFF,
@@ -217,6 +221,7 @@ impl EngineSession {
             reused_later_entities,
             active_scroll_speed: self.project.chart.speed.max(0.5),
             active_downscroll: self.project.downscroll,
+            song_started: false,
             last_beat: -10,
             last_step: -40,
             next_event_idx: 0,

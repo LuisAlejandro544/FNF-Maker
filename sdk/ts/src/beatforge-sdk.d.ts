@@ -117,13 +117,33 @@ declare function setScrollSpeed(speed: number): void;
 declare function getScrollSpeed(): number;
 declare function setDownscroll(downscroll: boolean): void;
 declare function setHudVisible(visible: boolean): void;
+declare function getHudVisible(): boolean;
 declare function setHudOpacity(opacity: number): void;
+declare function getHudOpacity(): number;
 declare function setHudZoom(zoom: number): void;
+declare function getHudZoom(): number;
+declare function tweenHudProp(
+  tag: string,
+  prop: 'opacity' | 'alpha' | 'zoom' | 'scale',
+  targetValue: number,
+  durationSec: number,
+  ease?: EaseName
+): void;
+declare function tweenHudOpacity(tag: string, targetOpacity: number, durationSec: number, ease?: EaseName): void;
+declare function setArrowsVisible(visible: boolean): void;
+declare function getArrowsVisible(): boolean;
+declare function setArrowsOpacity(opacity: number): void;
+declare function getArrowsOpacity(): number;
+declare function tweenArrowsOpacity(tag: string, targetOpacity: number, durationSec: number, ease?: EaseName): void;
+declare function setScreenBlackout(alpha: number): void;
+declare function getScreenBlackout(): number;
+declare function tweenScreenBlackout(tag: string, targetAlpha: number, durationSec: number, ease?: EaseName): void;
 declare function setTrackVolume(slotIndex: number, volume: number): void;
 declare function setTrackMute(slotIndex: number, muted: boolean): void;
 
 // Callbacks de ciclo de vida del Mod
 declare function onCreate(): void;
+declare function onSongStart(): void;
 declare function onUpdate(dt: number): void;
 declare function onBeatHit(beat: number): void;
 declare function onStepHit(step: number): void;

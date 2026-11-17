@@ -26,10 +26,17 @@ pub const STAGE_EVENTS_SCRIPT_ID: &str = "script_stage_events";
 /// Nombre visible del archivo Lua de eventos de escenario y timeline en Script Studio.
 pub const STAGE_EVENTS_SCRIPT_NAME: &str = "stage_events.lua";
 
+/// Identificador estable del script Lua que controla pantalla en negro, visibilidad de HUD y flechas al iniciar o por eventos del chart.
+pub const UI_BLACKOUT_SCRIPT_ID: &str = "script_ui_blackout";
+/// Nombre visible del archivo Lua de pantalla en negro / visibilidad de UI en Script Studio.
+pub const UI_BLACKOUT_SCRIPT_NAME: &str = "ui_blackout.lua";
+
 const CAM_CFG_START_MARKER: &str = "-- [CAM_CFG_START]";
 const CAM_CFG_END_MARKER: &str = "-- [CAM_CFG_END]";
 const STAGE_CUES_START_MARKER: &str = "-- [STAGE_CUES_START]";
 const STAGE_CUES_END_MARKER: &str = "-- [STAGE_CUES_END]";
+const UI_BLACKOUT_START_MARKER: &str = "-- [UI_BLACKOUT_START]";
+const UI_BLACKOUT_END_MARKER: &str = "-- [UI_BLACKOUT_END]";
 
 /// Genera o actualiza el bloque de parámetros del script `camera_system.lua` preservando
 /// cualquier lógica personalizada que el usuario haya añadido debajo de los marcadores.
@@ -505,6 +512,451 @@ end\n",
     )
 }
 
+fn parse_optional_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "si" | "sí" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Normaliza un evento de apagón / visibilidad de HUD y flechas proveniente tanto del editor `#`
+/// como de archivos `chart.json` externos (ej. `"Screen Fade"`, `"Camera Fade"`, `"Hide UI"`).
+fn is_ui_blackout_event_name(lower_name: &str) -> bool {
+    matches!(
+        lower_name,
+        "ui blackout"
+            | "blackout"
+            | "screen fade"
+            | "camera fade"
+            | "hide ui"
+            | "show ui"
+            | "toggle ui"
+            | "fade ui"
+            | "hud fade"
+            | "hide hud"
+            | "show hud"
+    )
+}
+
+/// Genera o actualiza el bloque `-- [UI_BLACKOUT_START] ... -- [UI_BLACKOUT_END]` dentro de
+/// `ui_blackout.lua`. Permite ocultar la interfaz, las flechas y poner la pantalla en negro
+/// al comenzar la canción conservando intacta la cuenta regresiva `"3, 2, 1, ¡YA!"`, además de
+/// ejecutar apagones o desvanecimientos en cualquier paso del chart.
+pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<&str>) -> String {
+    let mut sorted_events = chart.events.clone();
+    sorted_events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+
+    let mut intro_black_enabled = false;
+    let mut intro_black_alpha = 1.0_f64;
+    let mut intro_hide_hud = true;
+    let mut intro_hide_arrows = true;
+    let mut intro_reveal_on_start = true;
+    let mut intro_reveal_delay_sec = 0.0_f64;
+    let mut intro_fade_sec = 0.65_f64;
+    let mut cue_lines = Vec::new();
+
+    for ev in &sorted_events {
+        let lower_name = ev.name.trim().to_ascii_lowercase();
+        if !is_ui_blackout_event_name(&lower_name) {
+            continue;
+        }
+
+        let v1_lower = ev.value1.trim().to_ascii_lowercase();
+        let mut action = if lower_name == "hide ui" || lower_name == "hide hud" {
+            "hide".to_string()
+        } else if lower_name == "show ui" || lower_name == "show hud" {
+            "show".to_string()
+        } else if lower_name == "toggle ui" {
+            "toggle".to_string()
+        } else if v1_lower == "intro"
+            || v1_lower == "show"
+            || v1_lower == "reveal"
+            || v1_lower == "hide"
+            || v1_lower == "toggle"
+            || v1_lower == "fade"
+        {
+            if v1_lower == "reveal" {
+                "show".to_string()
+            } else {
+                v1_lower.clone()
+            }
+        } else {
+            "fade".to_string()
+        };
+
+        let mut black_alpha = match action.as_str() {
+            "intro" | "hide" => {
+                if lower_name == "hide ui" || lower_name == "hide hud" {
+                    -1.0
+                } else {
+                    1.0
+                }
+            }
+            "show" => 0.0,
+            _ => -1.0,
+        };
+        let mut hud_alpha = match action.as_str() {
+            "intro" | "hide" => 0.0,
+            "show" => 1.0,
+            _ => -1.0,
+        };
+        let mut arrows_alpha = match action.as_str() {
+            "intro" | "hide" => 0.0,
+            "show" => 1.0,
+            _ => -1.0,
+        };
+        let mut dur_sec = if action == "hide" && ev.time_ms <= 50.0 {
+            0.0_f64
+        } else {
+            0.60_f64
+        };
+        let mut reveal_ms = 0.0_f64;
+        let mut on_start = true;
+        let mut ease = "sineInOut".to_string();
+
+        // Parseo flexible estilo "Screen Fade" / "Camera Fade" externo (CSV o número en value1/value2)
+        if matches!(lower_name.as_str(), "screen fade" | "camera fade") {
+            let v1_parts: Vec<&str> = ev.value1.split(',').map(|s| s.trim()).collect();
+            if v1_parts.len() == 1 {
+                if let Ok(a) = v1_parts[0].parse::<f64>() {
+                    if a.is_finite() {
+                        black_alpha = a.clamp(0.0, 1.0);
+                    }
+                }
+            } else if v1_parts.len() >= 2 {
+                if let Ok(a) = v1_parts.last().unwrap_or(&"").parse::<f64>() {
+                    if a.is_finite() && a <= 1.0 {
+                        black_alpha = a.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            if black_alpha < 0.0 {
+                black_alpha = 1.0;
+            }
+            if let Ok(d) = ev.value2.trim().parse::<f64>() {
+                if d.is_finite() && d >= 0.0 {
+                    dur_sec = d.clamp(0.0, 20.0);
+                }
+            }
+        } else if matches!(lower_name.as_str(), "fade ui" | "hud fade") {
+            if let Ok(a) = ev.value1.trim().parse::<f64>() {
+                if a.is_finite() {
+                    let clamped = a.clamp(0.0, 1.0);
+                    hud_alpha = clamped;
+                    arrows_alpha = clamped;
+                }
+            }
+            if let Ok(d) = ev.value2.trim().parse::<f64>() {
+                if d.is_finite() && d >= 0.0 {
+                    dur_sec = d.clamp(0.0, 20.0);
+                }
+            }
+        }
+
+        // Parseo KV estructurado BeatForge (tanto en value1 como en value2)
+        for kv_source in [&ev.value1, &ev.value2] {
+            for (k, v) in parse_kv_params(kv_source) {
+                match k.as_str() {
+                    "action" | "mode" => {
+                        let m = v.to_ascii_lowercase();
+                        action = if m == "reveal" { "show".to_string() } else { m };
+                    }
+                    "black" | "blackout" => {
+                        if let Ok(b) = v.parse::<f64>() {
+                            if b.is_finite() {
+                                black_alpha = if b < 0.0 { -1.0 } else { b.clamp(0.0, 1.0) };
+                            }
+                        } else if let Some(flag) = parse_optional_bool_flag(&v) {
+                            black_alpha = if flag { 1.0 } else { 0.0 };
+                        }
+                    }
+                    "hud" => {
+                        if let Ok(h) = v.parse::<f64>() {
+                            if h.is_finite() {
+                                hud_alpha = if h < 0.0 { -1.0 } else { h.clamp(0.0, 1.0) };
+                            }
+                        } else if let Some(flag) = parse_optional_bool_flag(&v) {
+                            hud_alpha = if flag { 1.0 } else { 0.0 };
+                        }
+                    }
+                    "arrows" | "strums" | "flechas" => {
+                        if let Ok(ar) = v.parse::<f64>() {
+                            if ar.is_finite() {
+                                arrows_alpha = if ar < 0.0 { -1.0 } else { ar.clamp(0.0, 1.0) };
+                            }
+                        } else if let Some(flag) = parse_optional_bool_flag(&v) {
+                            arrows_alpha = if flag { 1.0 } else { 0.0 };
+                        }
+                    }
+                    "dur" | "duration" => {
+                        if let Ok(d) = v.parse::<f64>() {
+                            if d.is_finite() && d >= 0.0 {
+                                dur_sec = d.clamp(0.0, 25.0);
+                            }
+                        }
+                    }
+                    "revealms" | "reveal_ms" | "delayms" => {
+                        if let Ok(rm) = v.parse::<f64>() {
+                            if rm.is_finite() && rm >= 0.0 {
+                                reveal_ms = rm.clamp(0.0, 60_000.0);
+                            }
+                        }
+                    }
+                    "onstart" | "on_start" => {
+                        if let Some(flag) = parse_optional_bool_flag(&v) {
+                            on_start = flag;
+                        }
+                    }
+                    "ease" => {
+                        if !v.trim().is_empty() {
+                            ease = v.trim().to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let is_intro_cue = action == "intro"
+            || (ev.time_ms <= 120.0 && black_alpha >= 0.85 && hud_alpha >= 0.0 && hud_alpha <= 0.15);
+
+        if is_intro_cue {
+            intro_black_enabled = true;
+            intro_black_alpha = if black_alpha >= 0.0 { black_alpha } else { 1.0 };
+            intro_hide_hud = hud_alpha <= 0.05;
+            intro_hide_arrows = arrows_alpha <= 0.05;
+            intro_reveal_on_start = on_start || reveal_ms > 0.0;
+            intro_reveal_delay_sec = (reveal_ms / 1000.0).clamp(0.0, 60.0);
+            intro_fade_sec = if dur_sec > 0.01 { dur_sec } else { 0.65 };
+            continue;
+        }
+
+        cue_lines.push(format!(
+            "    {{ timeMs = {:.2}, action = {}, black = {:.2}, hud = {:.2}, arrows = {:.2}, durSec = {:.3}, ease = {} }},",
+            ev.time_ms.max(0.0),
+            lua_escape_str(&action),
+            black_alpha,
+            hud_alpha,
+            arrows_alpha,
+            dur_sec,
+            lua_escape_str(&ease),
+        ));
+    }
+
+    let cfg_and_cues_block = if cue_lines.is_empty() {
+        format!(
+            "{}\n\
+local INTRO_BLACK_ENABLED = {}\n\
+local INTRO_BLACKOUT_ALPHA = {:.2}\n\
+local INTRO_HIDE_HUD = {}\n\
+local INTRO_HIDE_ARROWS = {}\n\
+local INTRO_REVEAL_AT_SONG_START = {}\n\
+local INTRO_REVEAL_DELAY_SEC = {:.3}\n\
+local INTRO_FADE_SEC = {:.3}\n\
+local UI_BLACKOUT_CUES = {{}}\n\
+{}",
+            UI_BLACKOUT_START_MARKER,
+            if intro_black_enabled { "true" } else { "false" },
+            intro_black_alpha,
+            if intro_hide_hud { "true" } else { "false" },
+            if intro_hide_arrows { "true" } else { "false" },
+            if intro_reveal_on_start { "true" } else { "false" },
+            intro_reveal_delay_sec,
+            intro_fade_sec,
+            UI_BLACKOUT_END_MARKER
+        )
+    } else {
+        format!(
+            "{}\n\
+local INTRO_BLACK_ENABLED = {}\n\
+local INTRO_BLACKOUT_ALPHA = {:.2}\n\
+local INTRO_HIDE_HUD = {}\n\
+local INTRO_HIDE_ARROWS = {}\n\
+local INTRO_REVEAL_AT_SONG_START = {}\n\
+local INTRO_REVEAL_DELAY_SEC = {:.3}\n\
+local INTRO_FADE_SEC = {:.3}\n\
+local UI_BLACKOUT_CUES = {{\n{}\n}}\n\
+{}",
+            UI_BLACKOUT_START_MARKER,
+            if intro_black_enabled { "true" } else { "false" },
+            intro_black_alpha,
+            if intro_hide_hud { "true" } else { "false" },
+            if intro_hide_arrows { "true" } else { "false" },
+            if intro_reveal_on_start { "true" } else { "false" },
+            intro_reveal_delay_sec,
+            intro_fade_sec,
+            cue_lines.join("\n"),
+            UI_BLACKOUT_END_MARKER
+        )
+    };
+
+    if let Some(src) = existing_source {
+        if let (Some(start_idx), Some(end_idx)) = (
+            src.find(UI_BLACKOUT_START_MARKER),
+            src.find(UI_BLACKOUT_END_MARKER),
+        ) {
+            if end_idx >= start_idx {
+                let tail_start = end_idx + UI_BLACKOUT_END_MARKER.len();
+                let prefix = &src[..start_idx];
+                let suffix = &src[tail_start..];
+                return format!("{}{}{}", prefix, cfg_and_cues_block, suffix);
+            }
+        }
+    }
+
+    format!(
+        "-- Script maestro de Pantalla en Negro y Visibilidad de UI (BeatForge Studio)\n\
+-- Controla intros con pantalla negra y UI/flechas ocultas conservando visible el '3, 2, 1, ¡YA!'\n\
+-- y apagones/desvanecimientos sincronizados con los eventos '#' del Chart Editor o chart.json externos.\n\
+{}\n\n\
+local cueCursor = 1\n\
+local lastSongPosMs = -1.0\n\
+local uiHiddenToggle = false\n\n\
+local function applyChannelTransition(blackTarget, hudTarget, arrowsTarget, durSec, easeName)\n\
+    local ease = easeName or \"sineInOut\"\n\
+    local d = math.max(0.0, durSec or 0.0)\n\
+    if blackTarget >= 0.0 then\n\
+        if d <= 0.01 then\n\
+            setScreenBlackout(blackTarget)\n\
+        else\n\
+            tweenScreenBlackout(\"ui_blackout_curtain\", blackTarget, d, ease)\n\
+        end\n\
+    end\n\
+    if hudTarget >= 0.0 then\n\
+        if hudTarget > 0.01 then\n\
+            setHudVisible(true)\n\
+            if d <= 0.01 then\n\
+                setHudOpacity(hudTarget)\n\
+            else\n\
+                tweenHudOpacity(\"ui_blackout_hud\", hudTarget, d, ease)\n\
+            end\n\
+        else\n\
+            if d <= 0.01 then\n\
+                setHudOpacity(0.0)\n\
+                setHudVisible(false)\n\
+            else\n\
+                tweenHudOpacity(\"ui_blackout_hud\", 0.0, d, ease)\n\
+            end\n\
+        end\n\
+    end\n\
+    if arrowsTarget >= 0.0 then\n\
+        if arrowsTarget > 0.01 then\n\
+            setArrowsVisible(true)\n\
+            if d <= 0.01 then\n\
+                setArrowsOpacity(arrowsTarget)\n\
+            else\n\
+                tweenArrowsOpacity(\"ui_blackout_arrows\", arrowsTarget, d, ease)\n\
+            end\n\
+        else\n\
+            if d <= 0.01 then\n\
+                setArrowsOpacity(0.0)\n\
+                setArrowsVisible(false)\n\
+            else\n\
+                tweenArrowsOpacity(\"ui_blackout_arrows\", 0.0, d, ease)\n\
+            end\n\
+        end\n\
+    end\n\
+end\n\n\
+local function revealFromIntro()\n\
+    applyChannelTransition(0.0, 1.0, 1.0, INTRO_FADE_SEC, \"sineInOut\")\n\
+    uiHiddenToggle = false\n\
+end\n\n\
+local function executeUiCue(cue)\n\
+    if cue.action == \"toggle\" then\n\
+        uiHiddenToggle = not uiHiddenToggle\n\
+        local nextHud = uiHiddenToggle and 0.0 or 1.0\n\
+        local nextArrows = uiHiddenToggle and 0.0 or 1.0\n\
+        local nextBlack = (cue.black >= 0.0) and (uiHiddenToggle and cue.black or 0.0) or -1.0\n\
+        applyChannelTransition(nextBlack, nextHud, nextArrows, cue.durSec, cue.ease)\n\
+    else\n\
+        if cue.hud >= 0.0 then\n\
+            uiHiddenToggle = cue.hud <= 0.05\n\
+        end\n\
+        applyChannelTransition(cue.black, cue.hud, cue.arrows, cue.durSec, cue.ease)\n\
+    end\n\
+end\n\n\
+function onCreate()\n\
+    cueCursor = 1\n\
+    lastSongPosMs = -1.0\n\
+    uiHiddenToggle = false\n\
+    if INTRO_BLACK_ENABLED then\n\
+        -- Oscurece el escenario y oculta HUD/flechas al instante; el conteo '3, 2, 1, ¡YA!' sigue visible.\n\
+        setScreenBlackout(INTRO_BLACKOUT_ALPHA)\n\
+        if INTRO_HIDE_HUD then\n\
+            setHudOpacity(0.0)\n\
+            setHudVisible(false)\n\
+        end\n\
+        if INTRO_HIDE_ARROWS then\n\
+            setArrowsOpacity(0.0)\n\
+            setArrowsVisible(false)\n\
+        end\n\
+        uiHiddenToggle = INTRO_HIDE_HUD or INTRO_HIDE_ARROWS\n\
+    else\n\
+        setScreenBlackout(0.0)\n\
+        setHudVisible(true)\n\
+        setHudOpacity(1.0)\n\
+        setArrowsVisible(true)\n\
+        setArrowsOpacity(1.0)\n\
+    end\n\
+end\n\n\
+function onSongStart()\n\
+    if INTRO_BLACK_ENABLED and INTRO_REVEAL_AT_SONG_START then\n\
+        if INTRO_REVEAL_DELAY_SEC > 0.02 then\n\
+            runTimer(\"ui_blackout_intro_reveal\", INTRO_REVEAL_DELAY_SEC)\n\
+        else\n\
+            revealFromIntro()\n\
+        end\n\
+    end\n\
+end\n\n\
+function onTimerCompleted(tag)\n\
+    if tag == \"ui_blackout_intro_reveal\" then\n\
+        revealFromIntro()\n\
+    end\n\
+end\n\n\
+function onUpdate(dt)\n\
+    local songPos = getSongPosMs()\n\
+    if songPos + 250.0 < lastSongPosMs then\n\
+        cueCursor = 1\n\
+    end\n\
+    lastSongPosMs = songPos\n\
+    if songPos < 0.0 then\n\
+        return\n\
+    end\n\
+    while cueCursor <= #UI_BLACKOUT_CUES and UI_BLACKOUT_CUES[cueCursor].timeMs <= songPos do\n\
+        executeUiCue(UI_BLACKOUT_CUES[cueCursor])\n\
+        cueCursor = cueCursor + 1\n\
+    end\n\
+end\n\n\
+function onEvent(name, value1, value2)\n\
+    local lower = string.lower(tostring(name or \"\"))\n\
+    local v1 = tostring(value1 or \"\")\n\
+    local v2 = tostring(value2 or \"\")\n\
+    if lower == \"hide ui\" or lower == \"hide hud\" then\n\
+        local dur = tonumber(v2) or 0.35\n\
+        applyChannelTransition(-1.0, 0.0, 0.0, dur, \"sineInOut\")\n\
+    elseif lower == \"show ui\" or lower == \"show hud\" then\n\
+        local dur = tonumber(v2) or 0.35\n\
+        applyChannelTransition(0.0, 1.0, 1.0, dur, \"sineInOut\")\n\
+    elseif lower == \"toggle ui\" then\n\
+        uiHiddenToggle = not uiHiddenToggle\n\
+        local target = uiHiddenToggle and 0.0 or 1.0\n\
+        local dur = tonumber(v2) or 0.35\n\
+        applyChannelTransition(-1.0, target, target, dur, \"sineInOut\")\n\
+    elseif lower == \"fade ui\" or lower == \"hud fade\" then\n\
+        local target = tonumber(v1) or 0.0\n\
+        local dur = tonumber(v2) or 0.5\n\
+        applyChannelTransition(-1.0, target, target, dur, \"sineInOut\")\n\
+    elseif lower == \"screen fade\" or lower == \"camera fade\" or lower == \"blackout\" then\n\
+        local target = tonumber(v1) or 1.0\n\
+        local dur = tonumber(v2) or 0.5\n\
+        applyChannelTransition(target, -1.0, -1.0, dur, \"sineInOut\")\n\
+    end\n\
+end\n",
+        cfg_and_cues_block
+    )
+}
+
 /// Modo de control táctil en móvil:
 /// - `TapArrows` (Por defecto): 100 % táctil directo tocando las 4 flechas receptoras.
 /// - `ClassicHitbox`: Diseño clásico estilo Psych Engine Mobile (4 columnas hitbox verticales).
@@ -641,6 +1093,7 @@ impl ModProject {
         let chart = ChartData::bundled_demo_chart();
         let camera_lua = render_camera_lua_script(&stage.camera, None);
         let stage_events_lua = render_stage_events_lua_script(&chart, &stage, None);
+        let ui_blackout_lua = render_ui_blackout_lua_script(&chart, None);
 
         let default_lua = r#"-- Script Lua de ejemplo para BeatForge Studio
 function onCreate()
@@ -695,6 +1148,15 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
                     name: STAGE_EVENTS_SCRIPT_NAME.to_string(),
                     language: ScriptLanguage::Lua,
                     source_code: stage_events_lua,
+                    enabled: true,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
+                },
+                ScriptAsset {
+                    id: UI_BLACKOUT_SCRIPT_ID.to_string(),
+                    name: UI_BLACKOUT_SCRIPT_NAME.to_string(),
+                    language: ScriptLanguage::Lua,
+                    source_code: ui_blackout_lua,
                     enabled: true,
                     precompiled_js: None,
                     precompiled_bytecode: None,
@@ -787,6 +1249,55 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
         {
             script.source_code =
                 render_stage_events_lua_script(&self.chart, &self.stage, Some(&script.source_code));
+            script.precompiled_bytecode = None;
+            script.precompiled_js = None;
+        }
+    }
+
+    /// Garantiza la presencia de `ui_blackout.lua` en proyectos nuevos o cargados desde disco.
+    pub fn ensure_ui_blackout_script(&mut self) {
+        let has_ui_blackout = self
+            .scripts
+            .iter()
+            .any(|s| s.id == UI_BLACKOUT_SCRIPT_ID || s.name == UI_BLACKOUT_SCRIPT_NAME);
+        if !has_ui_blackout {
+            let source_code = render_ui_blackout_lua_script(&self.chart, None);
+            let mut insert_idx = 0usize;
+            for (idx, s) in self.scripts.iter().enumerate() {
+                if s.id == CAMERA_SCRIPT_ID
+                    || s.name == CAMERA_SCRIPT_NAME
+                    || s.id == STAGE_EVENTS_SCRIPT_ID
+                    || s.name == STAGE_EVENTS_SCRIPT_NAME
+                {
+                    insert_idx = idx + 1;
+                }
+            }
+            self.scripts.insert(
+                insert_idx.min(self.scripts.len()),
+                ScriptAsset {
+                    id: UI_BLACKOUT_SCRIPT_ID.to_string(),
+                    name: UI_BLACKOUT_SCRIPT_NAME.to_string(),
+                    language: ScriptLanguage::Lua,
+                    source_code,
+                    enabled: true,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
+                },
+            );
+        }
+    }
+
+    /// Resincroniza el bloque `-- [UI_BLACKOUT_START]..-- [UI_BLACKOUT_END]` de `ui_blackout.lua`
+    /// tras editar cues del Chart Editor o importar un chart.json externo.
+    pub fn sync_ui_blackout_script(&mut self) {
+        self.ensure_ui_blackout_script();
+        if let Some(script) = self
+            .scripts
+            .iter_mut()
+            .find(|s| s.id == UI_BLACKOUT_SCRIPT_ID || s.name == UI_BLACKOUT_SCRIPT_NAME)
+        {
+            script.source_code =
+                render_ui_blackout_lua_script(&self.chart, Some(&script.source_code));
             script.precompiled_bytecode = None;
             script.precompiled_js = None;
         }

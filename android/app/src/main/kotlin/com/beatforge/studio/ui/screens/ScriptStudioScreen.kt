@@ -302,8 +302,8 @@ fun ScriptStudioScreen(
                     )
 
                     Text(
-                        text = "Callbacks: onCreate() · onUpdate(dt) · onBeatHit(b) · onStepHit(s) · onCountdownTick(t) · onEvent(name,v1,v2) · onTweenCompleted(tag) · onTimerCompleted(tag)\n" +
-                            "APIs: setStrumProp/getStrumProp · tweenStrumProp · setEntityProp/getEntityProp · tweenEntityProp · tweenCameraPos/Zoom · flashCamera/flashHud/flashEffect · preloadEntity/retireEntity/swapEntity/setActiveCharacter · makeGraphic/makeHudGraphic/makeText/setTextString · setHealth/addHealth · setHudVisible/Opacity/Zoom · setTrackVolume/Mute · runTimer",
+                        text = "Callbacks: onCreate() · onSongStart() · onUpdate(dt) · onBeatHit(b) · onStepHit(s) · onCountdownTick(t) · onEvent(name,v1,v2) · onTweenCompleted(tag) · onTimerCompleted(tag)\n" +
+                            "APIs: setScreenBlackout/tweenScreenBlackout · setArrowsVisible/Opacity · tweenArrowsOpacity · setHudVisible/Opacity/Zoom · tweenHudOpacity · setStrumProp/tweenStrumProp · setEntityProp/tweenEntityProp · tweenCameraPos/Zoom · flashCamera/flashHud/flashEffect · preloadEntity/retireEntity/swapEntity/setActiveCharacter · makeGraphic/makeHudGraphic/makeText/setTextString · setHealth/addHealth · setTrackVolume/Mute · runTimer",
                         color = StudioColors.TextMuted,
                         fontSize = 10.sp,
                         lineHeight = 13.sp

@@ -188,10 +188,12 @@ pub(super) fn apply_strum_prop(
 
 /// Publica una instantánea del estado actual del juego dentro de `ScriptHostState` para que
 /// los scripts Lua/TS/JS lean posiciones, BPM, cámara y estadísticas en tiempo real.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn sync_script_host_state(
     state: &ScriptHostState,
     stage: &StageScene,
     entities: &[StageEntity],
+    dynamic_items: &[DynamicDrawableState],
     active_player_id: &str,
     active_opponent_id: &str,
     strums: &[StrumOverrideState; 8],
@@ -206,6 +208,12 @@ pub(super) fn sync_script_host_state(
     accuracy: f32,
     scroll_speed: f64,
     downscroll: bool,
+    hud_visible: bool,
+    hud_opacity: f32,
+    hud_zoom: f32,
+    arrows_visible: bool,
+    arrows_opacity: f32,
+    screen_blackout_alpha: f32,
 ) {
     *state.song_pos_ms.lock() = song_pos_ms;
     *state.current_bpm.lock() = active_bpm;
@@ -222,6 +230,12 @@ pub(super) fn sync_script_host_state(
     *state.accuracy.lock() = accuracy;
     *state.scroll_speed.lock() = scroll_speed;
     *state.downscroll.lock() = downscroll;
+    *state.hud_visible.lock() = hud_visible;
+    *state.hud_opacity.lock() = hud_opacity;
+    *state.hud_zoom.lock() = hud_zoom;
+    *state.arrows_visible.lock() = arrows_visible;
+    *state.arrows_opacity.lock() = arrows_opacity;
+    *state.screen_blackout_alpha.lock() = screen_blackout_alpha;
 
     {
         let mut s_lock = state.strum_props.lock();
@@ -294,6 +308,27 @@ pub(super) fn sync_script_host_state(
             _ => {}
         }
     }
+    for dyn_item in dynamic_items {
+        if !prop_map.contains_key(&dyn_item.id) {
+            pos_map.insert(dyn_item.id.clone(), (dyn_item.x, dyn_item.y));
+            prop_map.insert(
+                dyn_item.id.clone(),
+                EntityPropSnapshot {
+                    x: dyn_item.x,
+                    y: dyn_item.y,
+                    width: dyn_item.width,
+                    height: dyn_item.height,
+                    scale: 1.0,
+                    opacity: dyn_item.opacity,
+                    angle: dyn_item.angle,
+                    visible: if dyn_item.visible { 1.0 } else { 0.0 },
+                    flip_x: 0.0,
+                    z_index: 0.0,
+                    scroll_factor: if dyn_item.is_hud { 0.0 } else { 1.0 },
+                },
+            );
+        }
+    }
 }
 
 /// Avanza temporizadores activos y dispara `onTimerCompleted` al expirar.
@@ -359,6 +394,20 @@ pub(super) fn update_active_tweens(
             }
             TweenTarget::StrumProp { strum_idx, prop } => {
                 apply_strum_prop(&mut session.strum_overrides, *strum_idx, prop, val);
+            }
+            TweenTarget::HudProp { prop } => match prop.as_str() {
+                "opacity" | "alpha" => session.hud_opacity = val.clamp(0.0, 1.0),
+                "zoom" => session.hud_zoom = val.clamp(0.3, 2.5),
+                "visible" => session.hud_visible = val > 0.0,
+                _ => {}
+            },
+            TweenTarget::ArrowsProp { prop } => match prop.as_str() {
+                "opacity" | "alpha" => session.arrows_opacity = val.clamp(0.0, 1.0),
+                "visible" => session.arrows_visible = val > 0.0,
+                _ => {}
+            },
+            TweenTarget::ScreenBlackout => {
+                session.screen_blackout_alpha = val.clamp(0.0, 1.0);
             }
         }
         if raw_t >= 1.0 {
@@ -468,6 +517,20 @@ pub(super) fn drain_and_apply_script_commands(
                         "zoom" => session.hud_zoom = value.clamp(0.3, 2.5),
                         _ => {}
                     }
+                }
+            }
+            ScriptCommand::SetArrowsProp { prop, value } => {
+                if value.is_finite() {
+                    match prop.as_str() {
+                        "visible" => session.arrows_visible = value > 0.0,
+                        "opacity" | "alpha" => session.arrows_opacity = value.clamp(0.0, 1.0),
+                        _ => {}
+                    }
+                }
+            }
+            ScriptCommand::SetScreenBlackout(alpha) => {
+                if alpha.is_finite() {
+                    session.screen_blackout_alpha = alpha.clamp(0.0, 1.0);
                 }
             }
             ScriptCommand::MakeGraphic {
@@ -646,6 +709,71 @@ pub(super) fn drain_and_apply_script_commands(
                     target: TweenTarget::StrumProp { strum_idx, prop },
                     start_val,
                     end_val: target,
+                    elapsed_sec: 0.0,
+                    duration_sec: duration_sec.max(0.001),
+                    ease,
+                });
+            }
+            ScriptCommand::TweenHudProp {
+                tag,
+                prop,
+                target,
+                duration_sec,
+                ease,
+            } => {
+                session.active_tweens.retain(|t| t.tag != tag);
+                let start_val = match prop.as_str() {
+                    "opacity" | "alpha" => session.hud_opacity,
+                    "zoom" => session.hud_zoom,
+                    "visible" => if session.hud_visible { 1.0 } else { 0.0 },
+                    _ => target,
+                };
+                session.active_tweens.push(ActiveTweenState {
+                    tag,
+                    target: TweenTarget::HudProp { prop },
+                    start_val,
+                    end_val: target,
+                    elapsed_sec: 0.0,
+                    duration_sec: duration_sec.max(0.001),
+                    ease,
+                });
+            }
+            ScriptCommand::TweenArrowsProp {
+                tag,
+                prop,
+                target,
+                duration_sec,
+                ease,
+            } => {
+                session.active_tweens.retain(|t| t.tag != tag);
+                let start_val = match prop.as_str() {
+                    "opacity" | "alpha" => session.arrows_opacity,
+                    "visible" => if session.arrows_visible { 1.0 } else { 0.0 },
+                    _ => target,
+                };
+                session.active_tweens.push(ActiveTweenState {
+                    tag,
+                    target: TweenTarget::ArrowsProp { prop },
+                    start_val,
+                    end_val: target,
+                    elapsed_sec: 0.0,
+                    duration_sec: duration_sec.max(0.001),
+                    ease,
+                });
+            }
+            ScriptCommand::TweenScreenBlackout {
+                tag,
+                target,
+                duration_sec,
+                ease,
+            } => {
+                session.active_tweens.retain(|t| t.tag != tag);
+                let start_val = session.screen_blackout_alpha;
+                session.active_tweens.push(ActiveTweenState {
+                    tag,
+                    target: TweenTarget::ScreenBlackout,
+                    start_val,
+                    end_val: target.clamp(0.0, 1.0),
                     elapsed_sec: 0.0,
                     duration_sec: duration_sec.max(0.001),
                     ease,

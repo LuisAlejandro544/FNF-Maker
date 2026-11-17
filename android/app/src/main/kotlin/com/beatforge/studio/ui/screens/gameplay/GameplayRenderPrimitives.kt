@@ -117,13 +117,14 @@ internal fun DrawScope.drawDynamicItem(
     item: MutableDynamicDrawable,
     sx: Float,
     sy: Float,
-    textPaint: Paint
+    textPaint: Paint,
+    opacityScale: Float = 1f
 ) {
     val px = item.x * sx
     val py = item.y * sy
     val pw = (item.width * sx).coerceAtLeast(2f)
     val ph = (item.height * sy).coerceAtLeast(2f)
-    val alpha = item.opacity.coerceIn(0f, 1f)
+    val alpha = (item.opacity * opacityScale).coerceIn(0f, 1f)
 
     if (item.isText) {
         if (item.text.isBlank()) return

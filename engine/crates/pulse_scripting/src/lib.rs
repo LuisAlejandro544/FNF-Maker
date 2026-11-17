@@ -261,6 +261,15 @@ impl ModScriptRuntime {
         }
     }
 
+    pub fn call_on_song_start(&mut self) {
+        for vm in &mut self.lua_vms {
+            vm.call_void("onSongStart");
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_void("onSongStart");
+        }
+    }
+
     pub fn call_on_update(&mut self, dt: f32) {
         for vm in &mut self.lua_vms {
             vm.call_f32("onUpdate", dt);
@@ -407,8 +416,13 @@ mod tests {
             &mut manifest,
             Some(&scripts_dir),
         );
+        let expected_enabled_count = bundle1
+            .optimized_scripts
+            .iter()
+            .filter(|s| s.enabled)
+            .count();
         assert!(st1.errors.is_empty());
-        assert_eq!(st1.precompiled_count, 3);
+        assert_eq!(st1.precompiled_count, expected_enabled_count);
         assert_eq!(st1.cached_reused_count, 0);
         assert!(bundle1
             .optimized_scripts
@@ -438,7 +452,7 @@ mod tests {
         );
         assert!(st2.errors.is_empty());
         assert_eq!(st2.precompiled_count, 0);
-        assert_eq!(st2.cached_reused_count, 3);
+        assert_eq!(st2.cached_reused_count, expected_enabled_count);
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }

@@ -302,6 +302,9 @@ pub struct GameplayStepJson {
     pub hud_visible: bool,
     pub hud_opacity: f32,
     pub hud_zoom: f32,
+    pub arrows_visible: bool,
+    pub arrows_opacity: f32,
+    pub screen_blackout_alpha: f32,
     pub flash_color_argb: u32,
     pub flash_alpha: f32,
     pub flash_over_hud: bool,
@@ -361,6 +364,9 @@ pub enum TweenTarget {
     CameraPosY,
     CameraZoom,
     StrumProp { strum_idx: usize, prop: String },
+    HudProp { prop: String },
+    ArrowsProp { prop: String },
+    ScreenBlackout,
 }
 
 #[derive(Clone)]
@@ -411,6 +417,9 @@ pub struct GameplayRuntimeState {
     pub hud_visible: bool,
     pub hud_opacity: f32,
     pub hud_zoom: f32,
+    pub arrows_visible: bool,
+    pub arrows_opacity: f32,
+    pub screen_blackout_alpha: f32,
     pub active_player_id: String,
     pub active_opponent_id: String,
     pub flash_color_argb: u32,
@@ -422,6 +431,7 @@ pub struct GameplayRuntimeState {
     pub reused_later_entities: HashSet<String>,
     pub active_scroll_speed: f64,
     pub active_downscroll: bool,
+    pub song_started: bool,
     pub last_beat: i32,
     pub last_step: i32,
     pub next_event_idx: usize,
