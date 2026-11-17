@@ -20,8 +20,8 @@ android {
 
     defaultConfig {
         applicationId = "com.beatforge.studio"
-        // minSdk 24 garantiza compatibilidad amplia con teléfonos de 32 y 64 bits
-        minSdk = 24
+        // minSdk 26 (Android 8.0+) habilita AAudio nativo y WebP lossless completo en 32 y 64 bits
+        minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
@@ -106,7 +106,7 @@ val buildRustDebug by tasks.registering(Exec::class) {
         "cargo", "ndk",
         "-t", "armeabi-v7a",
         "-t", "arm64-v8a",
-        "--platform", "24",
+        "--platform", "26",
         "-o", jniOut,
         "build", "--keep-going", "-p", "pulse_android"
     )
@@ -122,7 +122,7 @@ val buildRustRelease by tasks.registering(Exec::class) {
         "cargo", "ndk",
         "-t", "armeabi-v7a",
         "-t", "arm64-v8a",
-        "--platform", "24",
+        "--platform", "26",
         "-o", jniOut,
         "build", "--release", "--keep-going", "-p", "pulse_android"
     )

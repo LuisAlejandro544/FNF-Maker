@@ -549,7 +549,7 @@ fn optimize_scripts_with_manifest(
             }
         }
 
-        let res = optimize_single_script(&script.source_code, script.language);
+        let res = optimize_single_script(script.language, &script.source_code);
         discarded_heavy += res.discarded_loops;
         neutralized_unbounded += res.neutralized_loops;
 

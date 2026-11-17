@@ -2,7 +2,7 @@
 <!--
   Archivo: android/app/src/main/AndroidManifest.xml
   Propósito: Configura la aplicación en modo estrictamente horizontal (`sensorLandscape`),
-  permisos de lectura multimedia compatibles con Android 7..15, y registra `MainActivity`
+  permisos de lectura multimedia compatibles con Android 8..15, y registra `MainActivity`
   con Jetpack Compose conectado al motor nativo Rust `libpulse_android.so` vía JNI.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">

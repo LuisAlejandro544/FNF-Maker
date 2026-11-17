@@ -81,7 +81,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       ├── build.gradle.kts             # Splits 32b/64b, Compose BOM, Material Icons Extended y cargo-ndk en preBuild
 │       ├── proguard-rules.pro           # Reglas JNI para NativeEngineBridge y SafFileBridge
 │       └── src/main/
-│           ├── AndroidManifest.xml      # `sensorLandscape`, teclado `adjustResize` y permisos Android 7..15
+│           ├── AndroidManifest.xml      # `sensorLandscape`, teclado `adjustResize` y permisos Android 8..15
 │           ├── res/values/strings.xml
 │           └── kotlin/com/beatforge/studio/
 │               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + CreateDocument (.json)

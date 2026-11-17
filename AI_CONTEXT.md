@@ -22,15 +22,15 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 | Componente | Versión | Detalles Críticos de API |
 | :--- | :--- | :--- |
 | Jetpack Compose BOM | `2025.02.00` | Incluye `material3`, `material-icons-extended`, `ui`, `ui-graphics`, `activity-compose:1.10.1`, `lifecycle-viewmodel-compose:2.8.7`, `lifecycle-runtime-compose:2.8.7` y plugin `org.jetbrains.kotlin.plugin.compose:2.1.20`. |
-| Android Gradle / Kotlin | AGP `8.9.1` / Kotlin `2.1.20` | `compileSdk = 35`, `targetSdk = 35`, `minSdk = 24`, `ndkVersion = "27.2.12479018"`. Sin `GameActivity` ni `prefab`. |
-| Audio Android (`AAudio` Rust puro) | `libc` (`dlopen` C ABI) | En `pulse_audio/src/rust_audio_backend.rs`, se eliminó por completo C++ Oboe (`oboe-sys`) y `libc++_shared.so`. Carga `libaaudio.so` vía `dlopen`/`dlsym` en Rust puro (API 26+) con reloj de respaldo (`FallbackClockThread`) para Android 7.x (`minSdk = 24`). |
+| Android Gradle / Kotlin | AGP `8.9.1` / Kotlin `2.1.20` | `compileSdk = 35`, `targetSdk = 35`, `minSdk = 26`, `ndkVersion = "27.2.12479018"`. Sin `GameActivity` ni `prefab`. |
+| Audio Android (`AAudio` Rust puro) | `libc` (`dlopen` C ABI) | En `pulse_audio/src/rust_audio_backend.rs`, se eliminó por completo C++ Oboe (`oboe-sys`) y `libc++_shared.so`. Carga `libaaudio.so` vía `dlopen`/`dlsym` en Rust puro (nativo en Android 8.0+ / `minSdk = 26`) con reloj de respaldo defensivo (`FallbackClockThread`) para emuladores o hardware que rechace AAudio. |
 | Puente JNI (`jni` crate) | `0.21.1` | `pulse_android/src/lib.rs` exporta símbolos `Java_com_beatforge_studio_NativeEngineBridge_*` conectados a `EngineSession` (`parking_lot::Mutex`) más un estado `HOT_COMPILE_PROGRESS` (`OnceLock<Mutex<...>>`) independiente para sondeo sin bloqueo durante `nativeHotCompile`. |
 | `oxc_*` | `0.158.0` | `ParserReturn`, `SemanticBuilderReturn` y `TransformerReturn` exponen `.diagnostics` (`oxc_diagnostics::Diagnostics`) en lugar de `.errors`. Incluye `validate_js_syntax` (`SourceType::default()`) para scripts ES2022. |
 | `mlua` | `0.12.2` | `Lua::new()` con `lua54` y `vendored`; `precompile_bytecode` (`dump(false)`), `load(&bytes)` y watchdog por `HookTriggers::new().every_nth_instruction(4096)`. |
 | `rquickjs` | `0.14.0` | `Function::new(ctx.clone(), closure)` + `runtime.set_interrupt_handler(...)` watchdog con `features = ["rust-alloc", "macro", "bindgen"]`. |
 | `resvg` / `image` | `0.50.0` / `0.25.10` | `resvg` rasteriza SVG sobre `tiny_skia::Pixmap`; `image::codecs::webp::WebPEncoder::new_lossless` comprime sprites `.webp` VP8L lossless en Rust puro sin `libwebp-sys`. |
 | `texture2ddecoder` | `0.1.2` | Licencia `MIT OR Apache-2.0`. Decodifica texturas `.astc` (bloques 4×4..12×12) por software en Rust puro en `pulse_core/src/astc_loader.rs` guardando salida en WebP sin pérdida. |
-| `cargo-ndk` | `v4.x` | El nivel de API se pasa con `--platform 24` (NO `-p 24`, porque `-p` en v4 es `--package`). |
+| `cargo-ndk` | `v4.x` | El nivel de API se pasa con `--platform 26` (NO `-p 26`, porque `-p` en v4 es `--package`). |
 
 ---
 
@@ -51,7 +51,7 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
   1. Abre `StreamingAudioSource` sobre `compiled_mix.wav` con un hilo lector en segundo plano (`pulse_audio_streamer`) que llena un **buffer circular SPSC lock-free de ~512 KB** (`STREAM_RING_FRAMES = 131_072` frames estéreo `i16`).
   2. Libera inmediatamente `decoded_tracks` y `mixer.clear_tracks()` en Rust para recuperar decenas/cientos de MB de RAM antes de jugar (al salir con `stop_gameplay()`, recarga las pistas del editor en `Dispatchers.IO`).
   3. `AudioMixer::start_countdown(bpm)` calcula `beat_frames = (sample_rate * 60.0 / bpm)` y fija `countdown_remaining_frames = beat_frames * 4` (`AtomicU64`).
-- El callback en tiempo real (`render_audio_frames`, invocado por AAudio o `FallbackClockThread` en API 24–25) lee del `stream_source` usando `seek_lock.try_read()` (cero bloqueo en el hilo de audio) y sintetiza sin mutex la cuenta regresiva (`"3"`, `"2"`, `"1"`, `"¡YA!"`) hasta `0.0 ms`.
+- El callback en tiempo real (`render_audio_frames`, invocado por AAudio en Android 8.0+ o `FallbackClockThread` en emuladores/hardware sin baja latencia) lee del `stream_source` usando `seek_lock.try_read()` (cero bloqueo en el hilo de audio) y sintetiza sin mutex la cuenta regresiva (`"3"`, `"2"`, `"1"`, `"¡YA!"`) hasta `0.0 ms`.
 
 ### C. Ensamblado de Spritesheets (`SpriteLabScreen`), Vista 1:1, Poses `Miss` e Íconos
 - **Imágenes (`.png`, `.jpg`, `.webp`, `.astc`)**: `astc_loader.rs` valida la cabecera mágica `[0x13, 0xAB, 0xA1, 0x5C]`, decodifica bloques `.astc` vía `texture2ddecoder::decode_astc` a `RGBA8` y `sprite_ops.rs` guarda una copia **WebP sin pérdida** (`save_lossless_webp`, escritura atómica `.webp.tmp` -> `.webp`) en `cacheDir/decoded_textures/<id>.webp` para que Compose la cargue con `BitmapFactory` / `BitmapRegionDecoder`.

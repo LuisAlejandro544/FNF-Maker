@@ -126,7 +126,7 @@ fun HotCompileScreen(
                         )
                         Text(
                             text = "$pctInt%",
-                            color = StudioColors.TextSecondary,
+                            color = StudioColors.TextMuted,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
                         )

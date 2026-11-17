@@ -1,8 +1,8 @@
 //! Archivo: engine/crates/pulse_audio/src/rust_audio_backend.rs
 //! Propósito: Backend de audio de ultra-baja latencia 100% en Rust puro (cero C++, sin `oboe-sys`).
-//! En Android (API 26+ / Android 8.0+), carga dinámicamente `libaaudio.so` mediante `dlopen`/`dlsym`
-//! usando exclusivamente el C ABI estable de AAudio en modo `LOW_LATENCY` con callback en tiempo real.
-//! En dispositivos Android 7.0/7.1 (API 24-25 sin AAudio) o entornos de escritorio sin hardware de audio,
+//! En Android (API 26+ / Android 8.0+, `minSdk = 26`), carga dinámicamente `libaaudio.so` mediante
+//! `dlopen`/`dlsym` usando exclusivamente el C ABI estable de AAudio en modo `LOW_LATENCY` con callback en tiempo real.
+//! En emuladores/OEMs que rechacen el stream de baja latencia o entornos de escritorio sin hardware de audio,
 //! mantiene un reloj de respaldo en Rust puro para que el juego siga sincronizado sin crashear.
 
 use crate::mixer::AudioMixerState;
@@ -46,7 +46,7 @@ impl AudioEngineHandle {
     }
 
     /// Abre el stream nativo AAudio en Rust puro bajo demanda (idempotente) o activa el reloj
-    /// de respaldo seguro si el dispositivo es Android 7.x o rechaza el stream de baja latencia.
+    /// de respaldo seguro si el emulador o dispositivo rechaza el stream de baja latencia.
     pub fn ensure_started(&mut self) {
         #[cfg(target_os = "android")]
         {
@@ -94,7 +94,7 @@ enum AndroidAudioOutput {
     FallbackClock(FallbackClockThread),
 }
 
-/// Reloj de respaldo en Rust puro para Android 7.0/7.1 (API 24-25) o emuladores sin AAudio.
+/// Reloj de respaldo defensivo en Rust puro para emuladores o hardware que rechace AAudio `LOW_LATENCY`.
 #[cfg(target_os = "android")]
 struct FallbackClockThread {
     stop_flag: Arc<AtomicBool>,

@@ -24,8 +24,8 @@ Cualquier agente de programación o colaborador que modifique este repositorio *
 - **Nunca usar `persist.sys.*`** ni propiedades privilegiadas del sistema Android.
 - **No bloquear el hilo principal en Kotlin**: Toda lectura/copia de archivos desde SAF (`Uri`), decodificación de Bitmaps o llamada JNI pesada debe ejecutarse con corrutinas en `Dispatchers.IO`.
 - **No crear fallbacks en Kotlin** que reemplacen el motor Rust; Kotlin únicamente presenta la interfaz Compose, selector SAF y pasarela JNI hacia Rust.
-- **No omitir `cargo ndk` en Gradle**: `preBuild` debe compilar obligatoriamente `pulse_android` con `cargo ndk --platform 24`.
-- **`minSdk = 24`**: Verifica compatibilidad con Android 7.0+ antes de añadir APIs nuevas de Android o NDK (en audio AAudio, mantener respaldo en Rust para API 24–25).
+- **No omitir `cargo ndk` en Gradle**: `preBuild` debe compilar obligatoriamente `pulse_android` con `cargo ndk --platform 26`.
+- **`minSdk = 26`**: Verifica compatibilidad con Android 8.0+ (API 26+, con AAudio y WebP lossless nativos) antes de añadir APIs nuevas de Android o NDK (mantener el reloj de respaldo en Rust en `rust_audio_backend.rs` por seguridad ante emuladores o hardware que rechace AAudio).
 
 ## 4. Política de Dependencias y Propiedad Intelectual
 - **Solo licencias permisivas** (MIT, Apache-2.0, BSD, Zlib, ISC, Unlicense). **Prohibido** añadir dependencias GPL, LGPL, AGPL, MPL-2.0 (como `symphonia`) o licencias que obliguen a abrir código / atribución restrictiva.
