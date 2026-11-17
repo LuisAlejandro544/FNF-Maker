@@ -1,27 +1,51 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/stage/StageCanvasPreview.kt
-// Propósito: Lienzo interactivo central 16:9 (espacio virtual 1280x720) del editor de escenario.
-// Optimizado para escenas con muchos objetos:
-// - Lee y actualiza `StageLiveTransformState` solo en la fase de dibujo (`DrawScope`), evitando
-//   recomposiciones de paneles, copias de listas o llamadas JNI durante arrastres/pellizcos 60Hz.
-// - Pre-mide etiquetas de texto con `remember` fuera del bucle de dibujo.
-// - Descarta objetos fuera del viewport y usa `FilterQuality.Low` mientras se interactúa.
+// Propósito: Lienzo interactivo central 16:9 (espacio virtual 1280x720) del editor de escenario,
+// con barra superior rápida (coordenadas, rejilla, vista amplia overscan 0.68x y bloqueo de capa)
+// y barra inferior de acciones rápidas al alcance del pulgar (`Visible`, `Espejo`, `Centrar`,
+// escala/zoom rápido y presets de cámara), manteniendo dibujo 60Hz sin recomposiciones globales.
 
 package com.beatforge.studio.ui.screens.stage
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CropFree
+import androidx.compose.material.icons.rounded.Flip
+import androidx.compose.material.icons.rounded.GridOff
+import androidx.compose.material.icons.rounded.GridOn
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.ZoomOutMap
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,6 +54,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -37,12 +63,14 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -62,8 +90,14 @@ fun StageCanvasPreview(
     selected: StageEntitySnapshot?,
     stageCamera: StageCameraSnapshot,
     isCameraSelected: Boolean,
+    showGrid: Boolean,
+    wideView: Boolean,
+    lockedEntityIds: Set<String>,
     entityBitmaps: Map<String, LoadedEntityBitmap>,
     liveTransform: StageLiveTransformState,
+    onToggleGrid: () -> Unit,
+    onToggleWideView: () -> Unit,
+    onToggleSelectedLock: () -> Unit,
     onSelectEntity: (String) -> Unit,
     onSelectCamera: () -> Unit,
     onUpdateEntity: (
@@ -93,6 +127,8 @@ fun StageCanvasPreview(
     val latestSelected by rememberUpdatedState(selected)
     val latestCamera by rememberUpdatedState(stageCamera)
     val latestIsCameraSelected by rememberUpdatedState(isCameraSelected)
+    val latestWideView by rememberUpdatedState(wideView)
+    val latestLockedIds by rememberUpdatedState(lockedEntityIds)
 
     val textMeasurer = rememberTextMeasurer()
     // Pre-medir etiquetas una sola vez cuando cambian las entidades, nunca dentro de Canvas DrawScope
@@ -109,501 +145,823 @@ fun StageCanvasPreview(
         }
     }
 
+    val isSelectedLocked = !isCameraSelected && selected != null && lockedEntityIds.contains(selected.id)
+
     Surface(
         modifier = modifier.fillMaxHeight(),
         shape = RoundedCornerShape(12.dp),
         color = StudioColors.BgPanel,
         border = BorderStroke(1.dp, StudioColors.BorderSubtle)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(10.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Canvas(
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Barra superior compacta del lienzo: lectura en vivo + herramientas de vista
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(StudioColors.BgDark, RoundedCornerShape(8.dp))
-                    .pointerInput(selected?.id, isCameraSelected) {
-                        val handleHitRadiusPx = 30.dp.toPx()
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            val scaleToVirtX = 1280f / size.width.toFloat().coerceAtLeast(1f)
-                            val scaleToVirtY = 720f / size.height.toFloat().coerceAtLeast(1f)
-                            val camMode = latestIsCameraSelected
-                            val camAtDown = latestCamera
-                            val selAtDown = if (camMode) null else latestSelected
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (isCameraSelected) {
+                    val effZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
+                        .coerceIn(0.35f, 2.5f)
+                    val effX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
+                    val effY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
+                    Icon(
+                        imageVector = Icons.Rounded.Videocam,
+                        contentDescription = null,
+                        tint = StudioColors.AccentCyan,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Cámara · (${effX.roundToInt()}, ${effY.roundToInt()}) · ${((effZoom * 100f).roundToInt() / 100f)}x",
+                        color = StudioColors.AccentCyan,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else if (selected != null) {
+                    val useLive = liveTransform.entityId == selected.id
+                    val effX = if (useLive) liveTransform.x else selected.x
+                    val effY = if (useLive) liveTransform.y else selected.y
+                    val effScale = if (useLive) liveTransform.scale else selected.scale
+                    val dotColor = when (selected.role) {
+                        "background" -> StudioColors.AccentIndigo
+                        "opponent" -> StudioColors.AccentCoral
+                        "player" -> StudioColors.AccentEmerald
+                        else -> StudioColors.AccentCyan
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(dotColor)
+                    )
+                    Text(
+                        text = "${selected.displayName} · (${effX.roundToInt()}, ${effY.roundToInt()}) · ${((effScale * 100f).roundToInt() / 100f)}x",
+                        color = StudioColors.TextPrimary,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else {
+                    Text(
+                        text = "Escenario 1280×720",
+                        color = StudioColors.TextMuted,
+                        fontSize = 10.5.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
 
-                            if (camMode) {
-                                liveTransform.syncFromCamera(camAtDown)
-                            } else if (selAtDown != null) {
-                                liveTransform.syncFromEntity(selAtDown)
-                            }
+                CanvasToolbarToggle(
+                    icon = if (showGrid) Icons.Rounded.GridOn else Icons.Rounded.GridOff,
+                    label = null,
+                    active = showGrid,
+                    activeColor = StudioColors.AccentEmerald,
+                    onClick = onToggleGrid
+                )
+                CanvasToolbarToggle(
+                    icon = if (wideView) Icons.Rounded.ZoomOutMap else Icons.Rounded.CropFree,
+                    label = if (wideView) "Amplia" else "100%",
+                    active = wideView,
+                    activeColor = StudioColors.AccentCyan,
+                    onClick = onToggleWideView
+                )
+                if (!isCameraSelected && selected != null) {
+                    CanvasToolbarToggle(
+                        icon = if (isSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                        label = null,
+                        active = isSelectedLocked,
+                        activeColor = StudioColors.AccentIndigo,
+                        onClick = onToggleSelectedLock
+                    )
+                }
+            }
 
-                            var localX = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.x else (selAtDown?.x ?: 640f)
-                            var localY = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.y else (selAtDown?.y ?: 360f)
-                            var localScale = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.scale else (selAtDown?.scale ?: 1f)
+            HorizontalDivider(color = StudioColors.BorderSubtle)
 
-                            var localCamX = if (camMode) liveTransform.camX else camAtDown.baseX
-                            var localCamY = if (camMode) liveTransform.camY else camAtDown.baseY
-                            var localCamZoom = if (camMode) liveTransform.camZoom else camAtDown.baseZoom
+            // Lienzo 16:9 ajustado al máximo disponible entre barras
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                val targetW: androidx.compose.ui.unit.Dp
+                val targetH: androidx.compose.ui.unit.Dp
+                if (maxWidth / 16f <= maxHeight / 9f) {
+                    targetW = maxWidth
+                    targetH = maxWidth * (9f / 16f)
+                } else {
+                    targetH = maxHeight
+                    targetW = maxHeight * (16f / 9f)
+                }
 
-                            var resizeHandleMode = false
-                            var startScale = localScale
-                            var startCamZoom = localCamZoom
-                            var startDistPx = 1f
-                            var cxPx = 0f
-                            var cyPx = 0f
+                Canvas(
+                    modifier = Modifier
+                        .width(targetW)
+                        .height(targetH)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(StudioColors.BgDark)
+                        .border(1.dp, StudioColors.BorderSubtle, RoundedCornerShape(8.dp))
+                        .clipToBounds()
+                        .pointerInput(selected?.id, isCameraSelected) {
+                            val handleHitRadiusPx = 30.dp.toPx()
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val viewScale = if (latestWideView) 0.68f else 1.0f
+                                val sx = (size.width.toFloat().coerceAtLeast(1f) / 1280f) * viewScale
+                                val sy = (size.height.toFloat().coerceAtLeast(1f) / 720f) * viewScale
+                                val scaleToVirtX = 1f / sx
+                                val scaleToVirtY = 1f / sy
+                                fun toPxX(vx: Float) = size.width * 0.5f + (vx - 640f) * sx
+                                fun toPxY(vy: Float) = size.height * 0.5f + (vy - 360f) * sy
+                                fun toVirtX(px: Float) = 640f + (px - size.width * 0.5f) / sx
+                                fun toVirtY(py: Float) = 360f + (py - size.height * 0.5f) / sy
 
-                            if (camMode) {
-                                cxPx = localCamX / scaleToVirtX
-                                cyPx = localCamY / scaleToVirtY
-                                val hwPx = ((1280f / localCamZoom) * 0.5f) / scaleToVirtX
-                                val hhPx = ((720f / localCamZoom) * 0.5f) / scaleToVirtY
-                                val handleX = cxPx + hwPx
-                                val handleY = cyPx + hhPx
-                                if (hypot(down.position.x - handleX, down.position.y - handleY) <= handleHitRadiusPx) {
-                                    resizeHandleMode = true
-                                    liveTransform.beginCameraInteraction(camAtDown)
-                                    startCamZoom = localCamZoom
-                                    startDistPx = hypot(down.position.x - cxPx, down.position.y - cyPx).coerceAtLeast(20f)
-                                }
-                            } else if (selAtDown != null && selAtDown.visible) {
-                                cxPx = localX / scaleToVirtX
-                                cyPx = localY / scaleToVirtY
-                                val hwPx = (selAtDown.width * localScale * 0.5f) / scaleToVirtX
-                                val hhPx = (selAtDown.height * localScale * 0.5f) / scaleToVirtY
-                                val handleX = cxPx + hwPx
-                                val handleY = cyPx + hhPx
-                                if (hypot(down.position.x - handleX, down.position.y - handleY) <= handleHitRadiusPx) {
-                                    resizeHandleMode = true
-                                    liveTransform.beginInteraction(selAtDown)
-                                    startScale = localScale
-                                    startDistPx = hypot(down.position.x - cxPx, down.position.y - cyPx).coerceAtLeast(12f)
-                                }
-                            }
-
-                            var moved = resizeHandleMode
-                            var didMutate = false
-                            var accumX = 0f
-                            var accumY = 0f
-                            val touchSlop = viewConfiguration.touchSlop
-
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val pressedChanges = event.changes.filter { it.pressed }
-                                if (pressedChanges.isEmpty()) break
+                                val camMode = latestIsCameraSelected
+                                val camAtDown = latestCamera
+                                val selAtDown = if (camMode) null else latestSelected
+                                val selLocked = selAtDown != null && latestLockedIds.contains(selAtDown.id)
 
                                 if (camMode) {
-                                    if (pressedChanges.size >= 2) {
-                                        resizeHandleMode = false
-                                        val zoom = event.calculateZoom()
-                                        val pan = event.calculatePan()
-                                        if (!moved && (abs(zoom - 1f) > 0.01f || pan.getDistance() > touchSlop)) {
-                                            moved = true
-                                            liveTransform.beginCameraInteraction(camAtDown)
-                                        }
-                                        if (moved) {
-                                            // Separar dedos agranda el marco de captura (reduce zoom)
-                                            localCamZoom = (localCamZoom / zoom).coerceIn(0.35f, 2.5f)
-                                            localCamX = (localCamX + pan.x * scaleToVirtX).coerceIn(-1000f, 2600f)
-                                            localCamY = (localCamY + pan.y * scaleToVirtY).coerceIn(-1000f, 1800f)
-                                            liveTransform.updateCamera(localCamX, localCamY, localCamZoom)
-                                            didMutate = true
-                                            pressedChanges.forEach { ch ->
-                                                if (ch.positionChanged()) ch.consume()
-                                            }
-                                        }
-                                    } else {
-                                        val ch = pressedChanges.first()
-                                        val delta = ch.position - ch.previousPosition
-                                        if (!moved) {
-                                            accumX += delta.x
-                                            accumY += delta.y
-                                            if (hypot(accumX, accumY) > touchSlop) {
+                                    liveTransform.syncFromCamera(camAtDown)
+                                } else if (selAtDown != null) {
+                                    liveTransform.syncFromEntity(selAtDown)
+                                }
+
+                                var localX = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.x else (selAtDown?.x ?: 640f)
+                                var localY = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.y else (selAtDown?.y ?: 360f)
+                                var localScale = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.scale else (selAtDown?.scale ?: 1f)
+
+                                var localCamX = if (camMode) liveTransform.camX else camAtDown.baseX
+                                var localCamY = if (camMode) liveTransform.camY else camAtDown.baseY
+                                var localCamZoom = if (camMode) liveTransform.camZoom else camAtDown.baseZoom
+
+                                var resizeHandleMode = false
+                                var startScale = localScale
+                                var startCamZoom = localCamZoom
+                                var startDistPx = 1f
+                                var cxPx = 0f
+                                var cyPx = 0f
+
+                                if (camMode) {
+                                    cxPx = toPxX(localCamX)
+                                    cyPx = toPxY(localCamY)
+                                    val hwPx = ((1280f / localCamZoom) * 0.5f) * sx
+                                    val hhPx = ((720f / localCamZoom) * 0.5f) * sy
+                                    val handleX = cxPx + hwPx
+                                    val handleY = cyPx + hhPx
+                                    if (hypot(down.position.x - handleX, down.position.y - handleY) <= handleHitRadiusPx) {
+                                        resizeHandleMode = true
+                                        liveTransform.beginCameraInteraction(camAtDown)
+                                        startCamZoom = localCamZoom
+                                        startDistPx = hypot(down.position.x - cxPx, down.position.y - cyPx).coerceAtLeast(20f)
+                                    }
+                                } else if (selAtDown != null && selAtDown.visible && !selLocked) {
+                                    cxPx = toPxX(localX)
+                                    cyPx = toPxY(localY)
+                                    val hwPx = (selAtDown.width * localScale * 0.5f) * sx
+                                    val hhPx = (selAtDown.height * localScale * 0.5f) * sy
+                                    val handleX = cxPx + hwPx
+                                    val handleY = cyPx + hhPx
+                                    if (hypot(down.position.x - handleX, down.position.y - handleY) <= handleHitRadiusPx) {
+                                        resizeHandleMode = true
+                                        liveTransform.beginInteraction(selAtDown)
+                                        startScale = localScale
+                                        startDistPx = hypot(down.position.x - cxPx, down.position.y - cyPx).coerceAtLeast(12f)
+                                    }
+                                }
+
+                                var moved = resizeHandleMode
+                                var didMutate = false
+                                var accumX = 0f
+                                var accumY = 0f
+                                val touchSlop = viewConfiguration.touchSlop
+
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressedChanges = event.changes.filter { it.pressed }
+                                    if (pressedChanges.isEmpty()) break
+
+                                    if (camMode) {
+                                        if (pressedChanges.size >= 2) {
+                                            resizeHandleMode = false
+                                            val zoom = event.calculateZoom()
+                                            val pan = event.calculatePan()
+                                            if (!moved && (abs(zoom - 1f) > 0.01f || pan.getDistance() > touchSlop)) {
                                                 moved = true
                                                 liveTransform.beginCameraInteraction(camAtDown)
-                                                localCamX = (localCamX + accumX * scaleToVirtX).coerceIn(-1000f, 2600f)
-                                                localCamY = (localCamY + accumY * scaleToVirtY).coerceIn(-1000f, 1800f)
                                             }
-                                        }
-                                        if (moved) {
-                                            if (resizeHandleMode) {
-                                                val currDist = hypot(ch.position.x - cxPx, ch.position.y - cyPx).coerceAtLeast(20f)
-                                                localCamZoom = (startCamZoom * (startDistPx / currDist)).coerceIn(0.35f, 2.5f)
-                                            } else if (delta != Offset.Zero) {
-                                                localCamX = (localCamX + delta.x * scaleToVirtX).coerceIn(-1000f, 2600f)
-                                                localCamY = (localCamY + delta.y * scaleToVirtY).coerceIn(-1000f, 1800f)
+                                            if (moved) {
+                                                localCamZoom = (localCamZoom / zoom).coerceIn(0.35f, 2.5f)
+                                                localCamX = (localCamX + pan.x * scaleToVirtX).coerceIn(-1000f, 2600f)
+                                                localCamY = (localCamY + pan.y * scaleToVirtY).coerceIn(-1000f, 1800f)
+                                                liveTransform.updateCamera(localCamX, localCamY, localCamZoom)
+                                                didMutate = true
+                                                pressedChanges.forEach { ch ->
+                                                    if (ch.positionChanged()) ch.consume()
+                                                }
                                             }
-                                            liveTransform.updateCamera(localCamX, localCamY, localCamZoom)
-                                            didMutate = true
-                                            if (ch.positionChanged()) ch.consume()
-                                        }
-                                    }
-                                } else {
-                                    val sel = latestSelected
-                                    if (pressedChanges.size >= 2 && sel != null) {
-                                        resizeHandleMode = false
-                                        val zoom = event.calculateZoom()
-                                        val pan = event.calculatePan()
-                                        if (!moved && (abs(zoom - 1f) > 0.01f || pan.getDistance() > touchSlop)) {
-                                            moved = true
-                                            liveTransform.beginInteraction(sel)
-                                        }
-                                        if (moved) {
-                                            localScale = (localScale * zoom).coerceIn(0.1f, 5.0f)
-                                            localX = (localX + pan.x * scaleToVirtX).coerceIn(-600f, 1880f)
-                                            localY = (localY + pan.y * scaleToVirtY).coerceIn(-400f, 1120f)
-                                            liveTransform.updatePositionAndScale(localX, localY, localScale)
-                                            didMutate = true
-                                            pressedChanges.forEach { ch ->
+                                        } else {
+                                            val ch = pressedChanges.first()
+                                            val delta = ch.position - ch.previousPosition
+                                            if (!moved) {
+                                                accumX += delta.x
+                                                accumY += delta.y
+                                                if (hypot(accumX, accumY) > touchSlop) {
+                                                    moved = true
+                                                    liveTransform.beginCameraInteraction(camAtDown)
+                                                    localCamX = (localCamX + accumX * scaleToVirtX).coerceIn(-1000f, 2600f)
+                                                    localCamY = (localCamY + accumY * scaleToVirtY).coerceIn(-1000f, 1800f)
+                                                }
+                                            }
+                                            if (moved) {
+                                                if (resizeHandleMode) {
+                                                    val currDist = hypot(ch.position.x - cxPx, ch.position.y - cyPx).coerceAtLeast(20f)
+                                                    localCamZoom = (startCamZoom * (startDistPx / currDist)).coerceIn(0.35f, 2.5f)
+                                                } else if (delta != Offset.Zero) {
+                                                    localCamX = (localCamX + delta.x * scaleToVirtX).coerceIn(-1000f, 2600f)
+                                                    localCamY = (localCamY + delta.y * scaleToVirtY).coerceIn(-1000f, 1800f)
+                                                }
+                                                liveTransform.updateCamera(localCamX, localCamY, localCamZoom)
+                                                didMutate = true
                                                 if (ch.positionChanged()) ch.consume()
                                             }
                                         }
-                                    } else {
-                                        val ch = pressedChanges.first()
-                                        val delta = ch.position - ch.previousPosition
-                                        if (!moved) {
-                                            accumX += delta.x
-                                            accumY += delta.y
-                                            if (hypot(accumX, accumY) > touchSlop) {
+                                    } else if (!selLocked) {
+                                        val sel = latestSelected
+                                        if (pressedChanges.size >= 2 && sel != null) {
+                                            resizeHandleMode = false
+                                            val zoom = event.calculateZoom()
+                                            val pan = event.calculatePan()
+                                            if (!moved && (abs(zoom - 1f) > 0.01f || pan.getDistance() > touchSlop)) {
                                                 moved = true
-                                                if (sel != null) {
-                                                    liveTransform.beginInteraction(sel)
-                                                    localX = (localX + accumX * scaleToVirtX).coerceIn(-600f, 1880f)
-                                                    localY = (localY + accumY * scaleToVirtY).coerceIn(-400f, 1120f)
+                                                liveTransform.beginInteraction(sel)
+                                            }
+                                            if (moved) {
+                                                localScale = (localScale * zoom).coerceIn(0.1f, 5.0f)
+                                                localX = (localX + pan.x * scaleToVirtX).coerceIn(-600f, 1880f)
+                                                localY = (localY + pan.y * scaleToVirtY).coerceIn(-400f, 1120f)
+                                                liveTransform.updatePositionAndScale(localX, localY, localScale)
+                                                didMutate = true
+                                                pressedChanges.forEach { ch ->
+                                                    if (ch.positionChanged()) ch.consume()
                                                 }
                                             }
-                                        }
-
-                                        if (moved && sel != null) {
-                                            if (resizeHandleMode) {
-                                                val currDist = hypot(ch.position.x - cxPx, ch.position.y - cyPx)
-                                                localScale = (startScale * (currDist / startDistPx)).coerceIn(0.1f, 5.0f)
-                                            } else if (delta != Offset.Zero) {
-                                                localX = (localX + delta.x * scaleToVirtX).coerceIn(-600f, 1880f)
-                                                localY = (localY + delta.y * scaleToVirtY).coerceIn(-400f, 1120f)
+                                        } else {
+                                            val ch = pressedChanges.first()
+                                            val delta = ch.position - ch.previousPosition
+                                            if (!moved) {
+                                                accumX += delta.x
+                                                accumY += delta.y
+                                                if (hypot(accumX, accumY) > touchSlop) {
+                                                    moved = true
+                                                    if (sel != null) {
+                                                        liveTransform.beginInteraction(sel)
+                                                        localX = (localX + accumX * scaleToVirtX).coerceIn(-600f, 1880f)
+                                                        localY = (localY + accumY * scaleToVirtY).coerceIn(-400f, 1120f)
+                                                    }
+                                                }
                                             }
-                                            liveTransform.updatePositionAndScale(localX, localY, localScale)
-                                            didMutate = true
-                                            if (ch.positionChanged()) ch.consume()
+
+                                            if (moved && sel != null) {
+                                                if (resizeHandleMode) {
+                                                    val currDist = hypot(ch.position.x - cxPx, ch.position.y - cyPx)
+                                                    localScale = (startScale * (currDist / startDistPx)).coerceIn(0.1f, 5.0f)
+                                                } else if (delta != Offset.Zero) {
+                                                    localX = (localX + delta.x * scaleToVirtX).coerceIn(-600f, 1880f)
+                                                    localY = (localY + delta.y * scaleToVirtY).coerceIn(-400f, 1120f)
+                                                }
+                                                liveTransform.updatePositionAndScale(localX, localY, localScale)
+                                                didMutate = true
+                                                if (ch.positionChanged()) ch.consume()
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            val selEnd = latestSelected
-                            if (camMode && didMutate) {
-                                onUpdateCamera(localCamX, localCamY, localCamZoom, true)
-                            } else if (!camMode && didMutate && selEnd != null) {
-                                val effOpacity = if (liveTransform.entityId == selEnd.id) liveTransform.opacity else selEnd.opacity
-                                onUpdateEntity(
-                                    selEnd.id,
-                                    selEnd.displayName,
-                                    selEnd.role,
-                                    0f,
-                                    0f,
-                                    localX,
-                                    localY,
-                                    true,
-                                    localScale,
-                                    effOpacity,
-                                    selEnd.visible,
-                                    selEnd.flipX,
-                                    true
-                                )
-                            } else if (!moved) {
-                                val vx = down.position.x * scaleToVirtX
-                                val vy = down.position.y * scaleToVirtY
-                                var hitId: String? = null
-                                for (idx in latestEntities.indices.reversed()) {
-                                    val ent = latestEntities[idx]
-                                    if (!ent.visible) continue
-                                    val isSelEnt = !camMode && ent.id == selEnd?.id && liveTransform.entityId == ent.id
-                                    val entScale = if (isSelEnt) liveTransform.scale else ent.scale
-                                    val entX = if (isSelEnt) liveTransform.x else ent.x
-                                    val entY = if (isSelEnt) liveTransform.y else ent.y
-                                    val hw = (ent.width * entScale) * 0.5f
-                                    val hh = (ent.height * entScale) * 0.5f
-                                    if (abs(vx - entX) <= hw.coerceAtLeast(32f) &&
-                                        abs(vy - entY) <= hh.coerceAtLeast(32f)
-                                    ) {
-                                        hitId = ent.id
-                                        break
+                                val selEnd = latestSelected
+                                if (camMode && didMutate) {
+                                    onUpdateCamera(localCamX, localCamY, localCamZoom, true)
+                                } else if (!camMode && didMutate && selEnd != null && !selLocked) {
+                                    val effOpacity = if (liveTransform.entityId == selEnd.id) liveTransform.opacity else selEnd.opacity
+                                    onUpdateEntity(
+                                        selEnd.id,
+                                        selEnd.displayName,
+                                        selEnd.role,
+                                        0f,
+                                        0f,
+                                        localX,
+                                        localY,
+                                        true,
+                                        localScale,
+                                        effOpacity,
+                                        selEnd.visible,
+                                        selEnd.flipX,
+                                        true
+                                    )
+                                } else if (!moved) {
+                                    val vx = toVirtX(down.position.x)
+                                    val vy = toVirtY(down.position.y)
+                                    var hitId: String? = null
+                                    for (idx in latestEntities.indices.reversed()) {
+                                        val ent = latestEntities[idx]
+                                        if (!ent.visible || latestLockedIds.contains(ent.id)) continue
+                                        val isSelEnt = !camMode && ent.id == selEnd?.id && liveTransform.entityId == ent.id
+                                        val entScale = if (isSelEnt) liveTransform.scale else ent.scale
+                                        val entX = if (isSelEnt) liveTransform.x else ent.x
+                                        val entY = if (isSelEnt) liveTransform.y else ent.y
+                                        val hw = (ent.width * entScale) * 0.5f
+                                        val hh = (ent.height * entScale) * 0.5f
+                                        if (abs(vx - entX) <= hw.coerceAtLeast(32f) &&
+                                            abs(vy - entY) <= hh.coerceAtLeast(32f)
+                                        ) {
+                                            hitId = ent.id
+                                            break
+                                        }
+                                    }
+                                    if (hitId != null) {
+                                        onSelectEntity(hitId)
+                                    } else {
+                                        val camDistCenter = hypot(vx - camAtDown.baseX, vy - camAtDown.baseY)
+                                        if (camDistCenter <= 72f) {
+                                            onSelectCamera()
+                                        }
                                     }
                                 }
-                                if (hitId != null) {
-                                    onSelectEntity(hitId)
+                                liveTransform.endInteraction()
+                                liveTransform.endCameraInteraction()
+                            }
+                        }
+                ) {
+                    val viewScale = if (wideView) 0.68f else 1.0f
+                    val sx = (size.width / 1280f) * viewScale
+                    val sy = (size.height / 720f) * viewScale
+                    val stageLeft = size.width * 0.5f - 640f * sx
+                    val stageTop = size.height * 0.5f - 360f * sy
+                    val stageW = 1280f * sx
+                    val stageH = 720f * sy
+
+                    // Rejilla guía de 1280x720
+                    if (showGrid) {
+                        for (gx in 1..7) {
+                            val px = stageLeft + stageW * (gx / 8f)
+                            drawLine(
+                                StudioColors.BorderSubtle.copy(alpha = if (gx == 4) 0.55f else 0.28f),
+                                Offset(px, stageTop),
+                                Offset(px, stageTop + stageH),
+                                strokeWidth = if (gx == 4) 1.5f else 1f
+                            )
+                        }
+                        for (gy in 1..4) {
+                            val py = stageTop + stageH * (gy / 5f)
+                            drawLine(
+                                StudioColors.BorderSubtle.copy(alpha = 0.28f),
+                                Offset(stageLeft, py),
+                                Offset(stageLeft + stageW, py)
+                            )
+                        }
+                        // Línea central horizontal y vertical del escenario
+                        drawLine(
+                            StudioColors.BorderSubtle.copy(alpha = 0.50f),
+                            Offset(stageLeft, stageTop + stageH * 0.5f),
+                            Offset(stageLeft + stageW, stageTop + stageH * 0.5f),
+                            strokeWidth = 1.3f
+                        )
+                    }
+
+                    // Marco de área real 1280x720 visible especialmente en Vista Amplia
+                    if (wideView) {
+                        drawRect(
+                            color = StudioColors.TextMuted.copy(alpha = 0.45f),
+                            topLeft = Offset(stageLeft, stageTop),
+                            size = Size(stageW, stageH),
+                            style = Stroke(width = 1.6f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f))
+                        )
+                    }
+
+                    val isFastQuality = liveTransform.isInteracting || liveTransform.isInteractingCamera || entities.size > 20
+                    val filterQuality = if (isFastQuality) FilterQuality.Low else FilterQuality.Medium
+                    val selId = if (isCameraSelected) null else selected?.id
+                    val useLive = selId != null && liveTransform.entityId == selId
+
+                    for (i in entities.indices) {
+                        val ent = entities[i]
+                        val isSel = ent.id == selId
+                        val effOpacity = if (isSel && useLive) liveTransform.opacity else ent.opacity
+                        if (!ent.visible || effOpacity <= 0.01f) continue
+
+                        val effScale = if (isSel && useLive) liveTransform.scale else ent.scale
+                        val cx = stageLeft + (if (isSel && useLive) liveTransform.x else ent.x) * sx
+                        val cy = stageTop + (if (isSel && useLive) liveTransform.y else ent.y) * sy
+                        val w = ent.width * effScale * sx
+                        val h = ent.height * effScale * sy
+                        val left = cx - w / 2f
+                        val top = cy - h / 2f
+
+                        // Descartar objetos completamente fuera del lienzo visible
+                        if (!isSel && (left + w < -24f || left > size.width + 24f || top + h < -24f || top > size.height + 24f)) {
+                            continue
+                        }
+
+                        val loaded = entityBitmaps[ent.id]
+
+                        withTransform({
+                            if (ent.flipX) {
+                                scale(scaleX = -1f, scaleY = 1f, pivot = Offset(cx, cy))
+                            }
+                        }) {
+                            if (loaded != null) {
+                                val bmp = loaded.bitmap
+                                val f = ent.previewFrame
+                                if (f != null && f.found && f.width > 0 && f.height > 0) {
+                                    val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.toFloat()
+                                    val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.toFloat()
+                                    val srcX = (f.x * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
+                                    val srcY = (f.y * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
+                                    val srcW = (f.width * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
+                                    val srcH = (f.height * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
+
+                                    val visW = if (f.rotated) f.height else f.width
+                                    val visH = if (f.rotated) f.width else f.height
+                                    val logicalW = f.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                                    val logicalH = f.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                                    val fit = min(w / logicalW, h / logicalH)
+
+                                    val boxW = logicalW * fit
+                                    val boxH = logicalH * fit
+                                    val boxLeft = cx - boxW / 2f
+                                    val boxTop = (top + h) - boxH
+
+                                    val visDrawW = visW * fit
+                                    val visDrawH = visH * fit
+                                    val visLeft = boxLeft + (-f.frameX * fit)
+                                    val visTop = boxTop + (-f.frameY * fit)
+                                    val frameCenterX = visLeft + visDrawW / 2f
+                                    val frameCenterY = visTop + visDrawH / 2f
+
+                                    val dstW = (f.width * fit).roundToInt().coerceAtLeast(2)
+                                    val dstH = (f.height * fit).roundToInt().coerceAtLeast(2)
+                                    val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
+                                    val dstTop = (frameCenterY - dstH / 2f).roundToInt()
+
+                                    withTransform({
+                                        if (f.rotated) {
+                                            rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
+                                        }
+                                    }) {
+                                        drawImage(
+                                            image = bmp,
+                                            srcOffset = IntOffset(srcX, srcY),
+                                            srcSize = IntSize(srcW, srcH),
+                                            dstOffset = IntOffset(dstLeft, dstTop),
+                                            dstSize = IntSize(dstW, dstH),
+                                            alpha = effOpacity.coerceIn(0f, 1f),
+                                            filterQuality = filterQuality
+                                        )
+                                    }
                                 } else {
-                                    val camDistCenter = hypot(vx - camAtDown.baseX, vy - camAtDown.baseY)
-                                    if (camDistCenter <= 72f) {
-                                        onSelectCamera()
-                                    }
-                                }
-                            }
-                            liveTransform.endInteraction()
-                            liveTransform.endCameraInteraction()
-                        }
-                    }
-            ) {
-                val sx = size.width / 1280f
-                val sy = size.height / 720f
-
-                // Rejilla guía de 1280x720
-                for (gx in 1..7) {
-                    val px = size.width * (gx / 8f)
-                    drawLine(StudioColors.BorderSubtle.copy(alpha = 0.3f), Offset(px, 0f), Offset(px, size.height))
-                }
-                for (gy in 1..4) {
-                    val py = size.height * (gy / 5f)
-                    drawLine(StudioColors.BorderSubtle.copy(alpha = 0.3f), Offset(0f, py), Offset(size.width, py))
-                }
-
-                val isFastQuality = liveTransform.isInteracting || liveTransform.isInteractingCamera || entities.size > 20
-                val filterQuality = if (isFastQuality) FilterQuality.Low else FilterQuality.Medium
-                val selId = if (isCameraSelected) null else selected?.id
-                val useLive = selId != null && liveTransform.entityId == selId
-
-                for (i in entities.indices) {
-                    val ent = entities[i]
-                    val isSel = ent.id == selId
-                    val effOpacity = if (isSel && useLive) liveTransform.opacity else ent.opacity
-                    if (!ent.visible || effOpacity <= 0.01f) continue
-
-                    val effScale = if (isSel && useLive) liveTransform.scale else ent.scale
-                    val cx = (if (isSel && useLive) liveTransform.x else ent.x) * sx
-                    val cy = (if (isSel && useLive) liveTransform.y else ent.y) * sy
-                    val w = ent.width * effScale * sx
-                    val h = ent.height * effScale * sy
-                    val left = cx - w / 2f
-                    val top = cy - h / 2f
-
-                    // Descartar objetos completamente fuera del lienzo visible
-                    if (!isSel && (left + w < -24f || left > size.width + 24f || top + h < -24f || top > size.height + 24f)) {
-                        continue
-                    }
-
-                    val loaded = entityBitmaps[ent.id]
-
-                    withTransform({
-                        if (ent.flipX) {
-                            scale(scaleX = -1f, scaleY = 1f, pivot = Offset(cx, cy))
-                        }
-                    }) {
-                        if (loaded != null) {
-                            val bmp = loaded.bitmap
-                            val f = ent.previewFrame
-                            if (f != null && f.found && f.width > 0 && f.height > 0) {
-                                val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.toFloat()
-                                val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.toFloat()
-                                val srcX = (f.x * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
-                                val srcY = (f.y * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
-                                val srcW = (f.width * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
-                                val srcH = (f.height * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
-
-                                val visW = if (f.rotated) f.height else f.width
-                                val visH = if (f.rotated) f.width else f.height
-                                val logicalW = f.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
-                                val logicalH = f.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
-                                val fit = min(w / logicalW, h / logicalH)
-
-                                val boxW = logicalW * fit
-                                val boxH = logicalH * fit
-                                val boxLeft = cx - boxW / 2f
-                                val boxTop = (top + h) - boxH
-
-                                val visDrawW = visW * fit
-                                val visDrawH = visH * fit
-                                val visLeft = boxLeft + (-f.frameX * fit)
-                                val visTop = boxTop + (-f.frameY * fit)
-                                val frameCenterX = visLeft + visDrawW / 2f
-                                val frameCenterY = visTop + visDrawH / 2f
-
-                                val dstW = (f.width * fit).roundToInt().coerceAtLeast(2)
-                                val dstH = (f.height * fit).roundToInt().coerceAtLeast(2)
-                                val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
-                                val dstTop = (frameCenterY - dstH / 2f).roundToInt()
-
-                                withTransform({
-                                    if (f.rotated) {
-                                        rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
-                                    }
-                                }) {
                                     drawImage(
                                         image = bmp,
-                                        srcOffset = IntOffset(srcX, srcY),
-                                        srcSize = IntSize(srcW, srcH),
-                                        dstOffset = IntOffset(dstLeft, dstTop),
-                                        dstSize = IntSize(dstW, dstH),
+                                        srcOffset = IntOffset.Zero,
+                                        srcSize = IntSize(bmp.width, bmp.height),
+                                        dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                                        dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
                                         alpha = effOpacity.coerceIn(0f, 1f),
                                         filterQuality = filterQuality
                                     )
                                 }
                             } else {
-                                drawImage(
-                                    image = bmp,
-                                    srcOffset = IntOffset.Zero,
-                                    srcSize = IntSize(bmp.width, bmp.height),
-                                    dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                                    dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
+                                val fallbackColor = when (ent.role) {
+                                    "background" -> StudioColors.AccentIndigo
+                                    "opponent" -> StudioColors.AccentCoral
+                                    "player" -> StudioColors.AccentEmerald
+                                    else -> StudioColors.AccentCyan
+                                }
+                                drawRect(
+                                    color = fallbackColor.copy(alpha = 0.22f * effOpacity),
+                                    topLeft = Offset(left, top),
+                                    size = Size(w, h)
+                                )
+                                drawRect(
+                                    color = fallbackColor.copy(alpha = effOpacity),
+                                    topLeft = Offset(left, top),
+                                    size = Size(w, h),
+                                    style = Stroke(width = 2f)
+                                )
+                            }
+                        }
+
+                        if (loaded == null && w > 36f && h > 18f) {
+                            val layout = preMeasuredLabels[ent.id]
+                            if (layout != null) {
+                                drawText(
+                                    textLayoutResult = layout,
                                     alpha = effOpacity.coerceIn(0f, 1f),
-                                    filterQuality = filterQuality
+                                    topLeft = Offset(
+                                        (cx - layout.size.width / 2f).coerceIn(left + 4f, (left + w - layout.size.width - 4f).coerceAtLeast(left + 4f)),
+                                        (cy - layout.size.height / 2f).coerceIn(top + 2f, (top + h - layout.size.height - 2f).coerceAtLeast(top + 2f))
+                                    )
                                 )
                             }
-                        } else {
-                            val fallbackColor = when (ent.role) {
-                                "background" -> StudioColors.AccentIndigo
-                                "opponent" -> StudioColors.AccentCoral
-                                "player" -> StudioColors.AccentEmerald
-                                else -> StudioColors.AccentCyan
+                        }
+
+                        if (isSel) {
+                            val selBorderColor = if (isSelectedLocked) StudioColors.AccentIndigo else StudioColors.AccentEmerald
+                            drawRect(
+                                color = selBorderColor,
+                                topLeft = Offset(left - 2f, top - 2f),
+                                size = Size(w + 4f, h + 4f),
+                                style = Stroke(
+                                    width = 2.5f,
+                                    pathEffect = if (isSelectedLocked) PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f) else null
+                                )
+                            )
+                            if (!isSelectedLocked) {
+                                val handleCenter = Offset(left + w, top + h)
+                                drawCircle(
+                                    color = StudioColors.BgDark,
+                                    radius = 10.dp.toPx(),
+                                    center = handleCenter
+                                )
+                                drawCircle(
+                                    color = StudioColors.AccentEmerald,
+                                    radius = 8.dp.toPx(),
+                                    center = handleCenter
+                                )
                             }
-                            drawRect(
-                                color = fallbackColor.copy(alpha = 0.22f * effOpacity),
-                                topLeft = Offset(left, top),
-                                size = Size(w, h)
-                            )
-                            drawRect(
-                                color = fallbackColor.copy(alpha = effOpacity),
-                                topLeft = Offset(left, top),
-                                size = Size(w, h),
-                                style = Stroke(width = 2f)
-                            )
                         }
                     }
 
-                    if (loaded == null && w > 36f && h > 18f) {
-                        val layout = preMeasuredLabels[ent.id]
-                        if (layout != null) {
-                            drawText(
-                                textLayoutResult = layout,
-                                alpha = effOpacity.coerceIn(0f, 1f),
-                                topLeft = Offset(
-                                    (cx - layout.size.width / 2f).coerceIn(left + 4f, (left + w - layout.size.width - 4f).coerceAtLeast(left + 4f)),
-                                    (cy - layout.size.height / 2f).coerceIn(top + 2f, (top + h - layout.size.height - 2f).coerceAtLeast(top + 2f))
-                                )
-                            )
-                        }
+                    // Marco visual de captura de cámara (1280/zoom x 720/zoom centrado en camX, camY)
+                    val effCamX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
+                    val effCamY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
+                    val effCamZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
+                        .coerceIn(0.35f, 2.5f)
+                    val camBoxW = (1280f / effCamZoom) * sx
+                    val camBoxH = (720f / effCamZoom) * sy
+                    val camCxPx = stageLeft + effCamX * sx
+                    val camCyPx = stageTop + effCamY * sy
+                    val camLeft = camCxPx - camBoxW * 0.5f
+                    val camTop = camCyPx - camBoxH * 0.5f
+
+                    val camColor = when {
+                        !stageCamera.enabled -> StudioColors.AccentCoral.copy(alpha = if (isCameraSelected) 0.9f else 0.45f)
+                        isCameraSelected -> StudioColors.AccentCyan
+                        else -> StudioColors.AccentCyan.copy(alpha = 0.50f)
+                    }
+                    val camDash = if (isCameraSelected && stageCamera.enabled) {
+                        null
+                    } else {
+                        PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)
                     }
 
-                    if (isSel) {
+                    if (isCameraSelected) {
                         drawRect(
-                            color = StudioColors.AccentEmerald,
-                            topLeft = Offset(left - 2f, top - 2f),
-                            size = Size(w + 4f, h + 4f),
-                            style = Stroke(width = 2.5f)
+                            color = StudioColors.AccentCyan.copy(alpha = 0.06f),
+                            topLeft = Offset(camLeft, camTop),
+                            size = Size(camBoxW, camBoxH)
                         )
-                        // Manija táctil en la esquina inferior derecha para escalar directamente
-                        val handleCenter = Offset(left + w, top + h)
+                    }
+                    drawRect(
+                        color = camColor,
+                        topLeft = Offset(camLeft, camTop),
+                        size = Size(camBoxW, camBoxH),
+                        style = Stroke(width = if (isCameraSelected) 3f else 1.8f, pathEffect = camDash)
+                    )
+
+                    val crossR = if (isCameraSelected) 12f else 8f
+                    drawLine(camColor, Offset(camCxPx - crossR, camCyPx), Offset(camCxPx + crossR, camCyPx), strokeWidth = 2f)
+                    drawLine(camColor, Offset(camCxPx, camCyPx - crossR), Offset(camCxPx, camCyPx + crossR), strokeWidth = 2f)
+
+                    if (isCameraSelected) {
+                        val camHandleCenter = Offset(camLeft + camBoxW, camTop + camBoxH)
                         drawCircle(
                             color = StudioColors.BgDark,
-                            radius = 10.dp.toPx(),
-                            center = handleCenter
+                            radius = 11.dp.toPx(),
+                            center = camHandleCenter
                         )
                         drawCircle(
-                            color = StudioColors.AccentEmerald,
-                            radius = 8.dp.toPx(),
-                            center = handleCenter
+                            color = StudioColors.AccentCyan,
+                            radius = 8.5.dp.toPx(),
+                            center = camHandleCenter
                         )
                     }
-                }
-
-                // Marco visual de captura de cámara (1280/zoom x 720/zoom centrado en camX, camY)
-                val effCamX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
-                val effCamY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
-                val effCamZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
-                    .coerceIn(0.35f, 2.5f)
-                val camBoxW = (1280f / effCamZoom) * sx
-                val camBoxH = (720f / effCamZoom) * sy
-                val camCxPx = effCamX * sx
-                val camCyPx = effCamY * sy
-                val camLeft = camCxPx - camBoxW * 0.5f
-                val camTop = camCyPx - camBoxH * 0.5f
-
-                val camColor = when {
-                    !stageCamera.enabled -> StudioColors.AccentCoral.copy(alpha = if (isCameraSelected) 0.9f else 0.45f)
-                    isCameraSelected -> StudioColors.AccentCyan
-                    else -> StudioColors.AccentCyan.copy(alpha = 0.50f)
-                }
-                val camDash = if (isCameraSelected && stageCamera.enabled) {
-                    null
-                } else {
-                    PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)
-                }
-
-                if (isCameraSelected) {
-                    drawRect(
-                        color = StudioColors.AccentCyan.copy(alpha = 0.06f),
-                        topLeft = Offset(camLeft, camTop),
-                        size = Size(camBoxW, camBoxH)
-                    )
-                }
-                drawRect(
-                    color = camColor,
-                    topLeft = Offset(camLeft, camTop),
-                    size = Size(camBoxW, camBoxH),
-                    style = Stroke(width = if (isCameraSelected) 3f else 1.8f, pathEffect = camDash)
-                )
-
-                // Mira central de cámara
-                val crossR = if (isCameraSelected) 12f else 8f
-                drawLine(camColor, Offset(camCxPx - crossR, camCyPx), Offset(camCxPx + crossR, camCyPx), strokeWidth = 2f)
-                drawLine(camColor, Offset(camCxPx, camCyPx - crossR), Offset(camCxPx, camCyPx + crossR), strokeWidth = 2f)
-
-                if (isCameraSelected) {
-                    val camHandleCenter = Offset(camLeft + camBoxW, camTop + camBoxH)
-                    drawCircle(
-                        color = StudioColors.BgDark,
-                        radius = 11.dp.toPx(),
-                        center = camHandleCenter
-                    )
-                    drawCircle(
-                        color = StudioColors.AccentCyan,
-                        radius = 8.5.dp.toPx(),
-                        center = camHandleCenter
-                    )
                 }
             }
 
-            if (isCameraSelected) {
-                val pillZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
-                    .coerceIn(0.35f, 2.5f)
-                val capW = (1280f / pillZoom).roundToInt()
-                val capH = (720f / pillZoom).roundToInt()
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 4.dp),
-                    shape = RoundedCornerShape(6.dp),
-                    color = Color(0xAA101012),
-                    border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.65f))
-                ) {
-                    Text(
-                        text = "Cámara (.lua) · Captura ${capW}x${capH} · Zoom ${((pillZoom * 100f).roundToInt() / 100f)}x (agranda/achica esquina cian)",
-                        color = StudioColors.AccentCyan,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+            HorizontalDivider(color = StudioColors.BorderSubtle)
+
+            // Barra inferior de acciones rápidas al alcance del pulgar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isCameraSelected) {
+                    val opponentEnt = entities.firstOrNull { it.role == "opponent" }
+                    val playerEnt = entities.firstOrNull { it.role == "player" }
+                    val curZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
+                        .coerceIn(0.35f, 2.5f)
+                    val curX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
+                    val curY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
+
+                    QuickActionChip(
+                        label = "Enemigo",
+                        onClick = {
+                            val tx = opponentEnt?.x ?: 300f
+                            val ty = (opponentEnt?.y ?: 420f) - 24f
+                            onUpdateCamera(tx, ty, curZoom, true)
+                        }
                     )
-                }
-            } else if (selected != null) {
-                val pillScale = if (liveTransform.entityId == selected.id) liveTransform.scale else selected.scale
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 4.dp),
-                    shape = RoundedCornerShape(6.dp),
-                    color = Color(0xAA101012),
-                    border = BorderStroke(1.dp, StudioColors.BorderSubtle)
-                ) {
-                    Text(
-                        text = "${selected.displayName} · Escala ${((pillScale * 100f).roundToInt() / 100f)}x (arrastra la esquina verde o pellizca)",
-                        color = StudioColors.TextPrimary,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    QuickActionChip(
+                        label = "Centro",
+                        onClick = { onUpdateCamera(640f, 360f, curZoom, true) }
+                    )
+                    QuickActionChip(
+                        label = "Jugador",
+                        onClick = {
+                            val tx = playerEnt?.x ?: 980f
+                            val ty = (playerEnt?.y ?: 430f) - 24f
+                            onUpdateCamera(tx, ty, curZoom, true)
+                        }
+                    )
+                    QuickActionChip(
+                        label = "-0.1x",
+                        onClick = { onUpdateCamera(curX, curY, (curZoom - 0.1f).coerceIn(0.35f, 2.5f), true) }
+                    )
+                    QuickActionChip(
+                        label = "1.0x",
+                        onClick = { onUpdateCamera(curX, curY, 1.0f, true) }
+                    )
+                    QuickActionChip(
+                        label = "+0.1x",
+                        onClick = { onUpdateCamera(curX, curY, (curZoom + 0.1f).coerceIn(0.35f, 2.5f), true) }
+                    )
+                } else if (selected != null) {
+                    val curScale = if (liveTransform.entityId == selected.id) liveTransform.scale else selected.scale
+                    QuickActionChip(
+                        icon = if (selected.visible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                        label = if (selected.visible) "Visible" else "Oculto",
+                        active = selected.visible,
+                        activeColor = StudioColors.AccentEmerald,
+                        onClick = {
+                            onUpdateEntity(
+                                selected.id, selected.displayName, selected.role,
+                                0f, 0f, selected.x, selected.y, false,
+                                curScale, selected.opacity, !selected.visible, selected.flipX, true
+                            )
+                        }
+                    )
+                    QuickActionChip(
+                        icon = Icons.Rounded.Flip,
+                        label = "Espejo",
+                        active = selected.flipX,
+                        activeColor = StudioColors.AccentCyan,
+                        onClick = {
+                            onUpdateEntity(
+                                selected.id, selected.displayName, selected.role,
+                                0f, 0f, selected.x, selected.y, false,
+                                curScale, selected.opacity, selected.visible, !selected.flipX, true
+                            )
+                        }
+                    )
+                    QuickActionChip(
+                        icon = Icons.Rounded.MyLocation,
+                        label = "Centrar",
+                        onClick = {
+                            onUpdateEntity(
+                                selected.id, selected.displayName, selected.role,
+                                0f, 0f, 640f, 360f, true,
+                                curScale, selected.opacity, selected.visible, selected.flipX, true
+                            )
+                        }
+                    )
+                    QuickActionChip(
+                        label = "-0.1x",
+                        onClick = {
+                            onUpdateEntity(
+                                selected.id, selected.displayName, selected.role,
+                                0f, 0f, selected.x, selected.y, false,
+                                (curScale - 0.1f).coerceIn(0.1f, 5.0f), selected.opacity, selected.visible, selected.flipX, true
+                            )
+                        }
+                    )
+                    QuickActionChip(
+                        label = "1.0x",
+                        onClick = {
+                            onUpdateEntity(
+                                selected.id, selected.displayName, selected.role,
+                                0f, 0f, selected.x, selected.y, false,
+                                1.0f, selected.opacity, selected.visible, selected.flipX, true
+                            )
+                        }
+                    )
+                    QuickActionChip(
+                        label = "+0.1x",
+                        onClick = {
+                            onUpdateEntity(
+                                selected.id, selected.displayName, selected.role,
+                                0f, 0f, selected.x, selected.y, false,
+                                (curScale + 0.1f).coerceIn(0.1f, 5.0f), selected.opacity, selected.visible, selected.flipX, true
+                            )
+                        }
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CanvasToolbarToggle(
+    icon: ImageVector,
+    label: String?,
+    active: Boolean,
+    activeColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .height(26.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (active) activeColor.copy(alpha = 0.20f) else StudioColors.BgCard)
+            .border(
+                1.dp,
+                if (active) activeColor else StudioColors.BorderSubtle,
+                RoundedCornerShape(6.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = if (label == null) 6.dp else 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (active) activeColor else StudioColors.TextMuted,
+            modifier = Modifier.size(14.dp)
+        )
+        if (label != null) {
+            Text(
+                text = label,
+                color = if (active) activeColor else StudioColors.TextPrimary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickActionChip(
+    label: String,
+    icon: ImageVector? = null,
+    active: Boolean = false,
+    activeColor: Color = StudioColors.AccentCyan,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .height(26.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (active) activeColor.copy(alpha = 0.18f) else StudioColors.BgCard)
+            .border(
+                1.dp,
+                if (active) activeColor else StudioColors.BorderSubtle,
+                RoundedCornerShape(6.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (active) activeColor else StudioColors.TextMuted,
+                modifier = Modifier.size(13.dp)
+            )
+        }
+        Text(
+            text = label,
+            color = if (active) activeColor else StudioColors.TextPrimary,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }

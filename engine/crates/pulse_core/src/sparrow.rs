@@ -217,11 +217,22 @@ impl SparrowAtlas {
         bindings
     }
 
-    /// Devuelve la cantidad de frames asignados a una animación.
-    pub fn frame_count(&self, kind: CharacterAnimKind) -> usize {
+    fn resolve_prefix(&self, kind: CharacterAnimKind) -> Option<&String> {
         self.bindings
             .get(&kind)
+            .or_else(|| match kind {
+                CharacterAnimKind::MissLeft => self.bindings.get(&CharacterAnimKind::Left),
+                CharacterAnimKind::MissDown => self.bindings.get(&CharacterAnimKind::Down),
+                CharacterAnimKind::MissUp => self.bindings.get(&CharacterAnimKind::Up),
+                CharacterAnimKind::MissRight => self.bindings.get(&CharacterAnimKind::Right),
+                _ => None,
+            })
             .or_else(|| self.bindings.get(&CharacterAnimKind::Idle))
+    }
+
+    /// Devuelve la cantidad de frames asignados a una animación.
+    pub fn frame_count(&self, kind: CharacterAnimKind) -> usize {
+        self.resolve_prefix(kind)
             .and_then(|prefix| self.animations.get(prefix))
             .map(|anim| anim.frames.len())
             .unwrap_or(0)
@@ -229,11 +240,7 @@ impl SparrowAtlas {
 
     /// Devuelve la duración total en segundos de una reproducción de la animación.
     pub fn anim_duration_sec(&self, kind: CharacterAnimKind) -> f32 {
-        let Some(prefix) = self
-            .bindings
-            .get(&kind)
-            .or_else(|| self.bindings.get(&CharacterAnimKind::Idle))
-        else {
+        let Some(prefix) = self.resolve_prefix(kind) else {
             return 0.0;
         };
         let Some(anim) = self.animations.get(prefix) else {
@@ -258,10 +265,7 @@ impl SparrowAtlas {
         elapsed_sec: f32,
         force_clamp: bool,
     ) -> Option<&SparrowFrame> {
-        let prefix = self
-            .bindings
-            .get(&kind)
-            .or_else(|| self.bindings.get(&CharacterAnimKind::Idle))?;
+        let prefix = self.resolve_prefix(kind)?;
         let anim = self.animations.get(prefix)?;
         if anim.frames.is_empty() {
             return None;

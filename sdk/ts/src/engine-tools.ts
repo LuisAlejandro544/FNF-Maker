@@ -80,6 +80,10 @@ export interface SparrowBindings {
   down?: string;
   up?: string;
   right?: string;
+  missLeft?: string;
+  missDown?: string;
+  missUp?: string;
+  missRight?: string;
 }
 
 export interface StageEntitySpec {
@@ -733,7 +737,18 @@ export function autoBindSparrowPrefixes(prefixes: string[]): SparrowBindings {
   const bindings: SparrowBindings = {};
   for (const prefix of prefixes) {
     const low = prefix.toLowerCase();
-    if (low.includes('miss') || low.includes('fallo')) continue;
+    if (low.includes('miss') || low.includes('fallo')) {
+      if (!bindings.missLeft && (low.includes('left') || low.includes('izq'))) {
+        bindings.missLeft = prefix;
+      } else if (!bindings.missDown && (low.includes('down') || low.includes('abajo'))) {
+        bindings.missDown = prefix;
+      } else if (!bindings.missUp && (low.includes('up') || low.includes('arriba'))) {
+        bindings.missUp = prefix;
+      } else if (!bindings.missRight && (low.includes('right') || low.includes('der'))) {
+        bindings.missRight = prefix;
+      }
+      continue;
+    }
     if (!bindings.idle && (low.includes('idle') || low.includes('dance') || low.includes('reposo'))) {
       bindings.idle = prefix;
     } else if (!bindings.left && (low.includes('left') || low.includes('izq'))) {
@@ -926,9 +941,41 @@ export interface ScriptLoopOptResult {
 
 const NECESSARY_ENGINE_APIS = [
   'setEntityProp',
+  'getEntityProp',
+  'getEntityX',
+  'getEntityY',
+  'setStrumProp',
+  'getStrumProp',
+  'tweenEntityProp',
+  'tweenStrumProp',
+  'tweenCameraPos',
+  'tweenCameraZoom',
+  'cancelTween',
+  'runTimer',
+  'cancelTimer',
+  'makeGraphic',
+  'makeHudGraphic',
+  'makeText',
+  'setTextString',
+  'cloneSprite',
+  'removeSprite',
   'setCameraZoom',
+  'setCameraBaseZoom',
+  'setCameraPos',
   'shakeCamera',
   'playAnim',
+  'playEntityAnim',
+  'setHealth',
+  'addHealth',
+  'setScore',
+  'addScore',
+  'setScrollSpeed',
+  'setDownscroll',
+  'setHudVisible',
+  'setHudOpacity',
+  'setHudZoom',
+  'setTrackVolume',
+  'setTrackMute',
   'getSongPosMs',
 ] as const;
 
@@ -1300,9 +1347,10 @@ export function resolveMobileTouchLanes(params: {
 }
 
 export const BINARY_GAMEPLAY_MAGIC = 0x42464750; // "BFGP"
-export const BINARY_GAMEPLAY_HEADER_BYTES = 112;
-export const BINARY_GAMEPLAY_ENTITY_BYTES = 60;
+export const BINARY_GAMEPLAY_HEADER_BYTES = 140;
+export const BINARY_GAMEPLAY_ENTITY_BYTES = 64;
 export const BINARY_GAMEPLAY_NOTE_BYTES = 28;
+export const BINARY_GAMEPLAY_STRUM_BYTES = 20;
 
 export interface DecodedBinaryEntity {
   x: number;
@@ -1311,6 +1359,7 @@ export interface DecodedBinaryEntity {
   height: number;
   scale: number;
   opacity: number;
+  rotationDeg: number;
   visible: boolean;
   flipX: boolean;
   hasFrame: boolean;
@@ -1335,6 +1384,28 @@ export interface DecodedBinaryNote {
   headHit: boolean;
 }
 
+export interface DecodedStrumOverride {
+  offsetX: number;
+  offsetY: number;
+  angle: number;
+  scale: number;
+  alpha: number;
+}
+
+export interface DecodedDynamicItem {
+  isText: boolean;
+  isHud: boolean;
+  visible: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+  angle: number;
+  colorArgb: number;
+  text: string;
+}
+
 export interface DecodedBinaryGameplayFrame {
   active: boolean;
   downscroll: boolean;
@@ -1342,15 +1413,19 @@ export interface DecodedBinaryGameplayFrame {
   finished: boolean;
   controlMode: MobileControlMode;
   hasHudStrings: boolean;
+  hudVisible: boolean;
   hudRevision: number;
   holdingLanesMask: number;
   opponentHoldingLanesMask: number;
+  lastRatingCode: number;
+  splashLane: number;
   countdownStage: number;
   countdownProgress: number;
   songPosMs: number;
   durationMs: number;
   scrollSpeed: number;
   activeBpm: number;
+  beatPhase: number;
   cameraZoom: number;
   cameraShake: number;
   cameraX: number;
@@ -1363,8 +1438,15 @@ export interface DecodedBinaryGameplayFrame {
   combo: number;
   maxCombo: number;
   misses: number;
+  accuracyPct: number;
+  hudOpacity: number;
+  hudZoom: number;
+  ratingEventId: number;
+  splashEventId: number;
   entities: DecodedBinaryEntity[];
   visibleNotes: DecodedBinaryNote[];
+  strumOverrides: DecodedStrumOverride[];
+  dynamicItems: DecodedDynamicItem[];
   lastJudgement?: string;
   countdownLabel?: string;
   scriptError?: string;
@@ -1409,16 +1491,25 @@ export function decodeBinaryGameplayFrame(
   const combo = view.getUint32(96, true);
   const maxCombo = view.getUint32(100, true);
   const misses = view.getUint32(104, true);
-  const entityCount = view.getUint16(108, true);
-  const noteCount = view.getUint16(110, true);
+  const accuracyPct = view.getFloat32(108, true);
+  const hudOpacity = view.getFloat32(112, true);
+  const hudZoom = view.getFloat32(116, true);
+  const ratingEventId = view.getUint32(120, true);
+  const splashEventId = view.getUint32(124, true);
+  const beatPhase = view.getFloat32(128, true);
+  const entityCount = view.getUint16(132, true);
+  const noteCount = view.getUint16(134, true);
+  const strumCount = view.getUint16(136, true);
+  const dynCount = view.getUint16(138, true);
 
   let cursor = BINARY_GAMEPLAY_HEADER_BYTES;
   const requiredMin =
     cursor +
     entityCount * BINARY_GAMEPLAY_ENTITY_BYTES +
-    noteCount * BINARY_GAMEPLAY_NOTE_BYTES;
+    noteCount * BINARY_GAMEPLAY_NOTE_BYTES +
+    strumCount * BINARY_GAMEPLAY_STRUM_BYTES;
   if (bytes.byteLength < requiredMin) {
-    throw new Error(`Buffer insuficiente para entidades/notas (${bytes.byteLength} < ${requiredMin})`);
+    throw new Error(`Buffer insuficiente para entidades/notas/strums (${bytes.byteLength} < ${requiredMin})`);
   }
 
   const entities: DecodedBinaryEntity[] = [];
@@ -1429,15 +1520,16 @@ export function decodeBinaryGameplayFrame(
     const height = view.getFloat32(cursor + 12, true);
     const scale = view.getFloat32(cursor + 16, true);
     const opacity = view.getFloat32(cursor + 20, true);
-    const entFlags = view.getUint32(cursor + 24, true);
-    const atlasX = view.getUint32(cursor + 28, true);
-    const atlasY = view.getUint32(cursor + 32, true);
-    const atlasW = view.getUint32(cursor + 36, true);
-    const atlasH = view.getUint32(cursor + 40, true);
-    const offX = view.getInt32(cursor + 44, true);
-    const offY = view.getInt32(cursor + 48, true);
-    const logicalW = view.getUint32(cursor + 52, true);
-    const logicalH = view.getUint32(cursor + 56, true);
+    const rotationDeg = view.getFloat32(cursor + 24, true);
+    const entFlags = view.getUint32(cursor + 28, true);
+    const atlasX = view.getUint32(cursor + 32, true);
+    const atlasY = view.getUint32(cursor + 36, true);
+    const atlasW = view.getUint32(cursor + 40, true);
+    const atlasH = view.getUint32(cursor + 44, true);
+    const offX = view.getInt32(cursor + 48, true);
+    const offY = view.getInt32(cursor + 52, true);
+    const logicalW = view.getUint32(cursor + 56, true);
+    const logicalH = view.getUint32(cursor + 60, true);
     cursor += BINARY_GAMEPLAY_ENTITY_BYTES;
 
     entities.push({
@@ -1447,6 +1539,7 @@ export function decodeBinaryGameplayFrame(
       height,
       scale,
       opacity,
+      rotationDeg,
       visible: (entFlags & 1) !== 0,
       flipX: (entFlags & (1 << 1)) !== 0,
       hasFrame: (entFlags & (1 << 2)) !== 0,
@@ -1481,6 +1574,50 @@ export function decodeBinaryGameplayFrame(
     });
   }
 
+  const strumOverrides: DecodedStrumOverride[] = [];
+  for (let i = 0; i < strumCount; i++) {
+    strumOverrides.push({
+      offsetX: view.getFloat32(cursor, true),
+      offsetY: view.getFloat32(cursor + 4, true),
+      angle: view.getFloat32(cursor + 8, true),
+      scale: view.getFloat32(cursor + 12, true),
+      alpha: view.getFloat32(cursor + 16, true),
+    });
+    cursor += BINARY_GAMEPLAY_STRUM_BYTES;
+  }
+
+  const decoder = new TextDecoder('utf-8');
+  const readStr = () => {
+    if (cursor + 2 > bytes.byteLength) {
+      throw new Error('String UTF-8 truncada en paquete BFGP');
+    }
+    const len = view.getUint16(cursor, true);
+    cursor += 2;
+    if (cursor + len > bytes.byteLength) {
+      throw new Error('Longitud de string UTF-8 excede el buffer');
+    }
+    const text = decoder.decode(bytes.subarray(cursor, cursor + len));
+    cursor += len;
+    return text;
+  };
+
+  const dynamicItems: DecodedDynamicItem[] = [];
+  for (let i = 0; i < dynCount; i++) {
+    const isText = bytes[cursor] !== 0;
+    const isHud = bytes[cursor + 1] !== 0;
+    const visible = bytes[cursor + 2] !== 0;
+    const x = view.getFloat32(cursor + 4, true);
+    const y = view.getFloat32(cursor + 8, true);
+    const width = view.getFloat32(cursor + 12, true);
+    const height = view.getFloat32(cursor + 16, true);
+    const opacity = view.getFloat32(cursor + 20, true);
+    const angle = view.getFloat32(cursor + 24, true);
+    const colorArgb = view.getUint32(cursor + 28, true);
+    cursor += 32;
+    const text = readStr();
+    dynamicItems.push({ isText, isHud, visible, x, y, width, height, opacity, angle, colorArgb, text });
+  }
+
   const hasHudStrings = (flags & (1 << 5)) !== 0;
   let lastJudgement: string | undefined;
   let countdownLabel: string | undefined;
@@ -1488,20 +1625,6 @@ export function decodeBinaryGameplayFrame(
   let scriptLog: string | undefined;
 
   if (hasHudStrings) {
-    const decoder = new TextDecoder('utf-8');
-    const readStr = () => {
-      if (cursor + 2 > bytes.byteLength) {
-        throw new Error('String UTF-8 truncada en paquete BFGP');
-      }
-      const len = view.getUint16(cursor, true);
-      cursor += 2;
-      if (cursor + len > bytes.byteLength) {
-        throw new Error('Longitud de string UTF-8 excede el buffer');
-      }
-      const text = decoder.decode(bytes.subarray(cursor, cursor + len));
-      cursor += len;
-      return text;
-    };
     lastJudgement = readStr();
     countdownLabel = readStr();
     scriptError = readStr();
@@ -1515,15 +1638,19 @@ export function decodeBinaryGameplayFrame(
     finished: (flags & (1 << 3)) !== 0,
     controlMode: (flags & (1 << 4)) !== 0 ? 'classic_hitbox' : 'tap_arrows',
     hasHudStrings,
+    hudVisible: (flags & (1 << 6)) !== 0,
     hudRevision,
     holdingLanesMask: masks & 0xff,
     opponentHoldingLanesMask: (masks >> 8) & 0xff,
+    lastRatingCode: (masks >> 16) & 0xf,
+    splashLane: (masks >> 20) & 0xf,
     countdownStage,
     countdownProgress,
     songPosMs,
     durationMs,
     scrollSpeed,
     activeBpm,
+    beatPhase,
     cameraZoom,
     cameraShake,
     cameraX,
@@ -1536,8 +1663,15 @@ export function decodeBinaryGameplayFrame(
     combo,
     maxCombo,
     misses,
+    accuracyPct,
+    hudOpacity,
+    hudZoom,
+    ratingEventId,
+    splashEventId,
     entities,
     visibleNotes,
+    strumOverrides,
+    dynamicItems,
     lastJudgement,
     countdownLabel,
     scriptError,
@@ -1742,4 +1876,50 @@ export function computeBpmSyncedIdleCadence(params: {
     singReturnThresholdSec,
   };
 }
+
+export type HitRatingTier = 'sick' | 'good' | 'bad' | 'miss';
+
+export interface HitJudgementResult {
+  tier: HitRatingTier;
+  ratingCode: 1 | 2 | 3 | 4;
+  weight: number;
+  scoreDelta: number;
+  triggersSplash: boolean;
+}
+
+/**
+ * Clasifica un golpe del jugador por ventana temporal (Sick <= 55ms, Good <= 105ms, Bad <= 155ms)
+ * y determina si detona chispas de Note Splash (solo en `sick`).
+ */
+export function evaluateHitJudgement(absDiffMs: number): HitJudgementResult {
+  if (absDiffMs <= 55) {
+    return { tier: 'sick', ratingCode: 1, weight: 1.0, scoreDelta: 350, triggersSplash: true };
+  }
+  if (absDiffMs <= 105) {
+    return { tier: 'good', ratingCode: 2, weight: 0.75, scoreDelta: 200, triggersSplash: false };
+  }
+  if (absDiffMs <= 155) {
+    return { tier: 'bad', ratingCode: 3, weight: 0.4, scoreDelta: 100, triggersSplash: false };
+  }
+  return { tier: 'miss', ratingCode: 4, weight: 0.0, scoreDelta: -50, triggersSplash: false };
+}
+
+export interface FnfHealthBarLayout {
+  dividerRatio: number; // 0.0 = 100% Verde (Player gana), 1.0 = 100% Rojo (Rival gana)
+  playerLosing: boolean;
+  opponentLosing: boolean;
+}
+
+/**
+ * Calcula la proporción roja/verde de la barra FNF y cuándo activar íconos de peligro (<20%).
+ */
+export function evaluateFnfHealthBar(health: number): FnfHealthBarLayout {
+  const clamped = Math.min(1, Math.max(0, Number.isFinite(health) ? health : 0.5));
+  return {
+    dividerRatio: 1 - clamped,
+    playerLosing: clamped < 0.2,
+    opponentLosing: clamped > 0.8,
+  };
+}
+
 

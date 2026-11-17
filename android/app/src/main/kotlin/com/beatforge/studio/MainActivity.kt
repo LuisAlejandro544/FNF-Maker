@@ -52,6 +52,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.beatforge.studio.ui.components.StudioNavRail
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
+import com.beatforge.studio.ui.popups.CharacterIconsDialog
 import com.beatforge.studio.ui.screens.AudioScreen
 import com.beatforge.studio.ui.screens.ChartScreen
 import com.beatforge.studio.ui.screens.GameplayScreen
@@ -278,11 +279,15 @@ private fun BeatForgeRootContent(
                         entityBitmaps = state.entityBitmaps,
                         onSelectEntity = { viewModel.selectEntity(it) },
                         onRequestImport = { viewModel.requestImport(it) },
+                        onOpenIconsDialog = { viewModel.setCharacterIconsDialogOpen(true) },
                         onSetBinding = { entityId, kind, prefix ->
                             viewModel.setSparrowBinding(entityId, kind, prefix)
                         },
                         onQuerySparrowFrame = { entityId, kind, elapsed ->
                             viewModel.querySparrowFrame(entityId, kind, elapsed)
+                        },
+                        onDecodeRegionFrame = { imagePath, frame ->
+                            viewModel.decodeSparrowRegionBitmap(imagePath, frame)
                         }
                     )
 
@@ -325,19 +330,30 @@ private fun BeatForgeRootContent(
 
                     StudioScreen.HotCompile -> HotCompileScreen(tier = state.selectedTier)
 
-                    StudioScreen.Gameplay -> GameplayScreen(
-                        frameState = viewModel.gameplayFrameState,
-                        arrowBitmaps = state.arrowBitmaps,
-                        receptorBitmaps = state.receptorBitmaps,
-                        compiledBitmapsByIndex = state.compiledBitmapsByIndex,
-                        onStepFrame = { dt, pressed, justPressed ->
-                            viewModel.stepGameplayFrame(dt, pressed, justPressed)
-                        },
-                        onChangeControlMode = { mode -> viewModel.updateControlMode(mode) },
-                        onSetPaused = { viewModel.setGameplayPaused(it) },
-                        onRestart = { viewModel.restartGameplay() },
-                        onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }
-                    )
+                    StudioScreen.Gameplay -> {
+                        val playerEntId = state.snapshot.stageEntities.firstOrNull { it.role == "player" }?.id
+                        val oppEntId = state.snapshot.stageEntities.firstOrNull { it.role == "opponent" }?.id
+                        GameplayScreen(
+                            frameState = viewModel.gameplayFrameState,
+                            arrowBitmaps = state.arrowBitmaps,
+                            receptorBitmaps = state.receptorBitmaps,
+                            healthBarBitmap = state.healthBarBitmap,
+                            ratingBitmaps = state.ratingBitmaps,
+                            noteSplashBitmap = state.noteSplashBitmap,
+                            playerNormalIcon = playerEntId?.let { state.entityNormalIcons[it] } ?: state.defaultPlayerNormalIcon,
+                            playerLosingIcon = playerEntId?.let { state.entityLosingIcons[it] } ?: state.defaultPlayerLosingIcon,
+                            opponentNormalIcon = oppEntId?.let { state.entityNormalIcons[it] } ?: state.defaultOpponentNormalIcon,
+                            opponentLosingIcon = oppEntId?.let { state.entityLosingIcons[it] } ?: state.defaultOpponentLosingIcon,
+                            compiledBitmapsByIndex = state.compiledBitmapsByIndex,
+                            onStepFrame = { dt, pressed, justPressed ->
+                                viewModel.stepGameplayFrame(dt, pressed, justPressed)
+                            },
+                            onChangeControlMode = { mode -> viewModel.updateControlMode(mode) },
+                            onSetPaused = { viewModel.setGameplayPaused(it) },
+                            onRestart = { viewModel.restartGameplay() },
+                            onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }
+                        )
+                    }
                 }
 
                 // Banner de notificación flotante
@@ -388,6 +404,24 @@ private fun BeatForgeRootContent(
             onImportSvg = { dir -> viewModel.requestImport(ImportKind.ArrowSvg(dir)) },
             onRestoreDefault = { viewModel.restoreDefaultArrowSvg() },
             onDismiss = { viewModel.setArrowSkinDialogOpen(false) }
+        )
+    }
+
+    if (state.characterIconsDialogOpen) {
+        CharacterIconsDialog(
+            entities = state.snapshot.stageEntities,
+            healthBarSvgPath = state.snapshot.healthBarSvgPath,
+            healthBarBitmap = state.healthBarBitmap,
+            entityNormalIcons = state.entityNormalIcons,
+            entityLosingIcons = state.entityLosingIcons,
+            defaultPlayerNormal = state.defaultPlayerNormalIcon,
+            defaultPlayerLosing = state.defaultPlayerLosingIcon,
+            defaultOpponentNormal = state.defaultOpponentNormalIcon,
+            defaultOpponentLosing = state.defaultOpponentLosingIcon,
+            onRequestImport = { kind -> viewModel.requestImport(kind) },
+            onClearEntityIcons = { entId -> viewModel.clearCharacterIcons(entId) },
+            onRestoreDefaultHealthBar = { viewModel.restoreDefaultHealthBarSvg() },
+            onDismiss = { viewModel.setCharacterIconsDialogOpen(false) }
         )
     }
 }

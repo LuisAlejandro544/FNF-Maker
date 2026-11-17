@@ -309,6 +309,10 @@ pub struct ModProject {
     pub audio_tracks: [AudioTrackSlot; MAX_AUDIO_TRACKS],
     pub stage: StageScene,
     pub arrow_skin: ArrowSkinSet,
+    #[serde(default)]
+    pub health_bar_svg_path: Option<PathBuf>,
+    #[serde(default)]
+    pub health_bar_svg_source: Option<String>,
     pub scripts: Vec<ScriptAsset>,
     pub downscroll: bool,
     pub control_mode: MobileControlMode,
@@ -357,6 +361,8 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             audio_tracks: AudioTrackSlot::default_three_slots(),
             stage,
             arrow_skin: ArrowSkinSet::bundled_default(),
+            health_bar_svg_path: None,
+            health_bar_svg_source: None,
             scripts: vec![
                 ScriptAsset {
                     id: CAMERA_SCRIPT_ID.to_string(),

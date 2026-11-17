@@ -473,17 +473,86 @@ impl EngineSession {
         let Ok(raster) = self.project.arrow_skin.rasterize_neutral_receptor(dir) else {
             return Vec::new();
         };
-        let Some(rgba_img) = image::RgbaImage::from_raw(raster.width, raster.height, raster.rgba) else {
+        encode_raster_png(raster.width, raster.height, raster.rgba)
+    }
+
+    pub fn import_health_bar_svg(&mut self, path: PathBuf) -> String {
+        match std::fs::read_to_string(&path) {
+            Ok(svg_text) => {
+                if let Err(e) = pulse_core::svg_skin::rasterize_svg_rect(&svg_text, 600, 36) {
+                    return self.err_response(format!("SVG de barra de vida inválido: {}", e));
+                }
+                self.project.health_bar_svg_path = Some(path);
+                self.project.health_bar_svg_source = Some(svg_text);
+                self.save_active_project_now();
+                self.ok_response("Barra de vida SVG personalizada aplicada")
+            }
+            Err(e) => self.err_response(format!("No se pudo leer SVG de barra: {}", e)),
+        }
+    }
+
+    pub fn restore_default_health_bar_svg(&mut self) -> String {
+        self.project.health_bar_svg_path = None;
+        self.project.health_bar_svg_source = None;
+        self.save_active_project_now();
+        self.ok_response("Barra de vida SVG estilo FNF restaurada")
+    }
+
+    pub fn rasterize_health_bar_png_bytes(&self) -> Vec<u8> {
+        let svg = self
+            .project
+            .health_bar_svg_source
+            .as_deref()
+            .unwrap_or_else(pulse_core::svg_skin::default_health_bar_frame_svg);
+        let Ok(raster) = pulse_core::svg_skin::rasterize_svg_rect(svg, 600, 36) else {
             return Vec::new();
         };
-        let mut png_bytes = Vec::new();
-        if image::DynamicImage::ImageRgba8(rgba_img)
-            .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
-            .is_ok()
-        {
-            png_bytes
+        encode_raster_png(raster.width, raster.height, raster.rgba)
+    }
+
+    pub fn rasterize_rating_png_bytes(&self, kind_code: u8) -> Vec<u8> {
+        let Some(kind) = pulse_core::svg_skin::RatingKind::from_code(kind_code) else {
+            return Vec::new();
+        };
+        let svg = pulse_core::svg_skin::default_rating_svg(kind);
+        let Ok(raster) = pulse_core::svg_skin::rasterize_svg_rect(svg, 280, 96) else {
+            return Vec::new();
+        };
+        encode_raster_png(raster.width, raster.height, raster.rgba)
+    }
+
+    pub fn rasterize_default_icon_png_bytes(&self, is_player: bool, is_losing: bool) -> Vec<u8> {
+        let svg = if is_player {
+            pulse_core::svg_skin::default_player_icon_svg(is_losing)
         } else {
-            Vec::new()
-        }
+            pulse_core::svg_skin::default_opponent_icon_svg(is_losing)
+        };
+        let Ok(raster) = pulse_core::svg_skin::rasterize_svg_str(svg, 128) else {
+            return Vec::new();
+        };
+        encode_raster_png(raster.width, raster.height, raster.rgba)
+    }
+
+    pub fn rasterize_note_splash_png_bytes(&self) -> Vec<u8> {
+        let svg = pulse_core::svg_skin::default_note_splash_svg();
+        let Ok(raster) = pulse_core::svg_skin::rasterize_svg_str(svg, 160) else {
+            return Vec::new();
+        };
+        encode_raster_png(raster.width, raster.height, raster.rgba)
+    }
+}
+
+fn encode_raster_png(width: u32, height: u32, rgba: Vec<u8>) -> Vec<u8> {
+    let Some(rgba_img) = image::RgbaImage::from_raw(width, height, rgba) else {
+        return Vec::new();
+    };
+    let mut png_bytes = Vec::new();
+    if image::DynamicImage::ImageRgba8(rgba_img)
+        .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
+        .is_ok()
+    {
+        png_bytes
+    } else {
+        Vec::new()
     }
 }

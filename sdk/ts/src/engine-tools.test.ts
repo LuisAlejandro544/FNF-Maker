@@ -13,6 +13,7 @@ import {
   BINARY_GAMEPLAY_HEADER_BYTES,
   BINARY_GAMEPLAY_MAGIC,
   BINARY_GAMEPLAY_NOTE_BYTES,
+  BINARY_GAMEPLAY_STRUM_BYTES,
   LruResourceCache,
   STREAM_RING_BYTES,
   advanceNoteSlidingWindow,
@@ -31,6 +32,8 @@ import {
   desaturateToNeutralRgba,
   detectSpriteJsonFormat,
   estimateMergedAudioRamSavings,
+  evaluateFnfHealthBar,
+  evaluateHitJudgement,
   mapRotatedSpriteSample,
   optimizeScriptLoops,
   packPosesIntoBoundedAtlas,
@@ -233,7 +236,7 @@ test('computeTrimmedFramePlacement un-rotates dimensions and applies negative fr
   assert.equal(placed.offsetY, 30);
 });
 
-test('autoBindSparrowPrefixes maps Idle, Left, Down, Up, Right automatically', () => {
+test('autoBindSparrowPrefixes maps Idle, Left, Down, Up, Right and Miss animations automatically', () => {
   const bindings = autoBindSparrowPrefixes([
     'Hero_idle_dance',
     'Hero_singLEFT',
@@ -241,6 +244,9 @@ test('autoBindSparrowPrefixes maps Idle, Left, Down, Up, Right automatically', (
     'Hero_singUP',
     'Hero_singRIGHT',
     'Hero_singLEFT_miss',
+    'Hero_singDOWN_miss',
+    'Hero_singUP_miss',
+    'Hero_singRIGHT_miss',
   ]);
 
   assert.equal(bindings.idle, 'Hero_idle_dance');
@@ -248,6 +254,10 @@ test('autoBindSparrowPrefixes maps Idle, Left, Down, Up, Right automatically', (
   assert.equal(bindings.down, 'Hero_singDOWN');
   assert.equal(bindings.up, 'Hero_singUP');
   assert.equal(bindings.right, 'Hero_singRIGHT');
+  assert.equal(bindings.missLeft, 'Hero_singLEFT_miss');
+  assert.equal(bindings.missDown, 'Hero_singDOWN_miss');
+  assert.equal(bindings.missUp, 'Hero_singUP_miss');
+  assert.equal(bindings.missRight, 'Hero_singRIGHT_miss');
 });
 
 test('validateAudioTrackCount enforces 1 to 3 audio files limit', () => {
@@ -599,17 +609,21 @@ test('resolveMobileTouchLanes uses wide bottom layout ONLY in downscroll tap_arr
   assert.equal(hitboxTouch, (1 << 1) | (1 << 3));
 });
 
-test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible notes and optional HUD strings', () => {
+test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums, dynamic items and HUD strings', () => {
   const encoder = new TextEncoder();
-  const sJudg = encoder.encode('¡PERFECTO!');
+  const sJudg = encoder.encode('SICK!');
   const sCd = encoder.encode('¡YA!');
   const sErr = encoder.encode('');
   const sLog = encoder.encode('onBeatHit(4)');
+  const dynLabel = encoder.encode('MOD TEXTO');
 
+  const dynBytes = 32 + 2 + dynLabel.length;
   const totalBytes =
     BINARY_GAMEPLAY_HEADER_BYTES +
     BINARY_GAMEPLAY_ENTITY_BYTES +
     BINARY_GAMEPLAY_NOTE_BYTES +
+    8 * BINARY_GAMEPLAY_STRUM_BYTES +
+    dynBytes +
     8 +
     sJudg.length +
     sCd.length +
@@ -619,11 +633,11 @@ test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible no
   const buf = new Uint8Array(totalBytes);
   const view = new DataView(buf.buffer);
 
-  // Header 112B
+  // Header 140B
   view.setUint32(0, BINARY_GAMEPLAY_MAGIC, true);
-  view.setUint32(4, 1 | (1 << 1) | (1 << 4) | (1 << 5), true); // active + downscroll + classicHitbox + hasHudStrings
+  view.setUint32(4, 1 | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6), true); // active + downscroll + classicHitbox + hasHudStrings + hudVisible
   view.setUint32(8, 7, true); // hudRevision
-  view.setUint32(12, 0b0010_0000_0101, true); // player mask=5, opp mask=2
+  view.setUint32(12, 0b0010_0000_0101 | (1 << 16) | (3 << 20), true); // player=5, opp=2, rating=1(Sick), splashLane=3
   view.setInt32(16, 3, true); // countdownStage
   view.setFloat32(20, 0.75, true);
   view.setFloat64(24, 1234.5, true); // songPosMs
@@ -642,10 +656,18 @@ test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible no
   view.setUint32(96, 12, true); // combo
   view.setUint32(100, 15, true); // maxCombo
   view.setUint32(104, 1, true); // misses
-  view.setUint16(108, 1, true); // entityCount
-  view.setUint16(110, 1, true); // noteCount
+  view.setFloat32(108, 94.5, true); // accuracyPct
+  view.setFloat32(112, 0.9, true); // hudOpacity
+  view.setFloat32(116, 1.05, true); // hudZoom
+  view.setUint32(120, 11, true); // ratingEventId
+  view.setUint32(124, 9, true); // splashEventId
+  view.setFloat32(128, 0.25, true); // beatPhase
+  view.setUint16(132, 1, true); // entityCount
+  view.setUint16(134, 1, true); // noteCount
+  view.setUint16(136, 8, true); // strumCount
+  view.setUint16(138, 1, true); // dynCount
 
-  // Entity 60B
+  // Entity 64B
   let off = BINARY_GAMEPLAY_HEADER_BYTES;
   view.setFloat32(off, 960, true);
   view.setFloat32(off + 4, 420, true);
@@ -653,15 +675,16 @@ test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible no
   view.setFloat32(off + 12, 340, true);
   view.setFloat32(off + 16, 2.25, true); // scale
   view.setFloat32(off + 20, 0.9, true); // opacity
-  view.setUint32(off + 24, 1 | (1 << 2) | (2 << 4), true); // visible + hasFrame + player(2)
-  view.setUint32(off + 28, 10, true);
-  view.setUint32(off + 32, 20, true);
-  view.setUint32(off + 36, 120, true);
-  view.setUint32(off + 40, 220, true);
-  view.setInt32(off + 44, -8, true);
-  view.setInt32(off + 48, -12, true);
-  view.setUint32(off + 52, 140, true);
-  view.setUint32(off + 56, 250, true);
+  view.setFloat32(off + 24, 15.0, true); // rotationDeg
+  view.setUint32(off + 28, 1 | (1 << 2) | (2 << 4), true); // visible + hasFrame + player(2)
+  view.setUint32(off + 32, 10, true);
+  view.setUint32(off + 36, 20, true);
+  view.setUint32(off + 40, 120, true);
+  view.setUint32(off + 44, 220, true);
+  view.setInt32(off + 48, -8, true);
+  view.setInt32(off + 52, -12, true);
+  view.setUint32(off + 56, 140, true);
+  view.setUint32(off + 60, 250, true);
   off += BINARY_GAMEPLAY_ENTITY_BYTES;
 
   // Note 28B
@@ -670,6 +693,34 @@ test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible no
   view.setFloat64(off + 16, 300.0, true);
   view.setUint32(off + 24, 2 | (1 << 2) | (1 << 3), true); // up(2) + isPlayer + headHit
   off += BINARY_GAMEPLAY_NOTE_BYTES;
+
+  // 8 Strums * 20B
+  for (let s = 0; s < 8; s++) {
+    view.setFloat32(off, s === 4 ? 22.5 : 0, true);
+    view.setFloat32(off + 4, s === 4 ? -14.0 : 0, true);
+    view.setFloat32(off + 8, s === 4 ? 45.0 : 0, true);
+    view.setFloat32(off + 12, 1.0, true);
+    view.setFloat32(off + 16, 1.0, true);
+    off += BINARY_GAMEPLAY_STRUM_BYTES;
+  }
+
+  // 1 Dynamic text item
+  buf[off] = 1; // isText
+  buf[off + 1] = 1; // isHud
+  buf[off + 2] = 1; // visible
+  buf[off + 3] = 0;
+  view.setFloat32(off + 4, 120, true);
+  view.setFloat32(off + 8, 240, true);
+  view.setFloat32(off + 12, 300, true);
+  view.setFloat32(off + 16, 28, true);
+  view.setFloat32(off + 20, 1.0, true);
+  view.setFloat32(off + 24, 0.0, true);
+  view.setUint32(off + 28, 0xffffffff, true);
+  off += 32;
+  view.setUint16(off, dynLabel.length, true);
+  off += 2;
+  buf.set(dynLabel, off);
+  off += dynLabel.length;
 
   for (const chunk of [sJudg, sCd, sErr, sLog]) {
     view.setUint16(off, chunk.length, true);
@@ -681,26 +732,40 @@ test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible no
   const decoded = decodeBinaryGameplayFrame(buf);
   assert.equal(decoded.active, true);
   assert.equal(decoded.downscroll, true);
+  assert.equal(decoded.hudVisible, true);
   assert.equal(decoded.controlMode, 'classic_hitbox');
   assert.equal(decoded.hasHudStrings, true);
   assert.equal(decoded.hudRevision, 7);
   assert.equal(decoded.holdingLanesMask, 5);
   assert.equal(decoded.opponentHoldingLanesMask, 2);
+  assert.equal(decoded.lastRatingCode, 1);
+  assert.equal(decoded.splashLane, 3);
+  assert.equal(decoded.ratingEventId, 11);
+  assert.equal(decoded.splashEventId, 9);
+  assert.ok(Math.abs(decoded.accuracyPct - 94.5) < 0.01);
   assert.equal(decoded.score, 6300n);
   assert.equal(decoded.entities.length, 1);
   assert.ok(Math.abs(decoded.entities[0].scale - 2.25) < 0.001);
+  assert.ok(Math.abs(decoded.entities[0].rotationDeg - 15.0) < 0.001);
   assert.equal(decoded.entities[0].roleCode, 2);
   assert.equal(decoded.entities[0].hasFrame, true);
   assert.equal(decoded.entities[0].offX, -8);
   assert.equal(decoded.visibleNotes.length, 1);
   assert.equal(decoded.visibleNotes[0].direction, 2);
   assert.equal(decoded.visibleNotes[0].headHit, true);
-  assert.equal(decoded.lastJudgement, '¡PERFECTO!');
+  assert.equal(decoded.strumOverrides.length, 8);
+  assert.ok(Math.abs(decoded.strumOverrides[4].offsetX - 22.5) < 0.01);
+  assert.ok(Math.abs(decoded.strumOverrides[4].angle - 45.0) < 0.01);
+  assert.equal(decoded.dynamicItems.length, 1);
+  assert.equal(decoded.dynamicItems[0].text, 'MOD TEXTO');
+  assert.equal(decoded.lastJudgement, 'SICK!');
   assert.equal(decoded.countdownLabel, '¡YA!');
   assert.equal(decoded.scriptLog, 'onBeatHit(4)');
 
   // Sin bit 5 (hasHudStrings = false) no lee strings en frames estables
   view.setUint32(4, 1, true);
+  view.setUint16(136, 0, true);
+  view.setUint16(138, 0, true);
   const fastFrame = decodeBinaryGameplayFrame(
     buf.subarray(0, BINARY_GAMEPLAY_HEADER_BYTES + BINARY_GAMEPLAY_ENTITY_BYTES + BINARY_GAMEPLAY_NOTE_BYTES),
   );
@@ -813,4 +878,35 @@ test('computeBpmSyncedIdleCadence adapts beat interval to chart BPM and idle dur
   assert.equal(shortIdle.shouldTriggerBeat, true);
 });
 
+test('evaluateHitJudgement and evaluateFnfHealthBar drive rating popups, Sick splashes and losing icons', () => {
+  const sick = evaluateHitJudgement(28);
+  assert.equal(sick.tier, 'sick');
+  assert.equal(sick.ratingCode, 1);
+  assert.equal(sick.triggersSplash, true);
 
+  const good = evaluateHitJudgement(80);
+  assert.equal(good.tier, 'good');
+  assert.equal(good.triggersSplash, false);
+
+  const bad = evaluateHitJudgement(130);
+  assert.equal(bad.tier, 'bad');
+  assert.equal(bad.triggersSplash, false);
+
+  const lowPlayer = evaluateFnfHealthBar(0.15);
+  assert.ok(Math.abs(lowPlayer.dividerRatio - 0.85) < 0.001);
+  assert.equal(lowPlayer.playerLosing, true);
+  assert.equal(lowPlayer.opponentLosing, false);
+
+  const lowOpp = evaluateFnfHealthBar(0.9);
+  assert.ok(Math.abs(lowOpp.dividerRatio - 0.1) < 0.001);
+  assert.equal(lowOpp.playerLosing, false);
+  assert.equal(lowOpp.opponentLosing, true);
+
+  const modLoop = optimizeScriptLoops(
+    'lua',
+    `function onUpdate(dt)\n  for i = 0, 1000 do setStrumProp(i % 8, "y", 10) end\nend`,
+  );
+  assert.equal(modLoop.discardedLoops, 0);
+  assert.equal(modLoop.neutralizedLoops, 1);
+  assert.ok(modLoop.optimizedSource.includes('setStrumProp'));
+});

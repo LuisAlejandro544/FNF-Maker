@@ -15,10 +15,12 @@ pub mod persistence_ops;
 pub mod sprite_ops;
 
 pub use dto::{
-    ActionResultJson, AudioTrackSnapshotJson, ChartEventJson, ChartSectionSnapshotJson,
-    ChartSnapshotJson, CompileReportJson, GameplayEntityFrameJson, GameplayRuntimeState,
+    ActionResultJson, ActiveTimerState, ActiveTweenState, AudioTrackSnapshotJson,
+    ChartEventJson, ChartSectionSnapshotJson, ChartSnapshotJson, CompileReportJson,
+    DynamicDrawableState, DynamicScriptItemJson, GameplayEntityFrameJson, GameplayRuntimeState,
     GameplayStepJson, ProjectSnapshotJson, ProjectSummaryJson, ScriptSnapshotJson,
-    SparrowFrameJson, StageEntitySnapshotJson, VisibleNoteJson,
+    SparrowFrameJson, StageEntitySnapshotJson, StrumOverrideJson, StrumOverrideState,
+    TweenTarget, VisibleNoteJson,
 };
 
 use pulse_audio::{AudioEngineHandle, DecodedTrack};
@@ -135,12 +137,16 @@ pub(super) fn anim_kind_key(kind: CharacterAnimKind) -> &'static str {
 }
 
 pub(super) fn parse_anim_kind(key: &str) -> Option<CharacterAnimKind> {
-    match key {
-        "idle" => Some(CharacterAnimKind::Idle),
-        "left" => Some(CharacterAnimKind::Left),
-        "down" => Some(CharacterAnimKind::Down),
-        "up" => Some(CharacterAnimKind::Up),
-        "right" => Some(CharacterAnimKind::Right),
+    match key.trim().to_ascii_lowercase().as_str() {
+        "idle" | "reposo" => Some(CharacterAnimKind::Idle),
+        "left" | "izquierda" | "singleft" => Some(CharacterAnimKind::Left),
+        "down" | "abajo" | "singdown" => Some(CharacterAnimKind::Down),
+        "up" | "arriba" | "singup" => Some(CharacterAnimKind::Up),
+        "right" | "derecha" | "singright" => Some(CharacterAnimKind::Right),
+        "miss_left" | "leftmiss" | "singleftmiss" | "fallo_izquierda" => Some(CharacterAnimKind::MissLeft),
+        "miss_down" | "downmiss" | "singdownmiss" | "fallo_abajo" => Some(CharacterAnimKind::MissDown),
+        "miss_up" | "upmiss" | "singupmiss" | "fallo_arriba" => Some(CharacterAnimKind::MissUp),
+        "miss_right" | "rightmiss" | "singrightmiss" | "fallo_derecha" => Some(CharacterAnimKind::MissRight),
         _ => None,
     }
 }
@@ -151,6 +157,15 @@ pub(super) fn dir_to_anim(dir: NoteDirection) -> CharacterAnimKind {
         NoteDirection::Down => CharacterAnimKind::Down,
         NoteDirection::Up => CharacterAnimKind::Up,
         NoteDirection::Right => CharacterAnimKind::Right,
+    }
+}
+
+pub(super) fn dir_to_miss_anim(dir: NoteDirection) -> CharacterAnimKind {
+    match dir {
+        NoteDirection::Left => CharacterAnimKind::MissLeft,
+        NoteDirection::Down => CharacterAnimKind::MissDown,
+        NoteDirection::Up => CharacterAnimKind::MissUp,
+        NoteDirection::Right => CharacterAnimKind::MissRight,
     }
 }
 

@@ -277,4 +277,39 @@ impl EngineSession {
         };
         serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string())
     }
+
+    pub fn import_character_icon(
+        &mut self,
+        entity_id: &str,
+        is_losing: bool,
+        path: PathBuf,
+    ) -> String {
+        if !path.exists() {
+            return self.err_response("Archivo de ícono no encontrado");
+        }
+        let Some(ent) = self.project.stage.find_mut(entity_id) else {
+            return self.err_response("Personaje no encontrado en el escenario");
+        };
+        if is_losing {
+            ent.icon_losing_path = Some(path);
+        } else {
+            ent.icon_normal_path = Some(path);
+        }
+        self.save_active_project_now();
+        self.ok_response(if is_losing {
+            "Ícono en estado perdiendo asignado"
+        } else {
+            "Ícono normal de personaje asignado"
+        })
+    }
+
+    pub fn clear_character_icons(&mut self, entity_id: &str) -> String {
+        let Some(ent) = self.project.stage.find_mut(entity_id) else {
+            return self.err_response("Personaje no encontrado en el escenario");
+        };
+        ent.icon_normal_path = None;
+        ent.icon_losing_path = None;
+        self.save_active_project_now();
+        self.ok_response("Íconos SVG predeterminados restaurados")
+    }
 }

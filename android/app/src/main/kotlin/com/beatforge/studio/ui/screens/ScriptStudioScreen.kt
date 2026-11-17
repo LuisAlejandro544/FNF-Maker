@@ -302,9 +302,11 @@ fun ScriptStudioScreen(
                     )
 
                     Text(
-                        text = "API: onCreate() · onBeatHit(beat) · onUpdate(dt) · setCameraPos(x, y) · setCameraZoom(z) · setCameraBaseZoom(z) · getCameraX/Y() · getEntityX/Y(id) · getMustHitSection() · getActiveBpm() · shakeCamera(px) · setEntityProp(id, prop, val) · playEntityAnim(id, anim)",
+                        text = "Callbacks: onCreate() · onUpdate(dt) · onBeatHit(b) · onStepHit(s) · onCountdownTick(t) · onEvent(name,v1,v2) · onTweenCompleted(tag) · onTimerCompleted(tag)\n" +
+                            "APIs: setStrumProp/getStrumProp · tweenStrumProp · setEntityProp/getEntityProp · tweenEntityProp · tweenCameraPos/Zoom · makeGraphic/makeHudGraphic/makeText/setTextString · setHealth/addHealth · setHudVisible/Opacity/Zoom · setTrackVolume/Mute · runTimer",
                         color = StudioColors.TextMuted,
-                        fontSize = 10.sp
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp
                     )
                 }
             }

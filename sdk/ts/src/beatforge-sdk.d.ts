@@ -2,11 +2,45 @@
  * Archivo: sdk/ts/src/beatforge-sdk.d.ts
  * Propósito: Declaraciones de tipos TypeScript para scripts de mods creados por
  * la comunidad o por el creador dentro de BeatForge Studio.
- * Todas estas funciones globales son registradas nativamente por `pulse_scripting`
- * tanto en Lua 5.4 como en QuickJS-NG (`rquickjs` + `oxc_transformer`).
+ * Todas estas funciones globales y callbacks de ciclo de vida son registrados
+ * nativamente por `pulse_scripting` en Lua 5.4, QuickJS-NG (`rquickjs`) y TypeScript (`oxc`).
  */
 
+type EntityPropName =
+  | 'x'
+  | 'y'
+  | 'scale'
+  | 'opacity'
+  | 'alpha'
+  | 'angle'
+  | 'rotation'
+  | 'visible'
+  | 'flipX'
+  | 'zIndex'
+  | 'width'
+  | 'height'
+  | 'color';
+
+type StrumPropName = 'x' | 'offsetX' | 'y' | 'offsetY' | 'angle' | 'rotation' | 'scale' | 'alpha' | 'opacity';
+
+type EaseName =
+  | 'linear'
+  | 'sineIn'
+  | 'sineOut'
+  | 'sineInOut'
+  | 'quadIn'
+  | 'quadOut'
+  | 'quadInOut'
+  | 'cubicIn'
+  | 'cubicOut'
+  | 'cubicInOut'
+  | 'backOut'
+  | 'elasticOut'
+  | 'bounceOut';
+
 declare function log(message: string): void;
+
+// Cámara
 declare function setCameraZoom(zoom: number): void;
 declare function setCameraBaseZoom(zoom: number): void;
 declare function setCameraPos(x: number, y: number): void;
@@ -15,17 +49,80 @@ declare function getCameraY(): number;
 declare function getCameraZoom(): number;
 declare function getCameraBaseZoom(): number;
 declare function shakeCamera(intensity: number): void;
-declare function setEntityProp(entityId: string, prop: 'x' | 'y' | 'scale' | 'opacity', value: number): void;
+declare function tweenCameraPos(tag: string, targetX: number, targetY: number, durationSec: number, ease?: EaseName): void;
+declare function tweenCameraZoom(tag: string, targetZoom: number, durationSec: number, ease?: EaseName): void;
+
+// Entidades y Animaciones
+declare function setEntityProp(entityId: string, prop: EntityPropName, value: number | boolean | string): void;
+declare function getEntityProp(entityId: string, prop: EntityPropName): number;
 declare function getEntityX(entityIdOrRole: string): number | null;
 declare function getEntityY(entityIdOrRole: string): number | null;
 declare function playAnim(entityId: string, animName: string): void;
 declare function playEntityAnim(entityId: string, animName: string): void;
+declare function tweenEntityProp(
+  tag: string,
+  entityId: string,
+  prop: 'x' | 'y' | 'scale' | 'opacity' | 'alpha' | 'angle' | 'rotation',
+  targetValue: number,
+  durationSec: number,
+  ease?: EaseName
+): void;
+
+// Modchart de Flechas / Receptores (strums 0..3 Rival, 4..7 Jugador)
+declare function setStrumProp(strumIndex: number, prop: StrumPropName, value: number): void;
+declare function getStrumProp(strumIndex: number, prop: StrumPropName): number;
+declare function tweenStrumProp(
+  tag: string,
+  strumIndex: number,
+  prop: StrumPropName,
+  targetValue: number,
+  durationSec: number,
+  ease?: EaseName
+): void;
+
+// Objetos Dinámicos (Mundo y HUD)
+declare function makeGraphic(id: string, x: number, y: number, width: number, height: number, colorHex: string): void;
+declare function makeHudGraphic(id: string, x: number, y: number, width: number, height: number, colorHex: string): void;
+declare function makeText(id: string, text: string, x: number, y: number, size?: number, colorHex?: string): void;
+declare function setTextString(id: string, text: string): void;
+declare function cloneSprite(sourceId: string, newId: string, x?: number, y?: number): void;
+declare function removeSprite(id: string): void;
+
+// Temporizadores y Tweens
+declare function cancelTween(tag: string): void;
+declare function runTimer(tag: string, durationSec: number): void;
+declare function cancelTimer(tag: string): void;
+
+// Estado de Partida, Salud, Puntuación, HUD y Audio
 declare function getSongPosMs(): number;
 declare function getActiveBpm(): number;
 declare function getMustHitSection(): boolean;
+declare function setHealth(health: number): void;
+declare function addHealth(delta: number): void;
+declare function getHealth(): number;
+declare function setScore(score: number): void;
+declare function addScore(delta: number): void;
+declare function getCombo(): number;
+declare function getMisses(): number;
+declare function getHits(): number;
+declare function getAccuracy(): number;
+declare function setScrollSpeed(speed: number): void;
+declare function getScrollSpeed(): number;
+declare function setDownscroll(downscroll: boolean): void;
+declare function setHudVisible(visible: boolean): void;
+declare function setHudOpacity(opacity: number): void;
+declare function setHudZoom(zoom: number): void;
+declare function setTrackVolume(slotIndex: number, volume: number): void;
+declare function setTrackMute(slotIndex: number, muted: boolean): void;
 
+// Callbacks de ciclo de vida del Mod
 declare function onCreate(): void;
 declare function onUpdate(dt: number): void;
 declare function onBeatHit(beat: number): void;
+declare function onStepHit(step: number): void;
+declare function onCountdownTick(stage: number): void;
 declare function onNoteHit(lane: number, isPlayer: boolean): void;
 declare function onNoteMiss(lane: number, isPlayer: boolean): void;
+declare function onEvent(name: string, value1: string, value2: string): void;
+declare function onTweenCompleted(tag: string): void;
+declare function onTimerCompleted(tag: string): void;

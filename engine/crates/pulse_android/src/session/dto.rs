@@ -64,6 +64,7 @@ pub struct ProjectSnapshotJson {
     pub scripts: Vec<ScriptSnapshotJson>,
     pub arrow_skin_name: String,
     pub custom_arrow_paths: HashMap<String, String>,
+    pub health_bar_svg_path: Option<String>,
     pub last_compile_report: Option<CompileReportJson>,
 }
 
@@ -137,6 +138,8 @@ pub struct StageEntitySnapshotJson {
     pub raw_image_path: Option<String>,
     pub xml_path: Option<String>,
     pub animate_json_path: Option<String>,
+    pub icon_normal_path: Option<String>,
+    pub icon_losing_path: Option<String>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -207,10 +210,38 @@ pub struct GameplayEntityFrameJson {
     pub height: f32,
     pub scale: f32,
     pub opacity: f32,
+    pub rotation_deg: f32,
     pub flip_x: bool,
     pub visible: bool,
     pub texture_path: Option<String>,
     pub frame: Option<SparrowFrameJson>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct StrumOverrideJson {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub angle: f32,
+    pub scale: f32,
+    pub alpha: f32,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicScriptItemJson {
+    pub id: String,
+    pub kind: String,
+    pub is_hud: bool,
+    pub visible: bool,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub opacity: f32,
+    pub angle: f32,
+    pub color_argb: u32,
+    pub text: String,
 }
 
 #[derive(Serialize)]
@@ -232,6 +263,7 @@ pub struct GameplayStepJson {
     pub duration_ms: f64,
     pub scroll_speed: f64,
     pub active_bpm: f64,
+    pub beat_phase: f32,
     pub downscroll: bool,
     pub control_mode: String,
     pub holding_lanes_mask: u8,
@@ -250,14 +282,87 @@ pub struct GameplayStepJson {
     pub max_combo: u32,
     pub hits: u32,
     pub misses: u32,
+    pub accuracy_pct: f32,
     pub health: f32,
     pub last_judgement: String,
+    pub rating_code: u8,
+    pub rating_event_id: u32,
+    pub splash_event_id: u32,
+    pub splash_lane: u8,
+    pub hud_visible: bool,
+    pub hud_opacity: f32,
+    pub hud_zoom: f32,
     pub paused: bool,
     pub finished: bool,
     pub script_errors: Vec<String>,
     pub script_logs: Vec<String>,
     pub entities: Vec<GameplayEntityFrameJson>,
     pub visible_notes: Vec<VisibleNoteJson>,
+    pub strum_overrides: Vec<StrumOverrideJson>,
+    pub dynamic_items: Vec<DynamicScriptItemJson>,
+}
+
+#[derive(Clone, Copy)]
+pub struct StrumOverrideState {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub angle: f32,
+    pub scale: f32,
+    pub alpha: f32,
+}
+
+impl Default for StrumOverrideState {
+    fn default() -> Self {
+        Self {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            angle: 0.0,
+            scale: 1.0,
+            alpha: 1.0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DynamicDrawableState {
+    pub id: String,
+    pub is_text: bool,
+    pub is_hud: bool,
+    pub visible: bool,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub opacity: f32,
+    pub angle: f32,
+    pub color_argb: u32,
+    pub text: String,
+}
+
+#[derive(Clone)]
+pub enum TweenTarget {
+    EntityProp { entity_id: String, prop: String },
+    CameraPosX,
+    CameraPosY,
+    CameraZoom,
+    StrumProp { strum_idx: usize, prop: String },
+}
+
+#[derive(Clone)]
+pub struct ActiveTweenState {
+    pub tag: String,
+    pub target: TweenTarget,
+    pub start_val: f32,
+    pub end_val: f32,
+    pub elapsed_sec: f32,
+    pub duration_sec: f32,
+    pub ease: String,
+}
+
+#[derive(Clone)]
+pub struct ActiveTimerState {
+    pub tag: String,
+    pub remaining_sec: f32,
 }
 
 pub struct GameplayRuntimeState {
@@ -270,14 +375,32 @@ pub struct GameplayRuntimeState {
     pub visible_note_scratch: Vec<FrameVisibleNote>,
     pub step_entities_scratch: Vec<GameplayEntityFrameJson>,
     pub step_notes_scratch: Vec<VisibleNoteJson>,
+    pub strum_overrides: [StrumOverrideState; 8],
+    pub dynamic_items: Vec<DynamicDrawableState>,
+    pub active_tweens: Vec<ActiveTweenState>,
+    pub active_timers: Vec<ActiveTimerState>,
     pub score: i64,
     pub combo: u32,
     pub max_combo: u32,
     pub hits: u32,
     pub misses: u32,
+    pub accuracy_sum: f64,
+    pub judged_count: u32,
+    pub accuracy_pct: f32,
     pub health: f32,
     pub last_judgement: String,
+    pub last_rating_code: u8,
+    pub rating_event_id: u32,
+    pub splash_event_id: u32,
+    pub splash_lane: u8,
+    pub hud_visible: bool,
+    pub hud_opacity: f32,
+    pub hud_zoom: f32,
+    pub active_scroll_speed: f64,
+    pub active_downscroll: bool,
     pub last_beat: i32,
+    pub last_step: i32,
+    pub next_event_idx: usize,
     pub paused: bool,
     pub finished: bool,
     pub last_logs: Vec<String>,
@@ -367,6 +490,14 @@ impl EngineSession {
                         .map(|p| p.to_string_lossy().into_owned()),
                     animate_json_path: ent
                         .animate_json_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    icon_normal_path: ent
+                        .icon_normal_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    icon_losing_path: ent
+                        .icon_losing_path
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
                     x: ent.x,
@@ -514,6 +645,11 @@ impl EngineSession {
             scripts,
             arrow_skin_name: self.project.arrow_skin.skin_name.clone(),
             custom_arrow_paths,
+            health_bar_svg_path: self
+                .project
+                .health_bar_svg_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
             last_compile_report,
         }
     }

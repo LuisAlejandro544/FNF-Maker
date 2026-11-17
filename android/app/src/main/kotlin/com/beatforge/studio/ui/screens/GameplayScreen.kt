@@ -1,16 +1,18 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/GameplayScreen.kt
 // Propósito: Pantalla jugable en tiempo real en Compose Canvas a 60 FPS sincronizada
-// con el reloj del mezclador Rust AAudio (`nativeStepGameplay`).
+// con el reloj del mezclador Rust AAudio (`nativeStepGameplayBinary`).
 // Implementa:
-// 1. Receptores principales sin color (gris neutro FNF) que se iluminan con el color SVG al pulsar/sostener.
-// 2. Notas largas (sustain) que no desaparecen al golpear la cabeza: la cola sigue bajando/subiendo
-//    hasta consumirse por completo en el receptor.
-// 3. Dos modos de control táctil móvil:
-//    - Por defecto (`tap_arrows`): 100% táctil directo sobre las 4 flechas del jugador.
-//    - Clásico (`classic_hitbox`): 4 columnas verticales translúcidas estilo Psych Engine Mobile.
+// 1. Barra de vida estilo FNF con marco vectorial SVG (`resvg`), relleno dinámico rojo/verde,
+//    íconos deslizantes con rebote al ritmo (normal y perdiendo <20%) y estadísticas debajo.
+// 2. Popups vectoriales SVG (`SICK!`, `GOOD!`, `BAD`, `MISS`) junto al jugador y destello
+//    de chispas (`Note Splash`) sobre las flechas al acertar notas perfectas.
+// 3. Transformaciones modchart completas (`strumOverrides`), rotación de entidades y
+//    objetos/textos dinámicos creados desde Lua, TypeScript o JavaScript.
 
 package com.beatforge.studio.ui.screens
 
+import android.graphics.Paint
+import android.graphics.Typeface
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -28,6 +30,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Home
@@ -38,7 +41,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,7 +49,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -56,14 +57,19 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Shadow
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -73,7 +79,9 @@ import androidx.compose.ui.window.Dialog
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.MobileControlMode
+import com.beatforge.studio.MutableDynamicDrawable
 import com.beatforge.studio.ui.theme.StudioColors
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.min
@@ -82,11 +90,40 @@ import kotlin.math.sin
 
 private val TOUCH_LANE_NAMES = listOf("IZQ", "ABA", "ARR", "DER")
 
+private class RatingPopupHolder {
+    var lastEventId: Int = 0
+    var active: Boolean = false
+    var ratingCode: Int = 0
+    var startNano: Long = 0L
+    var worldX: Float = 860f
+    var worldY: Float = 360f
+}
+
+private class SplashSlot {
+    var active: Boolean = false
+    var lane: Int = 0
+    var startNano: Long = 0L
+    var angleOffset: Float = 0f
+}
+
+private class SplashPoolHolder {
+    var lastEventId: Int = 0
+    var cursor: Int = 0
+    val slots = Array(8) { SplashSlot() }
+}
+
 @Composable
 fun GameplayScreen(
     frameState: GameplayFrameState,
     arrowBitmaps: Map<Int, ImageBitmap>,
     receptorBitmaps: Map<Int, ImageBitmap>,
+    healthBarBitmap: ImageBitmap?,
+    ratingBitmaps: Map<Int, ImageBitmap>,
+    noteSplashBitmap: ImageBitmap?,
+    playerNormalIcon: ImageBitmap?,
+    playerLosingIcon: ImageBitmap?,
+    opponentNormalIcon: ImageBitmap?,
+    opponentLosingIcon: ImageBitmap?,
     compiledBitmapsByIndex: List<LoadedEntityBitmap?>,
     onStepFrame: suspend (dtSec: Float, pressedMask: Int, justPressedMask: Int) -> Unit,
     onChangeControlMode: (MobileControlMode) -> Unit,
@@ -97,6 +134,15 @@ fun GameplayScreen(
     var pressedMask by remember { mutableIntStateOf(0) }
     var pendingJustPressedMask by remember { mutableIntStateOf(0) }
     val hud = frameState.hudState
+
+    val ratingPopup = remember { RatingPopupHolder() }
+    val splashPool = remember { SplashPoolHolder() }
+    val dynamicTextPaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+        }
+    }
 
     LaunchedEffect(Unit) {
         var lastNs = 0L
@@ -126,6 +172,43 @@ fun GameplayScreen(
         // Lienzo principal de gameplay: lee `frameState.drawTick` solo dentro de DrawScope (0 recomposiciones a 60 FPS)
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (frameState.drawTick < 0L) return@Canvas
+            val nowNs = System.nanoTime()
+
+            // Capturar eventos nuevos de calificación (`SICK!`/`GOOD!`/`BAD`/`MISS`) y Note Splash
+            if (frameState.ratingEventId != ratingPopup.lastEventId) {
+                ratingPopup.lastEventId = frameState.ratingEventId
+                if (frameState.lastRatingCode in 1..4) {
+                    var plrX = 880f
+                    var plrY = 430f
+                    var plrW = 240f
+                    var plrH = 300f
+                    for (i in 0 until frameState.entityCount) {
+                        val ent = frameState.entitiesPool[i]
+                        if (ent.roleCode == 2) {
+                            plrX = ent.x
+                            plrY = ent.y
+                            plrW = ent.width * ent.scale
+                            plrH = ent.height * ent.scale
+                            break
+                        }
+                    }
+                    ratingPopup.active = true
+                    ratingPopup.ratingCode = frameState.lastRatingCode
+                    ratingPopup.startNano = nowNs
+                    ratingPopup.worldX = plrX - plrW * 0.56f
+                    ratingPopup.worldY = plrY - plrH * 0.28f
+                }
+            }
+
+            if (frameState.splashEventId != splashPool.lastEventId) {
+                splashPool.lastEventId = frameState.splashEventId
+                val slot = splashPool.slots[splashPool.cursor and 7]
+                splashPool.cursor += 1
+                slot.active = true
+                slot.lane = frameState.splashLane.coerceIn(0, 3)
+                slot.startNano = nowNs
+                slot.angleOffset = ((splashPool.cursor * 37) % 60 - 30).toFloat()
+            }
 
             val vw = frameState.virtualWidth.coerceAtLeast(1f)
             val vh = frameState.virtualHeight.coerceAtLeast(1f)
@@ -158,6 +241,9 @@ fun GameplayScreen(
                     val loaded = compiledBitmapsByIndex.getOrNull(i)
 
                     withTransform({
+                        if (ent.rotationDeg != 0f) {
+                            rotate(ent.rotationDeg, pivot = Offset(cx, cy))
+                        }
                         if (ent.flipX) {
                             scale(scaleX = -1f, scaleY = 1f, pivot = Offset(cx, cy))
                         }
@@ -243,6 +329,50 @@ fun GameplayScreen(
                         }
                     }
                 }
+
+                // 1.5 Gráficos y textos dinámicos de mundo creados por scripts (`makeGraphic`)
+                for (i in 0 until frameState.dynamicCount) {
+                    val item = frameState.dynamicPool[i]
+                    if (!item.isHud && item.visible && item.opacity > 0.01f) {
+                        drawDynamicItem(item, sx, sy, dynamicTextPaint)
+                    }
+                }
+
+                // 1.6 Popup SVG de calificación (`SICK!`, `GOOD!`, `BAD`, `MISS`) junto al jugador
+                if (ratingPopup.active) {
+                    val ageSec = ((nowNs - ratingPopup.startNano) / 1_000_000_000.0).toFloat()
+                    if (ageSec >= 0.68f) {
+                        ratingPopup.active = false
+                    } else {
+                        val ratingBmp = ratingBitmaps[ratingPopup.ratingCode]
+                        if (ratingBmp != null) {
+                            val popScale = if (ageSec < 0.08f) {
+                                1.28f - (ageSec / 0.08f) * 0.28f
+                            } else {
+                                1f
+                            }
+                            val alpha = if (ageSec > 0.38f) {
+                                (1f - (ageSec - 0.38f) / 0.30f).coerceIn(0f, 1f)
+                            } else {
+                                1f
+                            }
+                            val curX = (ratingPopup.worldX - 18f * ageSec) * sx
+                            val curY = (ratingPopup.worldY - 125f * ageSec + 280f * ageSec * ageSec) * sy
+                            val drawW = 190f * minOf(sx, sy) * popScale
+                            val drawH = 72f * minOf(sx, sy) * popScale
+                            drawImage(
+                                image = ratingBmp,
+                                dstOffset = IntOffset(
+                                    (curX - drawW / 2f).roundToInt(),
+                                    (curY - drawH / 2f).roundToInt()
+                                ),
+                                dstSize = IntSize(drawW.roundToInt().coerceAtLeast(2), drawH.roundToInt().coerceAtLeast(2)),
+                                alpha = alpha,
+                                filterQuality = FilterQuality.High
+                            )
+                        }
+                    }
+                }
             }
 
             // Columnas translúcidas Hitbox Clásico dibujadas en Canvas para evitar recomposiciones al tocar
@@ -269,12 +399,12 @@ fun GameplayScreen(
                 }
             }
 
-            // 2. Carriles y receptores (sin color en reposo; se iluminan con color SVG al pulsar/sostener)
+            // 2. Carriles y receptores (aplica strumOverrides modchart 0..7)
             val classicMode = frameState.controlMode == MobileControlMode.ClassicHitbox.key
             val useDownscrollTactileLayout = frameState.downscroll && !classicMode
 
-            val oppReceptorY = if (useDownscrollTactileLayout) 100f * sy else (if (frameState.downscroll) 575f else 118f) * sy
-            val plrReceptorY = if (useDownscrollTactileLayout) 595f * sy else (if (frameState.downscroll) 575f else 118f) * sy
+            val baseOppY = if (useDownscrollTactileLayout) 100f * sy else (if (frameState.downscroll) 575f else 118f) * sy
+            val basePlrY = if (useDownscrollTactileLayout) 595f * sy else (if (frameState.downscroll) 575f else 118f) * sy
             val oppDownscroll = if (useDownscrollTactileLayout) false else frameState.downscroll
             val plrDownscroll = frameState.downscroll
 
@@ -282,12 +412,15 @@ fun GameplayScreen(
             val plrNoteSize = if (useDownscrollTactileLayout) 98f * minOf(sx, sy) else 84f * minOf(sx, sy)
 
             for (dir in 0..3) {
-                val oppX = if (useDownscrollTactileLayout) {
+                val oppOverride = frameState.strumOverrides[dir]
+                val plrOverride = frameState.strumOverrides[4 + dir]
+
+                val baseOppX = if (useDownscrollTactileLayout) {
                     (72f + dir * 68f) * sx
                 } else {
                     (105f + dir * 105f) * sx
                 }
-                val plrX = if (useDownscrollTactileLayout) {
+                val basePlrX = if (useDownscrollTactileLayout) {
                     val vx = when (dir) {
                         0 -> 340f
                         1 -> 495f
@@ -298,18 +431,28 @@ fun GameplayScreen(
                 } else {
                     (765f + dir * 105f) * sx
                 }
+
+                val oppX = baseOppX + oppOverride.offsetX * sx
+                val oppY = baseOppY + oppOverride.offsetY * sy
+                val plrX = basePlrX + plrOverride.offsetX * sx
+                val plrY = basePlrY + plrOverride.offsetY * sy
+
                 val coloredBmp = arrowBitmaps[dir]
                 val neutralBmp = receptorBitmaps[dir] ?: coloredBmp
                 val laneColor = StudioColors.LaneColors[dir]
 
                 val oppHolding = (frameState.opponentHoldingLanesMask and (1 shl dir)) != 0
-                drawReceptor(
-                    center = Offset(oppX, oppReceptorY),
-                    sizePx = oppNoteSize * (if (oppHolding) 1.06f else 0.94f),
-                    color = if (oppHolding) laneColor else Color(0xFF94A3B8),
-                    bitmap = if (oppHolding) coloredBmp else neutralBmp,
-                    alpha = if (oppHolding) 0.98f else 0.72f
-                )
+                val oppAlpha = ((if (oppHolding) 0.98f else 0.72f) * oppOverride.alpha).coerceIn(0f, 1f)
+                if (oppAlpha > 0.01f) {
+                    drawReceptor(
+                        center = Offset(oppX, oppY),
+                        sizePx = oppNoteSize * (if (oppHolding) 1.06f else 0.94f) * oppOverride.scale,
+                        angleDeg = oppOverride.angle,
+                        color = if (oppHolding) laneColor else Color(0xFF94A3B8),
+                        bitmap = if (oppHolding) coloredBmp else neutralBmp,
+                        alpha = oppAlpha
+                    )
+                }
 
                 val isPressed = (pressedMask and (1 shl dir)) != 0
                 val isHolding = (frameState.holdingLanesMask and (1 shl dir)) != 0
@@ -318,19 +461,23 @@ fun GameplayScreen(
                     isHolding -> 1.08f
                     isPressed -> 0.92f
                     else -> 1f
-                }
+                } * plrOverride.scale
+                val plrAlpha = (when {
+                    isHolding -> 1f
+                    isPressed -> 0.96f
+                    else -> 0.86f
+                } * plrOverride.alpha).coerceIn(0f, 1f)
 
-                drawReceptor(
-                    center = Offset(plrX, plrReceptorY),
-                    sizePx = plrNoteSize * playerScale,
-                    color = if (showColoredPlayer) laneColor else Color(0xFF94A3B8),
-                    bitmap = if (showColoredPlayer) coloredBmp else neutralBmp,
-                    alpha = when {
-                        isHolding -> 1f
-                        isPressed -> 0.96f
-                        else -> 0.86f
-                    }
-                )
+                if (plrAlpha > 0.01f) {
+                    drawReceptor(
+                        center = Offset(plrX, plrY),
+                        sizePx = plrNoteSize * playerScale,
+                        angleDeg = plrOverride.angle,
+                        color = if (showColoredPlayer) laneColor else Color(0xFF94A3B8),
+                        bitmap = if (showColoredPlayer) coloredBmp else neutralBmp,
+                        alpha = plrAlpha
+                    )
+                }
             }
 
             // 3. Notas visibles y colas sustain desplazándose hasta consumirse en el receptor
@@ -340,7 +487,10 @@ fun GameplayScreen(
             for (i in 0 until noteCount) {
                 val note = frameState.notesPool[i]
                 val dir = note.direction.coerceIn(0, 3)
-                val noteX = if (note.isPlayer) {
+                val strumOv = frameState.strumOverrides[if (note.isPlayer) 4 + dir else dir]
+                if (strumOv.alpha <= 0.01f) continue
+
+                val baseNoteX = if (note.isPlayer) {
                     if (useDownscrollTactileLayout) {
                         val vx = when (dir) {
                             0 -> 340f
@@ -359,9 +509,10 @@ fun GameplayScreen(
                         (105f + dir * 105f) * sx
                     }
                 }
-                val receptorY = if (note.isPlayer) plrReceptorY else oppReceptorY
+                val noteX = baseNoteX + strumOv.offsetX * sx
+                val receptorY = (if (note.isPlayer) basePlrY else baseOppY) + strumOv.offsetY * sy
                 val laneDownscroll = if (note.isPlayer) plrDownscroll else oppDownscroll
-                val notePxSize = if (note.isPlayer) plrNoteSize else oppNoteSize
+                val notePxSize = (if (note.isPlayer) plrNoteSize else oppNoteSize) * strumOv.scale
 
                 val headDeltaMs = (note.timeMs - curSongPosMs).toFloat()
                 val tailEndDeltaMs = (note.timeMs + note.sustainMs - curSongPosMs).toFloat()
@@ -381,6 +532,7 @@ fun GameplayScreen(
                 val maxY = maxOf(anchorY, tailEndY)
                 if (maxY < -notePxSize || minY > size.height + notePxSize) continue
 
+                val noteAlpha = strumOv.alpha.coerceIn(0f, 1f)
                 if (note.sustainMs > 45.0) {
                     val tailTop = if (laneDownscroll) tailEndY else anchorY
                     val tailBottom = if (laneDownscroll) anchorY else tailEndY
@@ -390,13 +542,13 @@ fun GameplayScreen(
                         val bodyWidth = notePxSize * 0.30f
                         val coreWidth = notePxSize * 0.11f
                         drawRoundRect(
-                            color = laneColor.copy(alpha = if (note.headHit) 0.84f else 0.64f),
+                            color = laneColor.copy(alpha = (if (note.headHit) 0.84f else 0.64f) * noteAlpha),
                             topLeft = Offset(noteX - bodyWidth / 2f, tailTop),
                             size = Size(bodyWidth, tailHeight),
                             cornerRadius = CornerRadius(bodyWidth * 0.45f, bodyWidth * 0.45f)
                         )
                         drawRoundRect(
-                            color = Color.White.copy(alpha = if (note.headHit) 0.55f else 0.32f),
+                            color = Color.White.copy(alpha = (if (note.headHit) 0.55f else 0.32f) * noteAlpha),
                             topLeft = Offset(noteX - coreWidth / 2f, tailTop),
                             size = Size(coreWidth, tailHeight),
                             cornerRadius = CornerRadius(coreWidth * 0.5f, coreWidth * 0.5f)
@@ -406,19 +558,89 @@ fun GameplayScreen(
 
                 if (!note.headHit) {
                     val bmp = arrowBitmaps[dir]
-                    if (bmp != null) {
-                        val half = notePxSize / 2f
+                    withTransform({
+                        if (strumOv.angle != 0f) {
+                            rotate(strumOv.angle, pivot = Offset(noteX, headY))
+                        }
+                    }) {
+                        if (bmp != null) {
+                            val half = notePxSize / 2f
+                            drawImage(
+                                image = bmp,
+                                dstOffset = IntOffset((noteX - half).roundToInt(), (headY - half).roundToInt()),
+                                dstSize = IntSize(notePxSize.roundToInt().coerceAtLeast(2), notePxSize.roundToInt().coerceAtLeast(2)),
+                                alpha = noteAlpha
+                            )
+                        } else {
+                            drawCircle(
+                                color = StudioColors.LaneColors[dir].copy(alpha = noteAlpha),
+                                radius = notePxSize * 0.4f,
+                                center = Offset(noteX, headY)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 4. Destellos de chispas (`Note Splash`) sobre las flechas al acertar notas perfectas (`Sick`)
+            for (sIdx in splashPool.slots.indices) {
+                val slot = splashPool.slots[sIdx]
+                if (!slot.active) continue
+                val ageSec = ((nowNs - slot.startNano) / 1_000_000_000.0).toFloat()
+                if (ageSec >= 0.28f) {
+                    slot.active = false
+                    continue
+                }
+                val lane = slot.lane.coerceIn(0, 3)
+                val plrOv = frameState.strumOverrides[4 + lane]
+                val baseSplashX = if (useDownscrollTactileLayout) {
+                    val vx = when (lane) {
+                        0 -> 340f
+                        1 -> 495f
+                        2 -> 785f
+                        else -> 940f
+                    }
+                    vx * sx
+                } else {
+                    (765f + lane * 105f) * sx
+                }
+                val splashX = baseSplashX + plrOv.offsetX * sx
+                val splashY = basePlrY + plrOv.offsetY * sy
+                val progress = (ageSec / 0.28f).coerceIn(0f, 1f)
+                val splashAlpha = (1f - progress * progress).coerceIn(0f, 1f)
+                val splashSize = plrNoteSize * (1.25f + progress * 0.85f) * plrOv.scale
+                val laneColor = StudioColors.LaneColors[lane]
+
+                if (noteSplashBitmap != null) {
+                    val halfSplash = splashSize / 2f
+                    withTransform({
+                        rotate(slot.angleOffset + progress * 35f, pivot = Offset(splashX, splashY))
+                    }) {
                         drawImage(
-                            image = bmp,
-                            dstOffset = IntOffset((noteX - half).roundToInt(), (headY - half).roundToInt()),
-                            dstSize = IntSize(notePxSize.roundToInt(), notePxSize.roundToInt())
+                            image = noteSplashBitmap,
+                            dstOffset = IntOffset((splashX - halfSplash).roundToInt(), (splashY - halfSplash).roundToInt()),
+                            dstSize = IntSize(splashSize.roundToInt().coerceAtLeast(4), splashSize.roundToInt().coerceAtLeast(4)),
+                            alpha = splashAlpha * 0.94f,
+                            colorFilter = ColorFilter.tint(laneColor, BlendMode.Modulate),
+                            filterQuality = FilterQuality.High
                         )
-                    } else {
-                        drawCircle(
-                            color = StudioColors.LaneColors[dir],
-                            radius = notePxSize * 0.4f,
-                            center = Offset(noteX, headY)
-                        )
+                    }
+                } else {
+                    drawCircle(
+                        color = laneColor.copy(alpha = splashAlpha * 0.7f),
+                        radius = splashSize * 0.45f,
+                        center = Offset(splashX, splashY),
+                        style = Stroke(width = 6f * (1f - progress))
+                    )
+                }
+            }
+
+            // 5. Gráficos y textos HUD creados dinámicamente desde scripts (`makeHudGraphic`, `makeText`)
+            if (frameState.hudVisible) {
+                for (i in 0 until frameState.dynamicCount) {
+                    val item = frameState.dynamicPool[i]
+                    if (item.isHud && item.visible && item.opacity > 0.01f) {
+                        drawDynamicItem(item, sx, sy, dynamicTextPaint)
                     }
                 }
             }
@@ -452,7 +674,7 @@ fun GameplayScreen(
                                 val sx = w / vw
                                 val sy = h / vh
                                 val useDownscrollTactile = frameState.downscroll
-                                val receptorY = if (useDownscrollTactile) 595f * sy else 118f * sy
+                                val baseReceptorY = if (useDownscrollTactile) 595f * sy else 118f * sy
                                 val notePxSize = (if (useDownscrollTactile) 98f else 84f) * minOf(sx, sy)
                                 val maxHitX = if (useDownscrollTactile) 82f * sx else maxOf(105f * sx * 0.54f, notePxSize * 0.80f)
                                 val maxHitY = maxOf(notePxSize * 1.30f, 96f)
@@ -461,30 +683,32 @@ fun GameplayScreen(
                                     if (change.pressed) {
                                         val px = change.position.x
                                         val py = change.position.y
-                                        if (abs(py - receptorY) <= maxHitY) {
-                                            var bestLane = -1
-                                            var bestDistX = Float.MAX_VALUE
-                                            for (dir in 0..3) {
-                                                val cx = if (useDownscrollTactile) {
-                                                    val vx = when (dir) {
-                                                        0 -> 340f
-                                                        1 -> 495f
-                                                        2 -> 785f
-                                                        else -> 940f
-                                                    }
-                                                    vx * sx
-                                                } else {
-                                                    (765f + dir * 105f) * sx
+                                        var bestLane = -1
+                                        var bestDistX = Float.MAX_VALUE
+                                        for (dir in 0..3) {
+                                            val ov = frameState.strumOverrides[4 + dir]
+                                            val baseCx = if (useDownscrollTactile) {
+                                                val vx = when (dir) {
+                                                    0 -> 340f
+                                                    1 -> 495f
+                                                    2 -> 785f
+                                                    else -> 940f
                                                 }
-                                                val dx = abs(px - cx)
-                                                if (dx <= maxHitX && dx < bestDistX) {
-                                                    bestDistX = dx
-                                                    bestLane = dir
-                                                }
+                                                vx * sx
+                                            } else {
+                                                (765f + dir * 105f) * sx
                                             }
-                                            if (bestLane >= 0) {
-                                                nextMask = nextMask or (1 shl bestLane)
+                                            val cx = baseCx + ov.offsetX * sx
+                                            val cy = baseReceptorY + ov.offsetY * sy
+                                            val dx = abs(px - cx)
+                                            val dy = abs(py - cy)
+                                            if (dy <= maxHitY && dx <= maxHitX && dx < bestDistX) {
+                                                bestDistX = dx
+                                                bestLane = dir
                                             }
+                                        }
+                                        if (bestLane >= 0) {
+                                            nextMask = nextMask or (1 shl bestLane)
                                         }
                                     }
                                 }
@@ -522,75 +746,147 @@ fun GameplayScreen(
             }
         }
 
-        // HUD Superior compacto (solo recomposiciones cuando cambia puntaje, combo, fallos o juicio)
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            shape = RoundedCornerShape(10.dp),
-            color = StudioColors.BgPanel.copy(alpha = 0.80f),
-            border = BorderStroke(1.dp, StudioColors.BorderSubtle)
-        ) {
-            Row(
+        // Nuevo HUD FNF limpio: Barra de vida SVG + íconos animados con rebote + Puntaje/Fallos/Precisión debajo
+        if (hud.hudVisible) {
+            val healthBarAlign = if (hud.downscroll) Alignment.TopCenter else Alignment.BottomCenter
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .align(healthBarAlign)
+                    .padding(
+                        top = if (hud.downscroll) 6.dp else 0.dp,
+                        bottom = if (hud.downscroll) 0.dp else 8.dp
+                    )
+                    .scale(hud.hudZoom.coerceIn(0.4f, 2f))
+                    .alpha(hud.hudOpacity.coerceIn(0f, 1f)),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                // Canvas dedicado 60 FPS para la barra rojo/verde + marco SVG + íconos con latido BPM
+                Canvas(
+                    modifier = Modifier
+                        .width(340.dp)
+                        .height(54.dp)
                 ) {
-                    Text(
-                        text = "Puntaje: ${hud.score}",
-                        color = StudioColors.TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        text = "Combo: ${hud.combo}",
-                        color = StudioColors.AccentCyan,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        text = "Fallos: ${hud.misses}",
-                        color = StudioColors.AccentCoral,
-                        fontSize = 11.sp
-                    )
-                    if (hud.lastJudgement.isNotBlank()) {
-                        Text(
-                            text = hud.lastJudgement,
-                            color = StudioColors.AccentAmber,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                    if (frameState.drawTick < 0L) return@Canvas
+                    val barW = size.width * 0.84f
+                    val barH = 14.dp.toPx()
+                    val barLeft = (size.width - barW) / 2f
+                    val barTop = (size.height - barH) / 2f + 2.dp.toPx()
+
+                    val clampedHealth = frameState.health.coerceIn(0f, 1f)
+                    val dividerRatio = 1f - clampedHealth
+                    val splitX = barLeft + barW * dividerRatio
+
+                    // Lado izquierdo: Enemigo (Rojo); Lado derecho: Jugador (Verde)
+                    if (dividerRatio > 0.002f) {
+                        drawRect(
+                            color = Color(0xFFE11D48),
+                            topLeft = Offset(barLeft, barTop),
+                            size = Size(barW * dividerRatio, barH)
                         )
+                    }
+                    if (dividerRatio < 0.998f) {
+                        drawRect(
+                            color = Color(0xFF22C55E),
+                            topLeft = Offset(splitX, barTop),
+                            size = Size(barW * (1f - dividerRatio), barH)
+                        )
+                    }
+
+                    // Marco SVG vectorial de barra de vida rasterizado por `resvg`
+                    if (healthBarBitmap != null) {
+                        val padX = 7.dp.toPx()
+                        val padY = 5.dp.toPx()
+                        drawImage(
+                            image = healthBarBitmap,
+                            dstOffset = IntOffset((barLeft - padX).roundToInt(), (barTop - padY).roundToInt()),
+                            dstSize = IntSize(
+                                (barW + padX * 2f).roundToInt().coerceAtLeast(4),
+                                (barH + padY * 2f).roundToInt().coerceAtLeast(4)
+                            ),
+                            filterQuality = FilterQuality.High
+                        )
+                    } else {
+                        drawRect(
+                            color = Color.Black,
+                            topLeft = Offset(barLeft, barTop),
+                            size = Size(barW, barH),
+                            style = Stroke(width = 3.dp.toPx())
+                        )
+                    }
+
+                    // Íconos de Enemigo y Jugador siguiendo el divisor y rebotando con el BPM
+                    val beatImpact = (1f - frameState.beatPhase).coerceIn(0f, 1f)
+                    val iconSize = 42.dp.toPx() * (1f + 0.14f * beatImpact * beatImpact)
+                    val iconCy = barTop + barH * 0.5f
+
+                    val oppBmp = if (clampedHealth > 0.80f) {
+                        opponentLosingIcon ?: opponentNormalIcon
+                    } else {
+                        opponentNormalIcon
+                    }
+                    if (oppBmp != null) {
+                        val oppCx = (splitX - iconSize * 0.48f).coerceIn(iconSize * 0.45f, size.width - iconSize * 0.9f)
+                        drawImage(
+                            image = oppBmp,
+                            dstOffset = IntOffset((oppCx - iconSize / 2f).roundToInt(), (iconCy - iconSize / 2f).roundToInt()),
+                            dstSize = IntSize(iconSize.roundToInt().coerceAtLeast(2), iconSize.roundToInt().coerceAtLeast(2)),
+                            filterQuality = FilterQuality.High
+                        )
+                    }
+
+                    val plrBmp = if (clampedHealth < 0.20f) {
+                        playerLosingIcon ?: playerNormalIcon
+                    } else {
+                        playerNormalIcon
+                    }
+                    if (plrBmp != null) {
+                        val plrCx = (splitX + iconSize * 0.48f).coerceIn(iconSize * 0.9f, size.width - iconSize * 0.45f)
+                        withTransform({
+                            scale(scaleX = -1f, scaleY = 1f, pivot = Offset(plrCx, iconCy))
+                        }) {
+                            drawImage(
+                                image = plrBmp,
+                                dstOffset = IntOffset((plrCx - iconSize / 2f).roundToInt(), (iconCy - iconSize / 2f).roundToInt()),
+                                dstSize = IntSize(iconSize.roundToInt().coerceAtLeast(2), iconSize.roundToInt().coerceAtLeast(2)),
+                                filterQuality = FilterQuality.High
+                            )
+                        }
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Column(modifier = Modifier.width(140.dp)) {
-                        LinearProgressIndicator(
-                            progress = { hud.health.coerceIn(0f, 1f) },
-                            color = if (hud.health >= 0.35f) StudioColors.AccentEmerald else StudioColors.AccentCoral,
-                            trackColor = StudioColors.BgDark,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(7.dp)
+                // Contadores limpios debajo de la barra: Puntaje | Fallos | Precisión
+                val accText = String.format(Locale.US, "%.1f", hud.accuracyPct.coerceIn(0f, 100f))
+                Text(
+                    text = "Puntaje: ${hud.score}   |   Fallos: ${hud.misses}   |   Precisión: $accText%",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    style = TextStyle(
+                        shadow = Shadow(
+                            color = Color.Black,
+                            offset = Offset(1.5f, 1.5f),
+                            blurRadius = 3f
                         )
-                    }
-                    IconButton(
-                        onClick = { onSetPaused(true) },
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(Icons.Rounded.Pause, "Pausa", tint = StudioColors.TextPrimary, modifier = Modifier.size(18.dp))
-                    }
-                }
+                    )
+                )
+            }
+        }
+
+        // Botón compacto de Pausa en esquina superior derecha (sin barra invasiva)
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 8.dp, end = 12.dp)
+                .size(36.dp),
+            shape = CircleShape,
+            color = StudioColors.BgPanel.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+        ) {
+            IconButton(
+                onClick = { onSetPaused(true) },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Icon(Icons.Rounded.Pause, "Pausa", tint = StudioColors.TextPrimary, modifier = Modifier.size(19.dp))
             }
         }
 
@@ -599,8 +895,8 @@ fun GameplayScreen(
             val text = if (isErr) hud.scriptError else hud.scriptLog
             Surface(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 14.dp, top = 46.dp),
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = 10.dp),
                 shape = RoundedCornerShape(6.dp),
                 color = if (isErr) StudioColors.AccentCoral.copy(alpha = 0.88f) else StudioColors.BgCard.copy(alpha = 0.85f)
             ) {
@@ -759,9 +1055,14 @@ fun GameplayScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        val accText = String.format(Locale.US, "%.1f", hud.accuracyPct.coerceIn(0f, 100f))
                         Text("¡Canción Completada!", color = StudioColors.AccentEmerald, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         Text("Puntaje Final: ${hud.score}", color = StudioColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Text("Combo Máximo: ${hud.maxCombo}  |  Aciertos: ${hud.hits}  |  Fallos: ${hud.misses}", color = StudioColors.TextMuted, fontSize = 12.sp)
+                        Text(
+                            "Combo Máximo: ${hud.maxCombo}  |  Fallos: ${hud.misses}  |  Precisión: $accText%",
+                            color = StudioColors.TextMuted,
+                            fontSize = 12.sp
+                        )
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedButton(onClick = onRestart, contentPadding = PaddingValues(horizontal = 14.dp)) {
@@ -791,24 +1092,80 @@ fun GameplayScreen(
 private fun DrawScope.drawReceptor(
     center: Offset,
     sizePx: Float,
+    angleDeg: Float,
     color: Color,
     bitmap: ImageBitmap?,
     alpha: Float
 ) {
     val half = sizePx / 2f
-    if (bitmap != null) {
-        drawImage(
-            image = bitmap,
-            dstOffset = IntOffset((center.x - half).roundToInt(), (center.y - half).roundToInt()),
-            dstSize = IntSize(sizePx.roundToInt(), sizePx.roundToInt()),
-            alpha = alpha
-        )
+    withTransform({
+        if (angleDeg != 0f) {
+            rotate(angleDeg, pivot = center)
+        }
+    }) {
+        if (bitmap != null) {
+            drawImage(
+                image = bitmap,
+                dstOffset = IntOffset((center.x - half).roundToInt(), (center.y - half).roundToInt()),
+                dstSize = IntSize(sizePx.roundToInt().coerceAtLeast(2), sizePx.roundToInt().coerceAtLeast(2)),
+                alpha = alpha
+            )
+        } else {
+            drawCircle(
+                color = color.copy(alpha = alpha),
+                radius = half * 0.8f,
+                center = center,
+                style = Stroke(width = 4f)
+            )
+        }
+    }
+}
+
+private fun DrawScope.drawDynamicItem(
+    item: MutableDynamicDrawable,
+    sx: Float,
+    sy: Float,
+    textPaint: Paint
+) {
+    val px = item.x * sx
+    val py = item.y * sy
+    val pw = (item.width * sx).coerceAtLeast(2f)
+    val ph = (item.height * sy).coerceAtLeast(2f)
+    val alpha = item.opacity.coerceIn(0f, 1f)
+
+    if (item.isText) {
+        if (item.text.isBlank()) return
+        val scaledFontPx = (item.height.coerceIn(10f, 96f) * minOf(sx, sy)).coerceAtLeast(12f)
+        val baseColor = item.colorArgb
+        val origAlpha = (baseColor ushr 24) and 0xFF
+        val combinedAlpha = (origAlpha * alpha).roundToInt().coerceIn(0, 255)
+        textPaint.color = (combinedAlpha shl 24) or (baseColor and 0x00FFFFFF)
+        textPaint.textSize = scaledFontPx
+        withTransform({
+            if (item.angle != 0f) {
+                rotate(item.angle, pivot = Offset(px, py))
+            }
+        }) {
+            drawContext.canvas.nativeCanvas.drawText(
+                item.text,
+                px,
+                py + scaledFontPx * 0.85f,
+                textPaint
+            )
+        }
     } else {
-        drawCircle(
-            color = color.copy(alpha = alpha),
-            radius = half * 0.8f,
-            center = center,
-            style = Stroke(width = 4f)
-        )
+        val baseColor = Color(item.colorArgb)
+        val finalColor = baseColor.copy(alpha = (baseColor.alpha * alpha).coerceIn(0f, 1f))
+        withTransform({
+            if (item.angle != 0f) {
+                rotate(item.angle, pivot = Offset(px + pw * 0.5f, py + ph * 0.5f))
+            }
+        }) {
+            drawRect(
+                color = finalColor,
+                topLeft = Offset(px, py),
+                size = Size(pw, ph)
+            )
+        }
     }
 }

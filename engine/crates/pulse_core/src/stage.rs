@@ -61,6 +61,10 @@ pub struct StageEntity {
     pub raw_image_path: Option<PathBuf>,
     pub xml_path: Option<PathBuf>,
     pub animate_json_path: Option<PathBuf>,
+    #[serde(default)]
+    pub icon_normal_path: Option<PathBuf>,
+    #[serde(default)]
+    pub icon_losing_path: Option<PathBuf>,
     pub atlas: Option<SparrowAtlas>,
     #[serde(skip)]
     pub animate_spritemap: Option<AnimateSpritemap>,
@@ -91,6 +95,8 @@ impl StageEntity {
             raw_image_path: None,
             xml_path: None,
             animate_json_path: None,
+            icon_normal_path: None,
+            icon_losing_path: None,
             atlas: None,
             animate_spritemap: None,
             animate_doc: None,

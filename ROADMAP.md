@@ -7,17 +7,17 @@ Hoja de ruta técnica y de producto para **BeatForge Studio** (`com.beatforge.st
 ## Fase 1 — Núcleo Rust Modular, Audio AAudio Puro, UI Jetpack Compose y CI Manual 32/64 bits (Actual)
 
 - [x] **Workspace Rust modular (`/engine`)**:
-  - `pulse_core`: Parser y exportador completo de `chart.json` (`player1`, `player2`, `gfVersion`, `stage`, `events`, `changeBPM`, `mustHitSection`, `-1` inline), decodificador **`.astc`** (`texture2ddecoder`), ensamblador Sparrow `.xml` + atlas **`.json`** (`TexturePacker`/`Aseprite`, `spritemap1.json`, `Animation.json` con baking por software), escena `1280×720` con Z-order, configuración de cámara bidireccional (`camera_system.lua` ↔ `StageCameraConfig`), rasterizador SVG `resvg`, optimizador de scripts (`script_optimizer.rs`) y compilador en caliente con `rayon` (`hot_compile_project_to_dir` directo a disco con límites `1536/2560px` para `LowRam32Bit`).
+  - `pulse_core`: Parser y exportador completo de `chart.json` (`player1`, `player2`, `gfVersion`, `stage`, `events`, `changeBPM`, `mustHitSection`, `-1` inline), decodificador **`.astc`** (`texture2ddecoder`), ensamblador Sparrow `.xml` + atlas **`.json`** (`TexturePacker`/`Aseprite`, `spritemap1.json`, `Animation.json` con baking por software + poses `Miss Left/Down/Up/Right`), escena `1280×720` con Z-order, configuración de cámara bidireccional (`camera_system.lua` ↔ `StageCameraConfig`), rasterizador SVG `resvg` (flechas, barra de vida, íconos por defecto, letreros `SICK!`/`GOOD!`/`BAD`/`MISS` y `Note Splash`), optimizador de scripts (`script_optimizer.rs`) y compilador en caliente con `rayon` (`hot_compile_project_to_dir` directo a disco con límites `1536/2560px` para `LowRam32Bit`).
   - `pulse_audio`: Mezclador lock-free de hasta 3 pistas sincronizado por muestras en **Rust puro** (`libaaudio.so` vía `dlopen`, cero C++), decodificadores permisivos (`lewton`, `hound`, `rmp3`) en **PCM `i16` compacto**, **fusión en caliente de 1–3 pistas a WAV único + streaming desde disco por buffer circular SPSC de 512 KB** (`streaming.rs`) y **cuenta regresiva BPM ("3, 2, 1, ¡YA!")** antes de `0.0 ms`.
-  - `pulse_scripting`: VM **Lua 5.4** (`mlua`), transpilador **TypeScript** nativo en móvil (`oxc 0.158`) y VM **JavaScript ES2022** (`rquickjs`), compartiendo hooks (`onCreate`, `onUpdate`, `onBeatHit`, `onNoteHit`, `onNoteMiss`) y API de cámara/entidades (`setCameraPos`, `setCameraBaseZoom`, `getCameraX/Y/Zoom/BaseZoom`, `getEntityX/Y`, `getMustHitSection`, `getActiveBpm`).
-  - `pulse_android`: Puente JNI (`EngineSession`) modularizado (`editor_ops`, `sprite_ops`, `persistence_ops`, `gameplay_ops`) con paquete binario `BFGP`, **Idle de personajes sincronizado al BPM**, liberación de pistas PCM al entrar a gameplay y caché de texturas sin copias RGBA duplicadas en RAM.
+  - `pulse_scripting`: VM **Lua 5.4** (`mlua`), transpilador **TypeScript** nativo en móvil (`oxc 0.158`) y VM **JavaScript ES2022** (`rquickjs`) **sin ataduras**, compartiendo todos los hooks (`onCreate`, `onUpdate`, `onStepHit`, `onBeatHit`, `onNoteHit`, `onNoteMiss`, `onCountdownTick`, `onEvent`, `onTweenCompleted`, `onTimerCompleted`), modcharts (`setStrumProp`/`getStrumProp`), tweens/timers nativos, sprites/textos dinámicos (`makeGraphic`, `makeHudGraphic`, `makeText`), HUD, audio, cámara y propiedades de entidades (`angle`, `visible`, `flipX`, `zIndex`, `color`).
+  - `pulse_android`: Puente JNI (`EngineSession`) modularizado (`editor_ops`, `sprite_ops`, `persistence_ops`, `gameplay_ops`) con paquete binario `BFGP` v2 (`140B` cabecera, `64B` entidad con rotación, `strumOverrides`, `dynamicPool`, `accuracyPct`, `ratingEventId`, `splashEventId`), **Idle de personajes sincronizado al BPM**, poses **Miss** del jugador, liberación de pistas PCM al entrar a gameplay y caché de texturas sin copias RGBA duplicadas en RAM.
 - [x] **Interfaz Android Nativa en Kotlin + Jetpack Compose (`/android`)**:
-  - `ComponentActivity` + Material 3 + Material Icons Extended + `StudioViewModel` con corrutinas `Dispatchers.IO`, exclusión mutua en RAM entre `entityBitmaps` (editor) y `compiledBitmaps` (gameplay), y detección de `lowMemory` / 32-bit.
-  - Pantallas dedicadas (`Hub`, `Proyectos`, `Chart`, `Audio`, `Sprites` con PNG/ASTC + XML/JSON + rotación de frames, `Escenario` a 60 FPS con `StageLiveTransformState`, `StageCameraInspector` ligado a `camera_system.lua` y capas virtualizadas `LazyColumn`, `Scripts`, `Compilando`, `Gameplay` multi-touch con traslación/zoom de cámara y cuenta regresiva BPM) y popup modal de skins `.svg`.
-  - `minSdk 24`, `compileSdk 35`, `targetSdk 35`, `ndkVersion 27.2.12479018`.
+  - `ComponentActivity` + Material 3 + Material Icons Extended + `StudioViewModel` con corrutinas `Dispatchers.IO`, decodificación 1:1 de región Sparrow (`BitmapRegionDecoder` con `LruCache` 20 MB), recorte automático de tiras de íconos 2-frame, exclusión mutua en RAM entre `entityBitmaps` (editor) y `compiledBitmaps` (gameplay), y detección de `lowMemory` / 32-bit.
+  - Pantallas dedicadas (`Hub`, `Proyectos`, `Chart`, `Audio`, `Sprites` con PNG/ASTC + XML/JSON, slots `Miss`, visor 1:1 nítido y popup `CharacterIconsDialog`, `Escenario` a 60 FPS con `StageLiveTransformState`, `StageCameraInspector` ligado a `camera_system.lua` y capas virtualizadas `LazyColumn`, `Scripts`, `Compilando`, `Gameplay` multi-touch con barra de vida SVG, íconos normales/perdiendo al BPM, `Puntaje | Fallos | Precisión`, letreros SVG `SICK!/GOOD!/BAD/MISS`, `Note Splash` y pausa compacta) y popup modal de skins `.svg`.
+  - `minSdk 24`, `compileSdk 35`, `targetSdk 35`, `ndkVersion = "27.2.12479018"`.
   - Integración obligatoria de `cargo-ndk` en `preBuild` generando 2 APKs separados (`arm64-v8a` 64 bits y `armeabi-v7a` 32 bits).
 - [x] **SDK & Pruebas (`/sdk`)**:
-  - Definiciones `.d.ts`, scripts de ejemplo (`.lua`, `.ts`, `.js`), flechas SVG originales y suite de pruebas unitarias TypeScript (`tsx --test`) cubriendo `chart.json`, countdown BPM, `.astc`, `.json` sprites, escalado `low_32bit`, paquete binario `BFGP`, ahorro de RAM del streaming de audio, marco de captura de cámara / sync Lua y cadencia Idle por BPM.
+  - Definiciones `.d.ts`, scripts de ejemplo (`.lua`, `.ts`, `.js`), flechas SVG originales y suite de pruebas unitarias TypeScript (`tsx --test`, 26 casos) cubriendo `chart.json`, countdown BPM, `.astc`, `.json` sprites, slots `missLeft/Down/Up/Right`, escalado `low_32bit`, paquete binario `BFGP` v2, evaluación de barra FNF / `Sick` splash, streaming audio, marco de captura de cámara / sync Lua y cadencia Idle por BPM.
 - [x] **Workflow GitHub Actions Manual (`build-apk.yml`)**:
   - Disparo exclusivo `workflow_dispatch`, caché de Rust/Cargo/Gradle y subida de los 2 APKs Debug.
 
@@ -26,9 +26,9 @@ Hoja de ruta técnica y de producto para **BeatForge Studio** (`com.beatforge.st
 ## Fase 2 — Empaquetado de Mods y Mejoras de Juego en Tiempo Real
 
 - [ ] **Exportador e Importador de Paquetes `.bfmod` (ZIP)**:
-  - Empaquetar chart, 1–3 audios, hojas `.png`/`.xml`, escenario JSON, flechas `.svg` y scripts en un único archivo portátil compartible entre teléfonos.
+  - Empaquetar chart, 1–3 audios, hojas `.png`/`.xml`, escenario JSON, íconos, barra SVG, flechas `.svg` y scripts en un único archivo portátil compartible entre teléfonos.
 - [ ] **Offsets por Frame y Editor de Colas Hold en Gameplay**:
-  - Ajuste interactivo de `offset_x` / `offset_y` por animación (`Idle`, `Left`, `Down`, `Up`, `Right`) directamente en `SpriteLabScreen` y manejo preciso de notas sostenidas al mantener pulsado el carril.
+  - Ajuste interactivo de `offset_x` / `offset_y` por animación (`Idle`, `Left`, `Down`, `Up`, `Right`, `Miss`) directamente en `SpriteLabScreen` y manejo preciso de notas sostenidas al mantener pulsado el carril.
 - [ ] **Persistencia Automática de Proyectos**:
   - Guardado y carga de proyectos locales en `filesDir` con historial reciente en el Hub.
 
@@ -37,11 +37,11 @@ Hoja de ruta técnica y de producto para **BeatForge Studio** (`com.beatforge.st
 ## Fase 3 — Herramientas Avanzadas de Escenario y Comunidad
 
 - [ ] **Editor de Timeline / Eventos de Canción**:
-  - Línea de tiempo visual para colocar triggers de cámara, tintes o llamadas a scripts en beats exactos sin escribir código.
-- [ ] **API Extendida para Scripts Comunitarios**:
-  - Control de texto en HUD desde Lua/TS/JS, tweening suave de propiedades (`tweenEntityProp`) y reproducción de SFX.
-- [ ] **Calibrador Interactivo de Latencia AAudio**:
-  - Asistente rápido de golpeteo al ritmo para calcular `audio_offset_ms` óptimo en auriculares Bluetooth o altavoz.
+  - Línea de tiempo visual para colocar triggers de cámara, tintes o llamadas a `onEvent` en beats exactos sin escribir código.
+- [x] **API Extendida Sin Ataduras para Scripts Comunitarios**:
+  - Control de textos/gráficos en HUD y mundo (`makeText`, `makeHudGraphic`, `makeGraphic`), modcharts (`setStrumProp`), *tweens* suaves nativos (`tweenEntityProp`, `tweenStrumProp`, `tweenCameraPos`, `tweenCameraZoom`), temporizadores (`runTimer`) y control de audio/HUD.
+- [ ] **Reproducción de SFX desde Scripts y Calibrador de Latencia AAudio**:
+  - API `playSound` para efectos cortos desde Lua/TS/JS y asistente rápido de golpeteo al ritmo para calcular `audio_offset_ms` óptimo en auriculares Bluetooth o altavoz.
 
 ---
 

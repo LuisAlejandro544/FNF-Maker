@@ -1,8 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/StageEditorScreen.kt
 // Propósito: Coordinador del editor visual de escenario en 3 columnas modulares:
-// capas Z-order virtualizadas (`StageLayersPanel`), lienzo interactivo 16:9 (`StageCanvasPreview`)
-// e inspector de propiedades (`StageEntityInspector`) sincronizados con `StageLiveTransformState`
-// para fluidez de 60 FPS incluso con decenas de elementos en escena.
+// capas Z-order virtualizadas (`StageLayersPanel`), lienzo interactivo 16:9 con barras rápidas
+// (`StageCanvasPreview`) e inspector con pestañas (`StageEntityInspector` / `StageCameraInspector`)
+// sincronizados con `StageLiveTransformState` para fluidez de 60 FPS en pantalla horizontal.
 
 package com.beatforge.studio.ui.screens
 
@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,7 +81,18 @@ fun StageEditorScreen(
         if (isCameraSelected) null else (entities.find { it.id == selectedEntityId } ?: entities.firstOrNull())
     }
     var stepPx by remember { mutableIntStateOf(10) }
+    var showGrid by remember { mutableStateOf(true) }
+    var wideView by remember { mutableStateOf(false) }
+    var lockedEntityIds by remember { mutableStateOf(emptySet<String>()) }
     val liveTransform = remember { StageLiveTransformState() }
+
+    fun toggleLock(id: String) {
+        lockedEntityIds = if (lockedEntityIds.contains(id)) {
+            lockedEntityIds - id
+        } else {
+            lockedEntityIds + id
+        }
+    }
 
     LaunchedEffect(
         selected?.id,
@@ -103,14 +115,15 @@ fun StageEditorScreen(
     Row(
         modifier = Modifier
             .fillMaxSize()
-            .padding(10.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         StageLayersPanel(
             entities = entities,
             selected = selected,
             stageCamera = stageCamera,
             isCameraSelected = isCameraSelected,
+            lockedEntityIds = lockedEntityIds,
             onSelectEntity = onSelectEntity,
             onSelectCamera = { onSelectEntity(CAMERA_SELECTION_ID) },
             onToggleCameraEnabled = {
@@ -145,7 +158,7 @@ fun StageEditorScreen(
                 )
             },
             onReorderEntity = onReorderEntity,
-            modifier = Modifier.weight(0.24f)
+            modifier = Modifier.weight(0.22f)
         )
 
         StageCanvasPreview(
@@ -153,8 +166,14 @@ fun StageEditorScreen(
             selected = selected,
             stageCamera = stageCamera,
             isCameraSelected = isCameraSelected,
+            showGrid = showGrid,
+            wideView = wideView,
+            lockedEntityIds = lockedEntityIds,
             entityBitmaps = entityBitmaps,
             liveTransform = liveTransform,
+            onToggleGrid = { showGrid = !showGrid },
+            onToggleWideView = { wideView = !wideView },
+            onToggleSelectedLock = { selected?.let { toggleLock(it.id) } },
             onSelectEntity = onSelectEntity,
             onSelectCamera = { onSelectEntity(CAMERA_SELECTION_ID) },
             onUpdateEntity = onUpdateEntity,
@@ -171,13 +190,13 @@ fun StageEditorScreen(
                     commit
                 )
             },
-            modifier = Modifier.weight(0.43f)
+            modifier = Modifier.weight(0.47f)
         )
 
         // Columna derecha: Inspector de Cámara o del objeto seleccionado
         Surface(
             modifier = Modifier
-                .weight(0.33f)
+                .weight(0.31f)
                 .fillMaxHeight(),
             shape = RoundedCornerShape(12.dp),
             color = StudioColors.BgPanel,
@@ -201,8 +220,10 @@ fun StageEditorScreen(
                 StageEntityInspector(
                     entity = selected,
                     stepPx = stepPx,
+                    isLocked = lockedEntityIds.contains(selected.id),
                     liveTransform = liveTransform,
                     onStepChange = { stepPx = it },
+                    onToggleLock = { toggleLock(selected.id) },
                     onUpdate = onUpdateEntity,
                     onRequestImportPng = { onRequestImportPng(selected.id) }
                 )

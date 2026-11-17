@@ -54,6 +54,11 @@ sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
     data class SparrowXml(val entityId: String) : ImportKind("sparrow_xml", arrayOf("text/xml", "application/xml", "application/json", "text/plain", "*/*"))
     data object Script : ImportKind("script", arrayOf("text/plain", "application/javascript", "*/*"))
     data class ArrowSvg(val direction: Int) : ImportKind("arrow_$direction", arrayOf("image/svg+xml", "*/*"))
+    data class CharacterIcon(val entityId: String, val isLosing: Boolean) : ImportKind(
+        "icon_${entityId}_${if (isLosing) "losing" else "normal"}",
+        arrayOf("image/png", "image/*", "*/*")
+    )
+    data object HealthBarSvg : ImportKind("health_bar_svg", arrayOf("image/svg+xml", "*/*"))
 }
 
 data class ChartEventSnapshot(
@@ -116,6 +121,8 @@ data class StageEntitySnapshot(
     val rawImagePath: String? = null,
     val xmlPath: String? = null,
     val animateJsonPath: String? = null,
+    val iconNormalPath: String? = null,
+    val iconLosingPath: String? = null,
     val x: Float = 0f,
     val y: Float = 0f,
     val width: Float = 200f,
@@ -193,6 +200,7 @@ data class ProjectSnapshot(
     val scripts: List<ScriptSnapshot> = emptyList(),
     val arrowSkinName: String = "Vector Original",
     val customArrowPaths: Map<String, String> = emptyMap(),
+    val healthBarSvgPath: String? = null,
     val lastCompileReport: CompileReportSnapshot? = null
 )
 
@@ -231,10 +239,34 @@ data class GameplayEntityFrame(
     val height: Float,
     val scale: Float,
     val opacity: Float,
+    val rotationDeg: Float = 0f,
     val flipX: Boolean,
     val visible: Boolean,
     val texturePath: String?,
     val frame: SparrowFrameInfo?
+)
+
+data class StrumOverrideSnapshot(
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
+    val angle: Float = 0f,
+    val scale: Float = 1f,
+    val alpha: Float = 1f
+)
+
+data class DynamicScriptItemSnapshot(
+    val id: String = "",
+    val kind: String = "graphic",
+    val isHud: Boolean = true,
+    val visible: Boolean = true,
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val width: Float = 100f,
+    val height: Float = 100f,
+    val opacity: Float = 1f,
+    val angle: Float = 0f,
+    val colorArgb: Long = 0xFFFFFFFFL,
+    val text: String = ""
 )
 
 data class VisibleNote(
@@ -252,6 +284,7 @@ data class GameplayStep(
     val durationMs: Double = 0.0,
     val scrollSpeed: Double = 1.8,
     val activeBpm: Double = 120.0,
+    val beatPhase: Float = 0f,
     val downscroll: Boolean = false,
     val controlMode: String = "tap_arrows",
     val holdingLanesMask: Int = 0,
@@ -270,14 +303,24 @@ data class GameplayStep(
     val maxCombo: Int = 0,
     val hits: Int = 0,
     val misses: Int = 0,
+    val accuracyPct: Float = 100f,
     val health: Float = 0.5f,
     val lastJudgement: String = "",
+    val ratingCode: Int = 0,
+    val ratingEventId: Int = 0,
+    val splashEventId: Int = 0,
+    val splashLane: Int = 0,
+    val hudVisible: Boolean = true,
+    val hudOpacity: Float = 1f,
+    val hudZoom: Float = 1f,
     val paused: Boolean = false,
     val finished: Boolean = false,
     val scriptErrors: List<String> = emptyList(),
     val scriptLogs: List<String> = emptyList(),
     val entities: List<GameplayEntityFrame> = emptyList(),
-    val visibleNotes: List<VisibleNote> = emptyList()
+    val visibleNotes: List<VisibleNote> = emptyList(),
+    val strumOverrides: List<StrumOverrideSnapshot> = emptyList(),
+    val dynamicItems: List<DynamicScriptItemSnapshot> = emptyList()
 )
 
 object StudioJsonParser {
@@ -447,6 +490,8 @@ object StudioJsonParser {
                         rawImagePath = optNullableString(e, "rawImagePath"),
                         xmlPath = optNullableString(e, "xmlPath"),
                         animateJsonPath = optNullableString(e, "animateJsonPath"),
+                        iconNormalPath = optNullableString(e, "iconNormalPath"),
+                        iconLosingPath = optNullableString(e, "iconLosingPath"),
                         x = e.optDouble("x", 0.0).toFloat(),
                         y = e.optDouble("y", 0.0).toFloat(),
                         width = e.optDouble("width", 200.0).toFloat(),
@@ -529,6 +574,7 @@ object StudioJsonParser {
             scripts = scripts,
             arrowSkinName = obj.optString("arrowSkinName", "Original"),
             customArrowPaths = stringMap(obj.optJSONObject("customArrowPaths")),
+            healthBarSvgPath = optNullableString(obj, "healthBarSvgPath"),
             lastCompileReport = compileReport
         )
     }
@@ -576,6 +622,7 @@ object StudioJsonParser {
                             height = e.optDouble("height", 200.0).toFloat(),
                             scale = e.optDouble("scale", 1.0).toFloat(),
                             opacity = e.optDouble("opacity", 1.0).toFloat(),
+                            rotationDeg = e.optDouble("rotationDeg", 0.0).toFloat(),
                             flipX = e.optBoolean("flipX", false),
                             visible = e.optBoolean("visible", true),
                             texturePath = optNullableString(e, "texturePath"),
@@ -602,12 +649,52 @@ object StudioJsonParser {
                 }
             }
 
+            val strumsArr = obj.optJSONArray("strumOverrides") ?: JSONArray()
+            val strumOverrides = buildList {
+                for (i in 0 until strumsArr.length()) {
+                    val s = strumsArr.optJSONObject(i) ?: continue
+                    add(
+                        StrumOverrideSnapshot(
+                            offsetX = s.optDouble("offsetX", 0.0).toFloat(),
+                            offsetY = s.optDouble("offsetY", 0.0).toFloat(),
+                            angle = s.optDouble("angle", 0.0).toFloat(),
+                            scale = s.optDouble("scale", 1.0).toFloat(),
+                            alpha = s.optDouble("alpha", 1.0).toFloat()
+                        )
+                    )
+                }
+            }
+
+            val dynArr = obj.optJSONArray("dynamicItems") ?: JSONArray()
+            val dynamicItems = buildList {
+                for (i in 0 until dynArr.length()) {
+                    val d = dynArr.optJSONObject(i) ?: continue
+                    add(
+                        DynamicScriptItemSnapshot(
+                            id = d.optString("id", ""),
+                            kind = d.optString("kind", "graphic"),
+                            isHud = d.optBoolean("isHud", true),
+                            visible = d.optBoolean("visible", true),
+                            x = d.optDouble("x", 0.0).toFloat(),
+                            y = d.optDouble("y", 0.0).toFloat(),
+                            width = d.optDouble("width", 100.0).toFloat(),
+                            height = d.optDouble("height", 100.0).toFloat(),
+                            opacity = d.optDouble("opacity", 1.0).toFloat(),
+                            angle = d.optDouble("angle", 0.0).toFloat(),
+                            colorArgb = d.optLong("colorArgb", 0xFFFFFFFFL),
+                            text = d.optString("text", "")
+                        )
+                    )
+                }
+            }
+
             GameplayStep(
                 active = obj.optBoolean("active", false),
                 songPosMs = obj.optDouble("songPosMs", 0.0),
                 durationMs = obj.optDouble("durationMs", 0.0),
                 scrollSpeed = obj.optDouble("scrollSpeed", 1.8),
                 activeBpm = obj.optDouble("activeBpm", 120.0),
+                beatPhase = obj.optDouble("beatPhase", 0.0).toFloat(),
                 downscroll = obj.optBoolean("downscroll", false),
                 controlMode = obj.optString("controlMode", "tap_arrows"),
                 holdingLanesMask = obj.optInt("holdingLanesMask", 0),
@@ -626,14 +713,24 @@ object StudioJsonParser {
                 maxCombo = obj.optInt("maxCombo", 0),
                 hits = obj.optInt("hits", 0),
                 misses = obj.optInt("misses", 0),
+                accuracyPct = obj.optDouble("accuracyPct", 100.0).toFloat(),
                 health = obj.optDouble("health", 0.5).toFloat(),
                 lastJudgement = obj.optString("lastJudgement", ""),
+                ratingCode = obj.optInt("ratingCode", 0),
+                ratingEventId = obj.optInt("ratingEventId", 0),
+                splashEventId = obj.optInt("splashEventId", 0),
+                splashLane = obj.optInt("splashLane", 0),
+                hudVisible = obj.optBoolean("hudVisible", true),
+                hudOpacity = obj.optDouble("hudOpacity", 1.0).toFloat(),
+                hudZoom = obj.optDouble("hudZoom", 1.0).toFloat(),
                 paused = obj.optBoolean("paused", false),
                 finished = obj.optBoolean("finished", false),
                 scriptErrors = stringList(obj.optJSONArray("scriptErrors")),
                 scriptLogs = stringList(obj.optJSONArray("scriptLogs")),
                 entities = entities,
-                visibleNotes = notes
+                visibleNotes = notes,
+                strumOverrides = strumOverrides,
+                dynamicItems = dynamicItems
             )
         } catch (_: Exception) {
             GameplayStep()

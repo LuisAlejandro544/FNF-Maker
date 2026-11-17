@@ -211,6 +211,34 @@ object NativeEngineBridge {
     external fun nativeGetReceptorPngBytes(direction: Int): ByteArray
 
     @JvmStatic
+    external fun nativeImportCharacterIcon(
+        entityId: String,
+        isLosing: Boolean,
+        path: String
+    ): String
+
+    @JvmStatic
+    external fun nativeClearCharacterIcons(entityId: String): String
+
+    @JvmStatic
+    external fun nativeImportHealthBarSvg(path: String): String
+
+    @JvmStatic
+    external fun nativeRestoreDefaultHealthBarSvg(): String
+
+    @JvmStatic
+    external fun nativeGetHealthBarPngBytes(): ByteArray
+
+    @JvmStatic
+    external fun nativeGetRatingPngBytes(ratingCode: Int): ByteArray
+
+    @JvmStatic
+    external fun nativeGetDefaultIconPngBytes(isPlayer: Boolean, isLosing: Boolean): ByteArray
+
+    @JvmStatic
+    external fun nativeGetNoteSplashPngBytes(): ByteArray
+
+    @JvmStatic
     external fun nativeHotCompile(tierCode: Int): String
 
     @JvmStatic

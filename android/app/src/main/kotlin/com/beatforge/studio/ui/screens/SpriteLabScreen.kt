@@ -29,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Face
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -55,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -74,7 +76,11 @@ private val ANIM_SLOTS = listOf(
     "left" to "Izquierda",
     "down" to "Abajo",
     "up" to "Arriba",
-    "right" to "Derecha"
+    "right" to "Derecha",
+    "miss_left" to "Fallo Izquierda",
+    "miss_down" to "Fallo Abajo",
+    "miss_up" to "Fallo Arriba",
+    "miss_right" to "Fallo Derecha"
 )
 
 @Composable
@@ -84,8 +90,10 @@ fun SpriteLabScreen(
     entityBitmaps: Map<String, LoadedEntityBitmap>,
     onSelectEntity: (String) -> Unit,
     onRequestImport: (ImportKind) -> Unit,
+    onOpenIconsDialog: () -> Unit,
     onSetBinding: (entityId: String, animKind: String, prefix: String) -> Unit,
-    onQuerySparrowFrame: suspend (entityId: String, animKind: String, elapsedSec: Float) -> SparrowFrameInfo
+    onQuerySparrowFrame: suspend (entityId: String, animKind: String, elapsedSec: Float) -> SparrowFrameInfo,
+    onDecodeRegionFrame: suspend (imagePath: String?, frame: SparrowFrameInfo) -> ImageBitmap?
 ) {
     val entity = snapshot.stageEntities.find { it.id == selectedEntityId }
         ?: snapshot.stageEntities.firstOrNull()
@@ -94,9 +102,13 @@ fun SpriteLabScreen(
     var playingPreview by remember { mutableStateOf(true) }
     var elapsedSec by remember { mutableFloatStateOf(0f) }
     var currentFrame by remember { mutableStateOf(SparrowFrameInfo()) }
+    var regionBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
-    LaunchedEffect(entity?.id, activeAnimKind, playingPreview, entity?.xmlPath, entity?.animateJsonPath, entity?.animBindings) {
-        if (entity == null) return@LaunchedEffect
+    LaunchedEffect(entity?.id, activeAnimKind, playingPreview, entity?.imagePath, entity?.xmlPath, entity?.animateJsonPath, entity?.animBindings) {
+        if (entity == null) {
+            regionBitmap = null
+            return@LaunchedEffect
+        }
         var lastNs = 0L
         while (true) {
             withFrameNanos { ns ->
@@ -106,7 +118,16 @@ fun SpriteLabScreen(
                 }
                 lastNs = ns
             }
-            currentFrame = onQuerySparrowFrame(entity.id, activeAnimKind, elapsedSec)
+            val nextFrame = onQuerySparrowFrame(entity.id, activeAnimKind, elapsedSec)
+            currentFrame = nextFrame
+            if (nextFrame.found && !entity.imagePath.isNullOrBlank()) {
+                val decoded = onDecodeRegionFrame(entity.imagePath, nextFrame)
+                if (decoded != null) {
+                    regionBitmap = decoded
+                }
+            } else {
+                regionBitmap = null
+            }
         }
     }
 
@@ -158,33 +179,43 @@ fun SpriteLabScreen(
                 }
 
                 if (entity != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Button(
                             onClick = { onRequestImport(ImportKind.SpritePng(entity.id)) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.AccentCyan,
                                 contentColor = Color(0xFF041C24)
                             ),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Rounded.Image, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text("PNG / ASTC", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            Icon(Icons.Rounded.Image, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("PNG / ASTC", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                         }
 
                         Button(
                             onClick = { onRequestImport(ImportKind.SparrowXml(entity.id)) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.AccentIndigo,
                                 contentColor = Color.White
                             ),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Rounded.Code, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text("XML / JSON", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            Icon(Icons.Rounded.Code, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("XML / JSON", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                        }
+
+                        OutlinedButton(
+                            onClick = onOpenIconsDialog,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(0.95f)
+                        ) {
+                            Icon(Icons.Rounded.Face, null, tint = StudioColors.AccentAmber, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Íconos / Vida", fontSize = 10.sp, color = StudioColors.AccentAmber, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                         }
                     }
 
@@ -365,83 +396,87 @@ fun SpriteLabScreen(
                 }
 
                 val loaded = entity?.let { entityBitmaps[it.id] }
+                val sharpFrame = regionBitmap
                 Canvas(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                         .background(StudioColors.BgDark, RoundedCornerShape(10.dp))
                 ) {
-                    if (loaded != null) {
-                        val bmp = loaded.bitmap
-                        val scaleX = bmp.width.toFloat() / loaded.origWidth.toFloat()
-                        val scaleY = bmp.height.toFloat() / loaded.origHeight.toFloat()
+                    if (currentFrame.found && currentFrame.width > 0 && currentFrame.height > 0 && (sharpFrame != null || loaded != null)) {
+                        val visW = if (currentFrame.rotated) currentFrame.height else currentFrame.width
+                        val visH = if (currentFrame.rotated) currentFrame.width else currentFrame.height
+                        val logicalW = currentFrame.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                        val logicalH = currentFrame.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                        val fit = min((size.width * 0.85f) / logicalW, (size.height * 0.85f) / logicalH)
 
-                        val srcX: Int
-                        val srcY: Int
-                        val srcW: Int
-                        val srcH: Int
-                        if (currentFrame.found && currentFrame.width > 0 && currentFrame.height > 0) {
-                            srcX = (currentFrame.x * scaleX).roundToInt().coerceIn(0, bmp.width - 1)
-                            srcY = (currentFrame.y * scaleY).roundToInt().coerceIn(0, bmp.height - 1)
-                            srcW = (currentFrame.width * scaleX).roundToInt().coerceIn(1, bmp.width - srcX)
-                            srcH = (currentFrame.height * scaleY).roundToInt().coerceIn(1, bmp.height - srcY)
+                        val boxW = logicalW * fit
+                        val boxH = logicalH * fit
+                        val boxLeft = (size.width - boxW) / 2f
+                        val boxTop = (size.height - boxH) / 2f
 
-                            val visW = if (currentFrame.rotated) currentFrame.height else currentFrame.width
-                            val visH = if (currentFrame.rotated) currentFrame.width else currentFrame.height
-                            val logicalW = currentFrame.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
-                            val logicalH = currentFrame.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
-                            val fit = min((size.width * 0.85f) / logicalW, (size.height * 0.85f) / logicalH)
+                        val visDrawW = visW * fit
+                        val visDrawH = visH * fit
+                        val visLeft = boxLeft + (-currentFrame.frameX * fit)
+                        val visTop = boxTop + (-currentFrame.frameY * fit)
+                        val centerX = visLeft + visDrawW / 2f
+                        val centerY = visTop + visDrawH / 2f
 
-                            val boxW = logicalW * fit
-                            val boxH = logicalH * fit
-                            val boxLeft = (size.width - boxW) / 2f
-                            val boxTop = (size.height - boxH) / 2f
+                        val dstW = (currentFrame.width * fit).roundToInt().coerceAtLeast(1)
+                        val dstH = (currentFrame.height * fit).roundToInt().coerceAtLeast(1)
+                        val dstX = (centerX - dstW / 2f).roundToInt()
+                        val dstY = (centerY - dstH / 2f).roundToInt()
 
-                            val visDrawW = visW * fit
-                            val visDrawH = visH * fit
-                            val visLeft = boxLeft + (-currentFrame.frameX * fit)
-                            val visTop = boxTop + (-currentFrame.frameY * fit)
-                            val centerX = visLeft + visDrawW / 2f
-                            val centerY = visTop + visDrawH / 2f
-
-                            val dstW = (currentFrame.width * fit).roundToInt().coerceAtLeast(1)
-                            val dstH = (currentFrame.height * fit).roundToInt().coerceAtLeast(1)
-                            val dstX = (centerX - dstW / 2f).roundToInt()
-                            val dstY = (centerY - dstH / 2f).roundToInt()
-
-                            withTransform({
-                                if (currentFrame.rotated) {
-                                    rotate(-90f, pivot = Offset(centerX, centerY))
-                                }
-                            }) {
+                        withTransform({
+                            if (currentFrame.rotated) {
+                                rotate(-90f, pivot = Offset(centerX, centerY))
+                            }
+                        }) {
+                            if (sharpFrame != null) {
+                                // Renderizado 1:1 directo de la región recortada con máxima nitidez
+                                drawImage(
+                                    image = sharpFrame,
+                                    srcOffset = IntOffset(0, 0),
+                                    srcSize = IntSize(sharpFrame.width, sharpFrame.height),
+                                    dstOffset = IntOffset(dstX, dstY),
+                                    dstSize = IntSize(dstW, dstH),
+                                    filterQuality = FilterQuality.High
+                                )
+                            } else if (loaded != null) {
+                                val bmp = loaded.bitmap
+                                val scaleX = bmp.width.toFloat() / loaded.origWidth.toFloat()
+                                val scaleY = bmp.height.toFloat() / loaded.origHeight.toFloat()
+                                val srcX = (currentFrame.x * scaleX).roundToInt().coerceIn(0, bmp.width - 1)
+                                val srcY = (currentFrame.y * scaleY).roundToInt().coerceIn(0, bmp.height - 1)
+                                val srcW = (currentFrame.width * scaleX).roundToInt().coerceIn(1, bmp.width - srcX)
+                                val srcH = (currentFrame.height * scaleY).roundToInt().coerceIn(1, bmp.height - srcY)
                                 drawImage(
                                     image = bmp,
                                     srcOffset = IntOffset(srcX, srcY),
                                     srcSize = IntSize(srcW, srcH),
                                     dstOffset = IntOffset(dstX, dstY),
                                     dstSize = IntSize(dstW, dstH),
-                                    filterQuality = FilterQuality.Medium
+                                    filterQuality = FilterQuality.High
                                 )
                             }
-                        } else {
-                            srcX = 0
-                            srcY = 0
-                            srcW = bmp.width
-                            srcH = bmp.height
-                            val fit = min((size.width * 0.85f) / srcW, (size.height * 0.85f) / srcH)
-                            val dstW = (srcW * fit).roundToInt().coerceAtLeast(1)
-                            val dstH = (srcH * fit).roundToInt().coerceAtLeast(1)
-                            val dstX = ((size.width - dstW) / 2f).roundToInt()
-                            val dstY = ((size.height - dstH) / 2f).roundToInt()
-                            drawImage(
-                                image = bmp,
-                                srcOffset = IntOffset(srcX, srcY),
-                                srcSize = IntSize(srcW, srcH),
-                                dstOffset = IntOffset(dstX, dstY),
-                                dstSize = IntSize(dstW, dstH),
-                                filterQuality = FilterQuality.Medium
-                            )
                         }
+                    } else if (loaded != null) {
+                        val bmp = loaded.bitmap
+                        val srcW = bmp.width
+                        val srcH = bmp.height
+                        val fit = min((size.width * 0.85f) / srcW, (size.height * 0.85f) / srcH)
+                        val dstW = (srcW * fit).roundToInt().coerceAtLeast(1)
+                        val dstH = (srcH * fit).roundToInt().coerceAtLeast(1)
+                        val dstX = ((size.width - dstW) / 2f).roundToInt()
+                        val dstY = ((size.height - dstH) / 2f).roundToInt()
+                        drawImage(
+                            image = bmp,
+                            srcOffset = IntOffset(0, 0),
+                            srcSize = IntSize(srcW, srcH),
+                            dstOffset = IntOffset(dstX, dstY),
+                            dstSize = IntSize(dstW, dstH),
+                            filterQuality = FilterQuality.High
+                        )
                     }
                 }
 

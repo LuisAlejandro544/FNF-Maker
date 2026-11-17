@@ -7,8 +7,13 @@
 package com.beatforge.studio
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
+import android.graphics.Rect
 import android.net.Uri
+import android.os.Build
+import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
@@ -38,6 +43,7 @@ data class StudioUiState(
     val selectedEntityId: String = "",
     val selectedScriptId: String = "",
     val arrowSkinDialogOpen: Boolean = false,
+    val characterIconsDialogOpen: Boolean = false,
     val audioPreviewPlaying: Boolean = false,
     val selectedTier: DeviceTier = DeviceTier.Balanced,
     val isBusy: Boolean = false,
@@ -47,6 +53,15 @@ data class StudioUiState(
     val scriptValidationOk: Boolean = true,
     val arrowBitmaps: Map<Int, ImageBitmap> = emptyMap(),
     val receptorBitmaps: Map<Int, ImageBitmap> = emptyMap(),
+    val healthBarBitmap: ImageBitmap? = null,
+    val ratingBitmaps: Map<Int, ImageBitmap> = emptyMap(),
+    val noteSplashBitmap: ImageBitmap? = null,
+    val defaultPlayerNormalIcon: ImageBitmap? = null,
+    val defaultPlayerLosingIcon: ImageBitmap? = null,
+    val defaultOpponentNormalIcon: ImageBitmap? = null,
+    val defaultOpponentLosingIcon: ImageBitmap? = null,
+    val entityNormalIcons: Map<String, ImageBitmap> = emptyMap(),
+    val entityLosingIcons: Map<String, ImageBitmap> = emptyMap(),
     val entityBitmaps: Map<String, LoadedEntityBitmap> = emptyMap(),
     val compiledBitmaps: Map<String, LoadedEntityBitmap> = emptyMap(),
     val compiledBitmapsByIndex: List<LoadedEntityBitmap?> = emptyList()
@@ -63,6 +78,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         Thread(r, "BeatForgeEngineIO").apply { isDaemon = true }
     }
     private val engineIoDispatcher = engineExecutor.asCoroutineDispatcher()
+
+    // Caché LRU en KB para cuadros individuales decodificados 1:1 en SpriteLab (evita vista borrosa sin OOM en 32-bit)
+    private val regionFrameCache = object : LruCache<String, ImageBitmap>(20 * 1024) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int {
+            return ((value.width.toLong() * value.height.toLong() * 4L) / 1024L).toInt().coerceAtLeast(1)
+        }
+    }
+    private val regionDecoderLock = Any()
 
     private var pendingImportKind: ImportKind? = null
     private var launchPickerCallback: ((Array<String>) -> Unit)? = null
@@ -172,13 +195,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 is ImportKind.SparrowXml -> NativeEngineBridge.nativeImportSparrowXml(kind.entityId, localPath)
                 is ImportKind.Script -> NativeEngineBridge.nativeImportScript(localPath)
                 is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
+                is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
+                is ImportKind.HealthBarSvg -> NativeEngineBridge.nativeImportHealthBarSvg(localPath)
             }
 
             applyActionJson(rawJson)
-            if (kind is ImportKind.ArrowSvg) {
-                reloadArrowBitmaps()
-            } else if (kind is ImportKind.SpritePng || kind is ImportKind.SparrowXml) {
-                reloadEntityBitmaps(_uiState.value.snapshot.stageEntities)
+            when (kind) {
+                is ImportKind.ArrowSvg -> reloadArrowBitmaps()
+                is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
+                is ImportKind.CharacterIcon -> reloadCustomIcons(_uiState.value.snapshot.stageEntities)
+                is ImportKind.SpritePng, is ImportKind.SparrowXml -> {
+                    synchronized(regionDecoderLock) { regionFrameCache.evictAll() }
+                    reloadEntityBitmaps(_uiState.value.snapshot.stageEntities)
+                }
+                else -> Unit
             }
             refreshProjectsInternal()
             setBusy(false)
@@ -196,6 +226,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
             val arrows = loadArrowBitmapsInternal()
             val receptors = loadReceptorBitmapsInternal()
+            val hudAssets = loadHudSvgAssetsInternal()
+            val (normalIcons, losingIcons) = loadEntityIconsInternal(snap.stageEntities)
             val entBmps = loadEntityBitmapsInternal(snap.stageEntities, _uiState.value.selectedTier)
             _uiState.update { state ->
                 state.copy(
@@ -206,6 +238,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     selectedScriptId = snap.scripts.firstOrNull()?.id ?: "",
                     arrowBitmaps = arrows,
                     receptorBitmaps = receptors,
+                    healthBarBitmap = hudAssets.healthBar,
+                    ratingBitmaps = hudAssets.ratings,
+                    noteSplashBitmap = hudAssets.noteSplash,
+                    defaultPlayerNormalIcon = hudAssets.playerNormal,
+                    defaultPlayerLosingIcon = hudAssets.playerLosing,
+                    defaultOpponentNormalIcon = hudAssets.opponentNormal,
+                    defaultOpponentLosingIcon = hudAssets.opponentLosing,
+                    entityNormalIcons = normalIcons,
+                    entityLosingIcons = losingIcons,
                     entityBitmaps = entBmps
                 )
             }
@@ -274,8 +315,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private fun applyProjectSwitchResult(rawJson: String, navigateToHub: Boolean) {
         val result = StudioJsonParser.parseActionResult(rawJson)
         val nextSnap = result.snapshot ?: _uiState.value.snapshot
+        synchronized(regionDecoderLock) { regionFrameCache.evictAll() }
         val arrows = loadArrowBitmapsInternal()
         val receptors = loadReceptorBitmapsInternal()
+        val hudAssets = loadHudSvgAssetsInternal()
+        val (normalIcons, losingIcons) = loadEntityIconsInternal(nextSnap.stageEntities)
         val entBmps = loadEntityBitmapsInternal(nextSnap.stageEntities, _uiState.value.selectedTier)
         val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
 
@@ -290,6 +334,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 scriptValidationMsg = null,
                 arrowBitmaps = arrows,
                 receptorBitmaps = receptors,
+                healthBarBitmap = hudAssets.healthBar,
+                ratingBitmaps = hudAssets.ratings,
+                noteSplashBitmap = hudAssets.noteSplash,
+                defaultPlayerNormalIcon = hudAssets.playerNormal,
+                defaultPlayerLosingIcon = hudAssets.playerLosing,
+                defaultOpponentNormalIcon = hudAssets.opponentNormal,
+                defaultOpponentLosingIcon = hudAssets.opponentLosing,
+                entityNormalIcons = normalIcons,
+                entityLosingIcons = losingIcons,
                 entityBitmaps = entBmps,
                 compiledBitmaps = emptyMap(),
                 compiledBitmapsByIndex = emptyList(),
@@ -328,6 +381,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setArrowSkinDialogOpen(open: Boolean) {
         _uiState.update { it.copy(arrowSkinDialogOpen = open) }
+    }
+
+    fun setCharacterIconsDialogOpen(open: Boolean) {
+        _uiState.update { it.copy(characterIconsDialogOpen = open) }
+    }
+
+    fun clearCharacterIcons(entityId: String) {
+        viewModelScope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeClearCharacterIcons(entityId))
+            reloadCustomIcons(_uiState.value.snapshot.stageEntities)
+        }
+    }
+
+    fun restoreDefaultHealthBarSvg() {
+        viewModelScope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeRestoreDefaultHealthBarSvg())
+            reloadHealthBarBitmap()
+        }
     }
 
     fun dismissBanner() {
@@ -485,6 +556,68 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         return withContext(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeGetSparrowFrameInfo(entityId, animKind, elapsedSec)
             StudioJsonParser.parseSparrowFrameInfo(raw)
+        }
+    }
+
+    /**
+     * Decodifica únicamente la región exacta 1:1 del frame activo en el sprite sheet usando
+     * `BitmapRegionDecoder` (LRU caché en `Dispatchers.IO`), eliminando la vista borrosa en SpriteLab
+     * incluso con hojas de 4096px en teléfonos de 32 bits.
+     */
+    suspend fun decodeSparrowRegionBitmap(imagePath: String?, frame: SparrowFrameInfo): ImageBitmap? {
+        if (imagePath.isNullOrBlank() || !frame.found || frame.width <= 0 || frame.height <= 0) {
+            return null
+        }
+        val cacheKey = "$imagePath|${frame.x},${frame.y},${frame.width},${frame.height}"
+        regionFrameCache.get(cacheKey)?.let { return it }
+
+        return withContext(Dispatchers.IO) {
+            regionFrameCache.get(cacheKey)?.let { return@withContext it }
+            val file = File(imagePath)
+            if (!file.exists()) return@withContext null
+
+            val maxFrameSide = if (_uiState.value.selectedTier == DeviceTier.LowRam32Bit) 900 else 1280
+            var sampleSize = 1
+            val longest = maxOf(frame.width, frame.height)
+            while (longest / sampleSize > maxFrameSide) {
+                sampleSize *= 2
+            }
+
+            val rect = Rect(
+                frame.x.coerceAtLeast(0),
+                frame.y.coerceAtLeast(0),
+                (frame.x + frame.width).coerceAtLeast(frame.x + 1),
+                (frame.y + frame.height).coerceAtLeast(frame.y + 1)
+            )
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inScaled = false
+            }
+
+            val decoded: Bitmap? = synchronized(regionDecoderLock) {
+                try {
+                    val decoder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        BitmapRegionDecoder.newInstance(imagePath)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        BitmapRegionDecoder.newInstance(imagePath, false)
+                    }
+                    try {
+                        decoder?.decodeRegion(rect, opts)
+                    } finally {
+                        decoder?.recycle()
+                    }
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+
+            val img = decoded?.asImageBitmap()
+            if (img != null) {
+                regionFrameCache.put(cacheKey, img)
+            }
+            img
         }
     }
 
@@ -716,6 +849,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
 
+            synchronized(regionDecoderLock) { regionFrameCache.evictAll() }
             val tier = _uiState.value.selectedTier
             val compileRaw = NativeEngineBridge.nativeHotCompile(tier.code)
             val compileRes = StudioJsonParser.parseActionResult(compileRaw)
@@ -728,6 +862,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             )
             val arrows = loadArrowBitmapsInternal()
             val receptors = loadReceptorBitmapsInternal()
+            val hudAssets = loadHudSvgAssetsInternal()
+            val (normalIcons, losingIcons) = loadEntityIconsInternal(snap.stageEntities)
 
             val gpRaw = NativeEngineBridge.nativeStartGameplay()
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
@@ -745,6 +881,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     compiledBitmapsByIndex = compiledByIndex,
                     arrowBitmaps = arrows,
                     receptorBitmaps = receptors,
+                    healthBarBitmap = hudAssets.healthBar,
+                    ratingBitmaps = hudAssets.ratings,
+                    noteSplashBitmap = hudAssets.noteSplash,
+                    defaultPlayerNormalIcon = hudAssets.playerNormal,
+                    defaultPlayerLosingIcon = hudAssets.playerLosing,
+                    defaultOpponentNormalIcon = hudAssets.opponentNormal,
+                    defaultOpponentLosingIcon = hudAssets.opponentLosing,
+                    entityNormalIcons = normalIcons,
+                    entityLosingIcons = losingIcons,
                     currentScreen = StudioScreen.Gameplay
                 )
             }
@@ -866,16 +1011,31 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(arrowBitmaps = arrows, receptorBitmaps = receptors) }
     }
 
+    private fun reloadHealthBarBitmap() {
+        val bytes = NativeEngineBridge.nativeGetHealthBarPngBytes()
+        val bmp = if (bytes.isNotEmpty()) {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        } else {
+            null
+        }
+        _uiState.update { it.copy(healthBarBitmap = bmp) }
+    }
+
+    private fun reloadCustomIcons(entities: List<StageEntitySnapshot>) {
+        val (normalIcons, losingIcons) = loadEntityIconsInternal(entities)
+        _uiState.update { it.copy(entityNormalIcons = normalIcons, entityLosingIcons = losingIcons) }
+    }
+
     private fun reloadEntityBitmaps(entities: List<StageEntitySnapshot>) {
         val map = loadEntityBitmapsInternal(entities, _uiState.value.selectedTier)
         _uiState.update { it.copy(entityBitmaps = map) }
     }
 
-    private fun editorPreviewMaxSide(tier: DeviceTier): Int {
+    private fun editorPreviewMaxSide(tier: DeviceTier, hasAtlas: Boolean): Int {
         return when (tier) {
-            DeviceTier.LowRam32Bit -> 1024
-            DeviceTier.Balanced -> 1536
-            DeviceTier.HighQuality -> 2048
+            DeviceTier.LowRam32Bit -> if (hasAtlas) 1792 else 1024
+            DeviceTier.Balanced -> if (hasAtlas) 2560 else 1536
+            DeviceTier.HighQuality -> if (hasAtlas) 3072 else 2048
         }
     }
 
@@ -917,14 +1077,121 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         return out
     }
 
+    private data class HudSvgAssets(
+        val healthBar: ImageBitmap?,
+        val ratings: Map<Int, ImageBitmap>,
+        val noteSplash: ImageBitmap?,
+        val playerNormal: ImageBitmap?,
+        val playerLosing: ImageBitmap?,
+        val opponentNormal: ImageBitmap?,
+        val opponentLosing: ImageBitmap?
+    )
+
+    private fun decodePngBytes(bytes: ByteArray): ImageBitmap? {
+        if (bytes.isEmpty()) return null
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    }
+
+    private fun loadHudSvgAssetsInternal(): HudSvgAssets {
+        val healthBar = decodePngBytes(NativeEngineBridge.nativeGetHealthBarPngBytes())
+        val ratings = linkedMapOf<Int, ImageBitmap>()
+        for (code in 1..4) {
+            decodePngBytes(NativeEngineBridge.nativeGetRatingPngBytes(code))?.let {
+                ratings[code] = it
+            }
+        }
+        val noteSplash = decodePngBytes(NativeEngineBridge.nativeGetNoteSplashPngBytes())
+        val playerNormal = decodePngBytes(NativeEngineBridge.nativeGetDefaultIconPngBytes(isPlayer = true, isLosing = false))
+        val playerLosing = decodePngBytes(NativeEngineBridge.nativeGetDefaultIconPngBytes(isPlayer = true, isLosing = true))
+        val opponentNormal = decodePngBytes(NativeEngineBridge.nativeGetDefaultIconPngBytes(isPlayer = false, isLosing = false))
+        val opponentLosing = decodePngBytes(NativeEngineBridge.nativeGetDefaultIconPngBytes(isPlayer = false, isLosing = true))
+        return HudSvgAssets(
+            healthBar = healthBar,
+            ratings = ratings,
+            noteSplash = noteSplash,
+            playerNormal = playerNormal,
+            playerLosing = playerLosing,
+            opponentNormal = opponentNormal,
+            opponentLosing = opponentLosing
+        )
+    }
+
+    private fun decodeIconFileCapped(path: String): Bitmap? {
+        val file = File(path)
+        if (!file.exists()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        var sample = 1
+        val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxSide / sample > 512) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
+        }
+        return BitmapFactory.decodeFile(path, opts)
+    }
+
+    /**
+     * Carga íconos personalizados de personaje. Si el usuario sube una tira horizontal clásica
+     * de FNF (`width >= height * 1.85`), extrae automáticamente la mitad izquierda como Normal
+     * y la mitad derecha como Perdiendo (<20% de vida) si no subió un archivo separado.
+     */
+    private fun loadEntityIconsInternal(
+        entities: List<StageEntitySnapshot>
+    ): Pair<Map<String, ImageBitmap>, Map<String, ImageBitmap>> {
+        val normalMap = linkedMapOf<String, ImageBitmap>()
+        val losingMap = linkedMapOf<String, ImageBitmap>()
+
+        for (ent in entities) {
+            val normalPath = ent.iconNormalPath
+            val losingPath = ent.iconLosingPath
+
+            if (!normalPath.isNullOrBlank()) {
+                decodeIconFileCapped(normalPath)?.let { bmp ->
+                    if (bmp.width >= (bmp.height * 1.85f).toInt() && bmp.width >= 4) {
+                        val halfW = bmp.width / 2
+                        val leftBmp = Bitmap.createBitmap(bmp, 0, 0, halfW, bmp.height)
+                        normalMap[ent.id] = leftBmp.asImageBitmap()
+                        if (losingPath.isNullOrBlank()) {
+                            val rightBmp = Bitmap.createBitmap(bmp, halfW, 0, bmp.width - halfW, bmp.height)
+                            losingMap[ent.id] = rightBmp.asImageBitmap()
+                        }
+                    } else {
+                        normalMap[ent.id] = bmp.asImageBitmap()
+                    }
+                }
+            }
+
+            if (!losingPath.isNullOrBlank()) {
+                decodeIconFileCapped(losingPath)?.let { bmp ->
+                    if (bmp.width >= (bmp.height * 1.85f).toInt() && bmp.width >= 4) {
+                        val halfW = bmp.width / 2
+                        val rightBmp = Bitmap.createBitmap(bmp, halfW, 0, bmp.width - halfW, bmp.height)
+                        losingMap[ent.id] = rightBmp.asImageBitmap()
+                    } else {
+                        losingMap[ent.id] = bmp.asImageBitmap()
+                    }
+                }
+            }
+        }
+        return normalMap to losingMap
+    }
+
     private fun loadEntityBitmapsInternal(
         entities: List<StageEntitySnapshot>,
         tier: DeviceTier
     ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
-        val cap = editorPreviewMaxSide(tier)
         for (ent in entities) {
             val path = ent.imagePath ?: continue
+            val hasAtlas = ent.xmlPath != null ||
+                ent.animateJsonPath != null ||
+                ent.animationPrefixes.isNotEmpty() ||
+                (ent.previewFrame?.found == true)
+            val cap = editorPreviewMaxSide(tier, hasAtlas)
             decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = cap)?.let { loaded ->
                 out[ent.id] = loaded
             }
@@ -973,7 +1240,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
         val decodeOpts = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
-            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+            inPreferredConfig = Bitmap.Config.ARGB_8888
             inScaled = false
         }
         val bmp = BitmapFactory.decodeFile(loadPath, decodeOpts) ?: return null

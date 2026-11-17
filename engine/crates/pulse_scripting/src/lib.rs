@@ -8,7 +8,7 @@ pub mod js_vm;
 pub mod lua_vm;
 pub mod ts_transpiler;
 
-pub use bridge::{ScriptCommand, ScriptHostState};
+pub use bridge::{EntityPropSnapshot, ScriptCommand, ScriptHostState, StrumPropSnapshot};
 pub use js_vm::{JsScriptVm, JsWorkerHandle};
 pub use lua_vm::LuaScriptVm;
 pub use ts_transpiler::transpile_typescript_to_js;
@@ -92,6 +92,24 @@ impl ModScriptRuntime {
         }
     }
 
+    pub fn call_on_step_hit(&mut self, step: i32) {
+        for vm in &mut self.lua_vms {
+            vm.call_i32("onStepHit", step);
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_i32("onStepHit", step);
+        }
+    }
+
+    pub fn call_on_countdown_tick(&mut self, stage: i32) {
+        for vm in &mut self.lua_vms {
+            vm.call_i32("onCountdownTick", stage);
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_i32("onCountdownTick", stage);
+        }
+    }
+
     pub fn call_on_note_hit(&mut self, lane: i32, is_player: bool) {
         for vm in &mut self.lua_vms {
             vm.call_note_event("onNoteHit", lane, is_player);
@@ -110,9 +128,41 @@ impl ModScriptRuntime {
         }
     }
 
+    pub fn call_on_event(&mut self, name: &str, val1: &str, val2: &str) {
+        for vm in &mut self.lua_vms {
+            vm.call_chart_event(name, val1, val2);
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_chart_event(name.to_string(), val1.to_string(), val2.to_string());
+        }
+    }
+
+    pub fn call_on_tween_completed(&mut self, tag: &str) {
+        for vm in &mut self.lua_vms {
+            vm.call_str("onTweenCompleted", tag);
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_str("onTweenCompleted", tag.to_string());
+        }
+    }
+
+    pub fn call_on_timer_completed(&mut self, tag: &str) {
+        for vm in &mut self.lua_vms {
+            vm.call_str("onTimerCompleted", tag);
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_str("onTimerCompleted", tag.to_string());
+        }
+    }
+
     /// Extrae todos los comandos emitidos por Lua, TS y JS en este frame para aplicarlos al escenario.
     pub fn drain_commands(&self) -> Vec<ScriptCommand> {
         self.state.drain_commands()
+    }
+
+    /// Extrae errores ocurridos en tiempo de ejecución para mostrarlos en pantalla sin crashear.
+    pub fn drain_runtime_errors(&self) -> Vec<String> {
+        self.state.drain_runtime_errors()
     }
 }
 

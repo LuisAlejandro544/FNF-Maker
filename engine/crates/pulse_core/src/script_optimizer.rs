@@ -27,12 +27,37 @@ pub struct ScriptBatchReport {
     pub neutralized_unbounded_loops: usize,
 }
 
-const NECESSARY_ENGINE_APIS: [&str; 5] = [
+const NECESSARY_ENGINE_APIS: &[&str] = &[
     "setEntityProp",
+    "setStrumProp",
     "setCameraZoom",
+    "setCameraBaseZoom",
+    "setCameraPos",
     "shakeCamera",
     "playAnim",
+    "playEntityAnim",
     "getSongPosMs",
+    "tweenEntityProp",
+    "tweenCameraPos",
+    "tweenCameraZoom",
+    "tweenStrumProp",
+    "makeGraphic",
+    "makeHudGraphic",
+    "makeText",
+    "setTextString",
+    "cloneSprite",
+    "removeSprite",
+    "setHealth",
+    "addHealth",
+    "setScore",
+    "addScore",
+    "setHudVisible",
+    "setHudOpacity",
+    "setHudZoom",
+    "setScrollSpeed",
+    "runTimer",
+    "setTrackVolume",
+    "setTrackMute",
 ];
 
 fn strip_comments_for_api_scan(body: &str) -> String {

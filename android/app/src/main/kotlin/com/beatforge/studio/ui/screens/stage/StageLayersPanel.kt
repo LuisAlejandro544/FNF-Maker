@@ -1,13 +1,15 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/stage/StageLayersPanel.kt
 // Propósito: Panel izquierdo virtualizado (`LazyColumn`) de capas Z-order del editor de escenario.
-// Permite añadir objetos decorativos, alternar su visibilidad y reordenar profundidad sin lag
-// incluso cuando la escena contiene decenas o cientos de elementos.
+// Muestra la capa fija `Cámara (.lua)` y las entidades ordenadas de frente a fondo con indicador
+// visual de rol, estado de bloqueo/visibilidad y barra inferior fija para reordenar profundidad Z.
 
 package com.beatforge.studio.ui.screens.stage
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -27,11 +30,13 @@ import androidx.compose.material.icons.rounded.FlipToBack
 import androidx.compose.material.icons.rounded.FlipToFront
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
@@ -40,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +62,7 @@ fun StageLayersPanel(
     selected: StageEntitySnapshot?,
     stageCamera: StageCameraSnapshot,
     isCameraSelected: Boolean,
+    lockedEntityIds: Set<String>,
     onSelectEntity: (String) -> Unit,
     onSelectCamera: () -> Unit,
     onToggleCameraEnabled: () -> Unit,
@@ -73,18 +80,28 @@ fun StageLayersPanel(
         color = StudioColors.BgPanel,
         border = BorderStroke(1.dp, StudioColors.BorderSubtle)
     ) {
-        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Capas",
-                    color = StudioColors.TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
-                )
+                Column {
+                    Text(
+                        text = "Capas",
+                        color = StudioColors.TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = "${entities.size} objetos",
+                        color = StudioColors.TextMuted,
+                        fontSize = 10.sp
+                    )
+                }
                 Button(
                     onClick = { onAddEntity("Decoración", "decoration") },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
@@ -118,30 +135,52 @@ fun StageLayersPanel(
                     StageLayerRow(
                         entity = ent,
                         isSelected = ent.id == selectedId,
+                        isLocked = lockedEntityIds.contains(ent.id),
                         onSelect = { onSelectEntity(ent.id) },
                         onToggleVisibility = { onToggleVisibility(ent) }
                     )
                 }
             }
 
+            HorizontalDivider(color = StudioColors.BorderSubtle)
+
             if (!isCameraSelected && selected != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { onReorderEntity(selected.id, "forward") }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Rounded.KeyboardArrowUp, "Subir", tint = StudioColors.TextPrimary)
-                    }
-                    IconButton(onClick = { onReorderEntity(selected.id, "backward") }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Rounded.KeyboardArrowDown, "Bajar", tint = StudioColors.TextPrimary)
-                    }
-                    IconButton(onClick = { onReorderEntity(selected.id, "front") }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Rounded.FlipToFront, "Frente", tint = StudioColors.AccentCyan)
-                    }
-                    IconButton(onClick = { onReorderEntity(selected.id, "back") }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Rounded.FlipToBack, "Fondo", tint = StudioColors.AccentIndigo)
+                    Text(
+                        text = "Z:${selected.zIndex}",
+                        color = StudioColors.TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 2.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        IconButton(onClick = { onReorderEntity(selected.id, "forward") }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.KeyboardArrowUp, "Subir capa", tint = StudioColors.TextPrimary, modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(onClick = { onReorderEntity(selected.id, "backward") }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.KeyboardArrowDown, "Bajar capa", tint = StudioColors.TextPrimary, modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(onClick = { onReorderEntity(selected.id, "front") }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.FlipToFront, "Al frente", tint = StudioColors.AccentCyan, modifier = Modifier.size(16.dp))
+                        }
+                        IconButton(onClick = { onReorderEntity(selected.id, "back") }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.FlipToBack, "Al fondo", tint = StudioColors.AccentIndigo, modifier = Modifier.size(16.dp))
+                        }
                     }
                 }
+            } else {
+                Text(
+                    text = if (isCameraSelected) "Cámara en modo edición" else "Selecciona una capa",
+                    color = StudioColors.TextMuted,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
             }
         }
     }
@@ -156,9 +195,9 @@ private fun StageCameraLayerRow(
 ) {
     val zoomDisplay = ((stageCamera.baseZoom * 100f).roundToInt() / 100f)
     val modeSummary = if (stageCamera.followMode == "sections") {
-        "Secciones chart"
+        "Secciones"
     } else {
-        "Cada ${stageCamera.followIntervalBeats} beats"
+        "Cada ${stageCamera.followIntervalBeats}b"
     }
 
     Surface(
@@ -173,16 +212,16 @@ private fun StageCameraLayerRow(
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = Icons.Rounded.Videocam,
                 contentDescription = null,
                 tint = if (stageCamera.enabled) StudioColors.AccentCyan else StudioColors.TextMuted,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(15.dp)
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(5.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Cámara (.lua)",
@@ -195,20 +234,20 @@ private fun StageCameraLayerRow(
                 Text(
                     text = "${zoomDisplay}x · $modeSummary",
                     color = StudioColors.TextMuted,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             IconButton(
                 onClick = onToggleEnabled,
-                modifier = Modifier.size(26.dp)
+                modifier = Modifier.size(24.dp)
             ) {
                 Icon(
                     imageVector = if (stageCamera.enabled) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                     contentDescription = "Activar cámara",
                     tint = if (stageCamera.enabled) StudioColors.AccentEmerald else StudioColors.AccentCoral,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
@@ -219,9 +258,17 @@ private fun StageCameraLayerRow(
 private fun StageLayerRow(
     entity: StageEntitySnapshot,
     isSelected: Boolean,
+    isLocked: Boolean,
     onSelect: () -> Unit,
     onToggleVisibility: () -> Unit
 ) {
+    val roleColor = when (entity.role) {
+        "background" -> StudioColors.AccentIndigo
+        "opponent" -> StudioColors.AccentCoral
+        "player" -> StudioColors.AccentEmerald
+        else -> StudioColors.AccentCyan
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -234,35 +281,56 @@ private fun StageLayerRow(
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(roleColor)
+            )
+            Spacer(Modifier.width(5.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = entity.displayName,
-                    color = StudioColors.TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = entity.displayName,
+                        color = StudioColors.TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (isLocked) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = "Bloqueado",
+                            tint = StudioColors.AccentIndigo,
+                            modifier = Modifier.size(11.dp)
+                        )
+                    }
+                }
                 Text(
                     text = "Z:${entity.zIndex} · ${entity.roleLabel}",
                     color = StudioColors.TextMuted,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             IconButton(
                 onClick = onToggleVisibility,
-                modifier = Modifier.size(26.dp)
+                modifier = Modifier.size(24.dp)
             ) {
                 Icon(
                     imageVector = if (entity.visible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                     contentDescription = "Visibilidad",
                     tint = if (entity.visible) StudioColors.AccentEmerald else StudioColors.AccentCoral,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
