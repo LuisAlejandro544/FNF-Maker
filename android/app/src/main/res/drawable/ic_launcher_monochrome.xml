@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Archivo: android/app/src/main/res/drawable/ic_launcher_monochrome.xml
+  Propósito: VectorDrawable monocromo (108dp x 108dp) para iconos temáticos
+  Material You en Android 13+, replicando exactamente beat_hammer_monochrome.svg.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Flecha rítmica en la base -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M 52,57.5 L 66.5,69 L 59.2,69 L 59.2,80 L 44.8,80 L 44.8,69 L 37.5,69 Z" />
+
+    <!-- Ondas sonoras laterales -->
+    <path
+        android:pathData="M 29.5,46.5 A 12.5,12.5 0 0 0 29.5,60.5"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.5" />
+    <path
+        android:pathData="M 74.5,47.5 A 11.5,11.5 0 0 1 74.5,60.5"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.5" />
+
+    <!-- Beat Hammer inclinado -36° desde (45, 47) -->
+    <group
+        android:translateX="45"
+        android:translateY="47"
+        android:rotation="-36">
+        <path
+            android:fillColor="#000000"
+            android:pathData="M 11.3,-3.2 L 28.7,-3.2 A 2.8,2.8 0 0 1 31.5,-0.4 L 31.5,0.4 A 2.8,2.8 0 0 1 28.7,3.2 L 11.3,3.2 A 2.8,2.8 0 0 1 8.5,0.4 L 8.5,-0.4 A 2.8,2.8 0 0 1 11.3,-3.2 Z" />
+        <path
+            android:fillColor="#000000"
+            android:pathData="M -9.2,-8.6 L 6.8,-8.6 L 9.2,-5.8 L 8.4,3.5 L 10.2,7.5 L 8.5,11.5 L -9.5,11.5 L -11.2,7.5 L -9.6,3.5 L -11.2,-5.8 Z" />
+    </group>
+</vector>

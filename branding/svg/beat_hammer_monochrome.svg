@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Archivo: branding/svg/beat_hammer_monochrome.svg
+  Propósito: Silueta monocroma (108x108) para Adaptive Icons temáticos (Android 13+).
+  Mantiene las mismas proporciones y zona segura que beat_hammer_foreground.svg.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <path d="M 52 57.5 L 66.5 69 L 59.2 69 L 59.2 80 L 44.8 80 L 44.8 69 L 37.5 69 Z" fill="#000000"/>
+  <path d="M 29.5 46.5 A 12.5 12.5 0 0 0 29.5 60.5" fill="none" stroke="#000000" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M 74.5 47.5 A 11.5 11.5 0 0 1 74.5 60.5" fill="none" stroke="#000000" stroke-width="2.5" stroke-linecap="round"/>
+  <g transform="translate(45, 47) rotate(-36)">
+    <rect x="8.5" y="-3.2" width="23" height="6.4" rx="2.8" fill="#000000"/>
+    <path d="M -9.2 -8.6 L 6.8 -8.6 L 9.2 -5.8 L 8.4 3.5 L 10.2 7.5 L 8.5 11.5 L -9.5 11.5 L -11.2 7.5 L -9.6 3.5 L -11.2 -5.8 Z" fill="#000000"/>
+  </g>
+</svg>

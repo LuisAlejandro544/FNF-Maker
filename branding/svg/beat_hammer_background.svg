@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Archivo: branding/svg/beat_hammer_background.svg
+  Propósito: Capa de fondo (108x108) para Adaptive Icon de Android.
+  Se extiende al 100% del lienzo con un degradado vibrante púrpura-índigo,
+  anillos rítmicos concéntricos y un resplandor central magenta-naranja.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4C1D95"/>
+      <stop offset="48%" stop-color="#1E0948"/>
+      <stop offset="100%" stop-color="#0B0420"/>
+    </linearGradient>
+    <radialGradient id="centerGlow" cx="50%" cy="56%" r="48%">
+      <stop offset="0%" stop-color="#FF2E93" stop-opacity="0.62"/>
+      <stop offset="45%" stop-color="#FF6B00" stop-opacity="0.26"/>
+      <stop offset="100%" stop-color="#1E0948" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="topRightCyanGlow" cx="82%" cy="22%" r="44%">
+      <stop offset="0%" stop-color="#00F5D4" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#00F5D4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="108" height="108" fill="url(#bgGrad)"/>
+  <rect x="0" y="0" width="108" height="108" fill="url(#centerGlow)"/>
+  <rect x="0" y="0" width="108" height="108" fill="url(#topRightCyanGlow)"/>
+
+  <!-- Anillos rítmicos sutiles centrados en la zona de impacto -->
+  <circle cx="54" cy="54" r="46" fill="none" stroke="#A855F7" stroke-opacity="0.22" stroke-width="1.2"/>
+  <circle cx="54" cy="54" r="37" fill="none" stroke="#00F5D4" stroke-opacity="0.16" stroke-width="1.0" stroke-dasharray="4 3"/>
+  <circle cx="54" cy="54" r="26" fill="none" stroke="#FFE600" stroke-opacity="0.18" stroke-width="0.9"/>
+</svg>

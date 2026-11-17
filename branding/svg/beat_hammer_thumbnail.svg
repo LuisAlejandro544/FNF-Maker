@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Archivo: branding/svg/beat_hammer_thumbnail.svg
+  Propósito: Miniatura 16:9 HD (1280x720) llamativa con el emblema "Beat Hammer",
+  carriles rítmicos luminosos, ecualizador y tipografía de impacto para portadas,
+  videos, releases o capturas promocionales.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <defs>
+    <linearGradient id="thumbBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B0764"/>
+      <stop offset="48%" stop-color="#1A083E"/>
+      <stop offset="100%" stop-color="#070316"/>
+    </linearGradient>
+    <radialGradient id="thumbGlowLeft" cx="27%" cy="52%" r="42%">
+      <stop offset="0%" stop-color="#FF1E8A" stop-opacity="0.58"/>
+      <stop offset="48%" stop-color="#FF6B00" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#1A083E" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="thumbGlowRight" cx="80%" cy="32%" r="44%">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.34"/>
+      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accentBarGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00F5D4"/>
+      <stop offset="50%" stop-color="#FFE600"/>
+      <stop offset="100%" stop-color="#FF1E8A"/>
+    </linearGradient>
+    <linearGradient id="studioBadgeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF1E8A"/>
+      <stop offset="100%" stop-color="#FF6B00"/>
+    </linearGradient>
+
+    <linearGradient id="headMetalT" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#E0F2FE"/>
+      <stop offset="100%" stop-color="#7DD3FC"/>
+    </linearGradient>
+    <linearGradient id="headSideT" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94A3B8"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="strikeFaceT" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFE600"/>
+      <stop offset="50%" stop-color="#FF6B00"/>
+      <stop offset="100%" stop-color="#FF1E8A"/>
+    </linearGradient>
+    <linearGradient id="handleCyanT" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#5EEAD4"/>
+      <stop offset="50%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="gripMagentaT" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FF5CB8"/>
+      <stop offset="55%" stop-color="#FF1E8A"/>
+      <stop offset="100%" stop-color="#9D174D"/>
+    </linearGradient>
+    <linearGradient id="beatArrowGradT" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00FF9D"/>
+      <stop offset="55%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <radialGradient id="impactFlashT" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="40%" stop-color="#FFE600"/>
+      <stop offset="78%" stop-color="#FF6B00" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#FF1E8A" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Fondo principal -->
+  <rect width="1280" height="720" fill="url(#thumbBg)"/>
+  <rect width="1280" height="720" fill="url(#thumbGlowLeft)"/>
+  <rect width="1280" height="720" fill="url(#thumbGlowRight)"/>
+
+  <!-- 4 carriles diagonales de ritmo de fondo -->
+  <g opacity="0.22" transform="skewX(-18)">
+    <rect x="740" y="-40" width="44" height="820" fill="#FF1E8A"/>
+    <rect x="815" y="-40" width="44" height="820" fill="#00E5FF"/>
+    <rect x="890" y="-40" width="44" height="820" fill="#00FF9D"/>
+    <rect x="965" y="-40" width="44" height="820" fill="#FFE600"/>
+  </g>
+
+  <!-- Rejilla sutil inferior tipo DAW -->
+  <g stroke="#A855F7" stroke-opacity="0.16" stroke-width="2">
+    <line x1="0" y1="620" x2="1280" y2="620"/>
+    <line x1="0" y1="670" x2="1280" y2="670"/>
+  </g>
+
+  <!-- Medallón izquierdo del Beat Hammer -->
+  <g transform="translate(335, 360)">
+    <circle cx="0" cy="0" r="245" fill="#13052E" fill-opacity="0.86" stroke="url(#accentBarGrad)" stroke-width="8"/>
+    <circle cx="0" cy="0" r="218" fill="none" stroke="#A855F7" stroke-opacity="0.32" stroke-width="3" stroke-dasharray="18 14"/>
+    <circle cx="0" cy="0" r="185" fill="none" stroke="#00F5D4" stroke-opacity="0.24" stroke-width="2.5"/>
+  </g>
+
+  <!-- Arte Beat Hammer escalado al centro del medallón izquierdo -->
+  <g transform="translate(335, 360) scale(5.45) translate(-54, -54)">
+    <ellipse cx="52" cy="66" rx="19" ry="5.0" fill="none" stroke="#FFE600" stroke-width="2.1" stroke-opacity="0.9"/>
+    <ellipse cx="52" cy="66" rx="25" ry="7.2" fill="none" stroke="#FF1E8A" stroke-width="1.5" stroke-opacity="0.65"/>
+    <g stroke="#09031A" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M 52 57.5 L 66.5 69 L 59.2 69 L 59.2 80 L 44.8 80 L 44.8 69 L 37.5 69 Z"
+            fill="url(#beatArrowGradT)"/>
+    </g>
+    <path d="M 52 60.4 L 61.8 67.8 L 56.8 67.8 L 56.8 77.5 L 47.2 77.5 L 47.2 67.8 L 42.2 67.8 Z"
+          fill="none" stroke="#E0FFFF" stroke-opacity="0.6" stroke-width="1.0" stroke-linejoin="round"/>
+    <path d="M 29.5 46.5 A 12.5 12.5 0 0 0 29.5 60.5" fill="none" stroke="#00F5D4" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M 33.5 49 A 8.5 8.5 0 0 0 33.5 58" fill="none" stroke="#FFE600" stroke-width="2.3" stroke-linecap="round"/>
+    <path d="M 74.5 47.5 A 11.5 11.5 0 0 1 74.5 60.5" fill="none" stroke="#FF1E8A" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M 70.5 50 A 8 8 0 0 1 70.5 58" fill="none" stroke="#FFE600" stroke-width="2.3" stroke-linecap="round"/>
+    <circle cx="52" cy="57.8" r="7.4" fill="url(#impactFlashT)"/>
+    <g transform="translate(45, 47) rotate(-36)">
+      <rect x="11.5" y="-3.0" width="11.5" height="6.0" rx="2.0" fill="url(#handleCyanT)" stroke="#09031A" stroke-width="2.1"/>
+      <rect x="20.5" y="-3.9" width="11.0" height="7.8" rx="3.2" fill="url(#gripMagentaT)" stroke="#09031A" stroke-width="2.1"/>
+      <line x1="24.2" y1="-2.0" x2="24.2" y2="2.0" stroke="#FFE600" stroke-width="1.3" stroke-linecap="round"/>
+      <line x1="27.5" y1="-2.0" x2="27.5" y2="2.0" stroke="#FFE600" stroke-width="1.3" stroke-linecap="round"/>
+      <rect x="8.2" y="-4.3" width="4.2" height="8.6" rx="1.4" fill="#FFE600" stroke="#09031A" stroke-width="1.8"/>
+      <path d="M -9.2 -8.6 L 6.8 -8.6 L 9.2 -5.8 L 8.4 3.5 L 10.2 7.5 L 8.5 9.2 L -9.5 9.2 L -11.2 7.5 L -9.6 3.5 L -11.2 -5.8 Z"
+            fill="url(#headMetalT)" stroke="#09031A" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M -9.3 3.2 L 8.1 3.2 L 9.4 7.0 L 8.2 8.2 L -9.1 8.2 L -10.3 7.0 Z" fill="url(#headSideT)" opacity="0.45"/>
+      <path d="M -8.4 -7.0 L 6.0 -7.0 L 7.4 -5.3 L -9.4 -5.3 Z" fill="#FFFFFF" opacity="0.92"/>
+      <rect x="-10.8" y="7.6" width="19.6" height="4.4" rx="2.0" fill="url(#strikeFaceT)" stroke="#09031A" stroke-width="1.9"/>
+      <rect x="-5.4" y="-3.2" width="2.3" height="5.0" rx="0.8" fill="#FF1E8A"/>
+      <rect x="-1.6" y="-5.0" width="2.3" height="6.8" rx="0.8" fill="#FFE600"/>
+      <rect x="2.2" y="-3.7" width="2.3" height="5.5" rx="0.8" fill="#00E5FF"/>
+    </g>
+    <path d="M 38.2 55 L 39.5 58.0 L 42.5 59.3 L 39.5 60.6 L 38.2 63.6 L 36.9 60.6 L 33.9 59.3 L 36.9 58.0 Z"
+          fill="#FFE600" stroke="#09031A" stroke-width="1.0" stroke-linejoin="round"/>
+    <path d="M 65.5 54.5 L 66.7 57.1 L 69.3 58.3 L 66.7 59.5 L 65.5 62.1 L 64.3 59.5 L 61.7 58.3 L 64.3 57.1 Z"
+          fill="#00F5D4" stroke="#09031A" stroke-width="1.0" stroke-linejoin="round"/>
+    <circle cx="34.5" cy="73.2" r="1.7" fill="#FF1E8A" stroke="#09031A" stroke-width="0.9"/>
+    <circle cx="69.5" cy="72.8" r="1.7" fill="#FFE600" stroke="#09031A" stroke-width="0.9"/>
+  </g>
+
+  <!-- Bloque de título derecho -->
+  <g transform="translate(625, 225)">
+    <!-- Badge STUDIO -->
+    <rect x="0" y="0" width="228" height="52" rx="14" fill="url(#studioBadgeGrad)" stroke="#09031A" stroke-width="4"/>
+    <text x="114" y="35" text-anchor="middle"
+          font-family="JetBrains Mono, DejaVu Sans, sans-serif" font-weight="800" font-size="28" letter-spacing="5"
+          fill="#FFFFFF">STUDIO</text>
+
+    <!-- Título principal BEATFORGE -->
+    <text x="2" y="145"
+          font-family="DejaVu Sans, JetBrains Mono, sans-serif" font-weight="800" font-size="86" letter-spacing="1"
+          fill="#09031A" stroke="#09031A" stroke-width="14" stroke-linejoin="round">BEATFORGE</text>
+    <text x="0" y="143"
+          font-family="DejaVu Sans, JetBrains Mono, sans-serif" font-weight="800" font-size="86" letter-spacing="1"
+          fill="#FFFFFF">BEATFORGE</text>
+
+    <!-- Barra luminosa -->
+    <rect x="0" y="170" width="560" height="8" rx="4" fill="url(#accentBarGrad)"/>
+
+    <!-- Subtítulo -->
+    <text x="2" y="228"
+          font-family="JetBrains Mono, DejaVu Sans, sans-serif" font-weight="700" font-size="27" letter-spacing="3"
+          fill="#7DD3FC">RHYTHM ENGINE &amp; MOD FORGE</text>
+
+    <!-- Barras de ecualizador llamativas -->
+    <g transform="translate(0, 268)">
+      <rect x="0" y="28" width="26" height="44" rx="6" fill="#FF1E8A"/>
+      <rect x="38" y="10" width="26" height="62" rx="6" fill="#FF6B00"/>
+      <rect x="76" y="0" width="26" height="72" rx="6" fill="#FFE600"/>
+      <rect x="114" y="18" width="26" height="54" rx="6" fill="#00FF9D"/>
+      <rect x="152" y="6" width="26" height="66" rx="6" fill="#00E5FF"/>
+      <rect x="190" y="24" width="26" height="48" rx="6" fill="#A855F7"/>
+      <rect x="228" y="14" width="26" height="58" rx="6" fill="#FF1E8A"/>
+      <rect x="266" y="30" width="26" height="42" rx="6" fill="#00F5D4"/>
+      <rect x="304" y="8" width="26" height="64" rx="6" fill="#FFE600"/>
+      <rect x="342" y="22" width="26" height="50" rx="6" fill="#00FF9D"/>
+    </g>
+  </g>
+</svg>

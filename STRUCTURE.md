@@ -70,7 +70,12 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   ├── editor_ops.rs    # Operaciones de editor de chart, audio, escenario, scripts, íconos y skins SVG
 │                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP (salida lossless WebP), Sparrow XML, baking Animate y preview
 │                   ├── persistence_ops.rs # Guardado/carga de proyectos en disco y recarga de pistas PCM
-│                   └── gameplay_ops.rs  # `hot_compile_with_progress` (caché manifest.json + WAV + scripts), Miss, ratings, Splash y BFGP v2
+│                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
+│                       ├── mod.rs         # Coordinador del ciclo `start/pause/stop_gameplay`, constantes BFGP v2 y tests
+│                       ├── hot_compile_ops.rs # `hot_compile_with_progress` (caché `manifest.json`, WebP lossless, WAV mix, scripts)
+│                       ├── script_sync.rs # Interpolación `tweens`, timers, `ScriptHostState` y drenaje de `ScriptCommand`
+│                       ├── simulation.rs  # Simulación por frame (`step_gameplay_internal`), cuenta regresiva BPM y notas/hold
+│                       └── packet_encoder.rs # Serialización JSON (`step_gameplay`) y binaria `BFGP` v2 (`step_gameplay_binary`)
 │
 ├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
@@ -81,8 +86,13 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       ├── build.gradle.kts             # Splits 32b/64b, Compose BOM, Material Icons Extended y cargo-ndk en preBuild
 │       ├── proguard-rules.pro           # Reglas JNI para NativeEngineBridge y SafFileBridge
 │       └── src/main/
-│           ├── AndroidManifest.xml      # `sensorLandscape`, teclado `adjustResize` y permisos Android 8..15
-│           ├── res/values/strings.xml
+│           ├── AndroidManifest.xml      # `sensorLandscape`, teclado `adjustResize`, iconos `@mipmap/ic_launcher` y permisos Android 8..15
+│           ├── res/
+│           │   ├── drawable/
+│           │   │   └── ic_launcher_monochrome.xml # Silueta monocroma VectorDrawable (Android 13+)
+│           │   ├── mipmap-anydpi-v26/   # Adaptive Icons (`ic_launcher.xml`, `ic_launcher_round.xml`)
+│           │   ├── mipmap-mdpi..xxxhdpi/# Iconos PNG `ic_launcher`, `ic_launcher_round`, `_foreground` y `_background`
+│           │   └── values/strings.xml
 │           └── kotlin/com/beatforge/studio/
 │               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + CreateDocument (.json)
 │               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
@@ -90,7 +100,12 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so` (incl. `nativeGetHotCompileProgress`)
 │               ├── SafFileBridge.kt     # Copia segura de URIs SAF a almacenamiento interno
 │               ├── StudioModels.kt      # Data classes Kotlin (`HotCompileProgress`, `CompileReportSnapshot`) y parsers `org.json`
-│               ├── StudioViewModel.kt   # Estado reactivo (`StateFlow`), polling IO de progreso, `LruCache` 1:1 Sparrow y splitter de íconos
+│               ├── StudioUiState.kt     # Estado reactivo `StudioUiState` y contenedor `LoadedEntityBitmap`
+│               ├── StudioViewModel.kt   # Coordinador principal (`StateFlow`) que delega en `viewmodel/*` sobre `Dispatchers.IO`
+│               ├── viewmodel/           # Submódulos especializados del ViewModel
+│               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow y decodificación de bitmaps/SVG
+│               │   ├── StudioEditorDelegate.kt    # Gestión de proyectos, import/export SAF y ediciones de estudio
+│               │   └── StudioGameplayCoordinator.kt # Orquestación Hot Compile, polling de progreso y loop binario `BFGP` v2
 │               └── ui/
 │                   ├── theme/
 │                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
@@ -118,7 +133,12 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders y flipX
 │                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS (incluyendo `camera_system.lua`) con referencia API completa
 │                       ├── HotCompileScreen.kt    # Pantalla de carga con barra y círculo determinados (`0%–100%`) + fase en vivo
-│                       └── GameplayScreen.kt      # Canvas 60 FPS, barra de vida SVG + íconos BPM, `Puntaje|Fallos|Precisión`, ratings SVG, Note Splash y `strumOverrides`
+│                       ├── GameplayScreen.kt      # Coordinador jugable 60 FPS (`withFrameNanos`) sincronizado con Rust AAudio
+│                       └── gameplay/              # Submódulos especializados de `GameplayScreen`
+│                           ├── GameplayRenderPrimitives.kt # Pools sin GC, `GameplayTouchMaskState` y geometría de carriles
+│                           ├── GameplayWorldRenderer.kt    # Dibujo 60 FPS de escena, cámara, notas/sustain, ratings SVG y Note Splash
+│                           ├── GameplayTouchOverlay.kt     # Entrada multi-touch de 4 carriles (Hitbox Clásico / Tocar Flechas)
+│                           └── GameplayHudOverlay.kt       # Barra de vida SVG + íconos BPM, cuenta regresiva y diálogos Pausa/Fin
 │
 ├── sdk/                                 # Recursos y SDK para creadores de mods y pruebas locales
 │   ├── assets/arrows/                   # Flechas SVG originales libres de derechos (left, down, up, right)
@@ -127,6 +147,11 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo de scripting sin ataduras
 │       ├── engine-tools.ts              # Utilidades puras de validación, caché por huella, WebP lossless, watchdog y decoder BFGP v2
 │       └── engine-tools.test.ts         # 29 pruebas unitarias ejecutables con `npx tsx --test`
+│
+├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
+│   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas
+│   ├── svg/                             # Fuentes vectoriales (.svg): icono, redondo, foreground/background/monochrome, banner y miniatura
+│   └── png/                             # PNGs listos para Uptodown/tiendas (512, 1024, banner 1024x500) y miniaturas (1280x720, 640x360)
 │
 └── Documentación raíz
     ├── README.md

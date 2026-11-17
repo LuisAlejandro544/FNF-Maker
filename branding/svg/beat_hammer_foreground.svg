@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Archivo: branding/svg/beat_hammer_foreground.svg
+  Propósito: Capa frontal transparente (108x108) para Adaptive Icon de Android.
+  Todo el arte del "Beat Hammer", flecha rítmica, ondas y chispas vive dentro
+  del círculo seguro central (66dp, radio <= 32 desde 54,54) para adaptarse sin cortes
+  a iconos circulares, squircle, gota o cuadrados redondeados.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <defs>
+    <linearGradient id="headMetal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#E0F2FE"/>
+      <stop offset="100%" stop-color="#7DD3FC"/>
+    </linearGradient>
+    <linearGradient id="headSide" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94A3B8"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="strikeFace" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFE600"/>
+      <stop offset="50%" stop-color="#FF6B00"/>
+      <stop offset="100%" stop-color="#FF1E8A"/>
+    </linearGradient>
+    <linearGradient id="handleCyan" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#5EEAD4"/>
+      <stop offset="50%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="gripMagenta" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FF5CB8"/>
+      <stop offset="55%" stop-color="#FF1E8A"/>
+      <stop offset="100%" stop-color="#9D174D"/>
+    </linearGradient>
+    <linearGradient id="beatArrowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00FF9D"/>
+      <stop offset="55%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <radialGradient id="impactFlash" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="40%" stop-color="#FFE600"/>
+      <stop offset="78%" stop-color="#FF6B00" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#FF1E8A" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 1. Ondas expansivas de impacto en la base -->
+  <ellipse cx="52" cy="66" rx="19" ry="5.0" fill="none" stroke="#FFE600" stroke-width="2.1" stroke-opacity="0.9"/>
+  <ellipse cx="52" cy="66" rx="25" ry="7.2" fill="none" stroke="#FF1E8A" stroke-width="1.5" stroke-opacity="0.65"/>
+
+  <!-- 2. Flecha rítmica ("Beat") recibiendo el impacto -->
+  <g stroke="#09031A" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M 52 57.5 L 66.5 69 L 59.2 69 L 59.2 80 L 44.8 80 L 44.8 69 L 37.5 69 Z"
+          fill="url(#beatArrowGrad)"/>
+  </g>
+  <path d="M 52 60.4 L 61.8 67.8 L 56.8 67.8 L 56.8 77.5 L 47.2 77.5 L 47.2 67.8 L 42.2 67.8 Z"
+        fill="none" stroke="#E0FFFF" stroke-opacity="0.6" stroke-width="1.0" stroke-linejoin="round"/>
+
+  <!-- 3. Ondas sonoras laterales dentro de la zona segura -->
+  <path d="M 29.5 46.5 A 12.5 12.5 0 0 0 29.5 60.5" fill="none" stroke="#00F5D4" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M 33.5 49 A 8.5 8.5 0 0 0 33.5 58" fill="none" stroke="#FFE600" stroke-width="2.3" stroke-linecap="round"/>
+
+  <path d="M 74.5 47.5 A 11.5 11.5 0 0 1 74.5 60.5" fill="none" stroke="#FF1E8A" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M 70.5 50 A 8 8 0 0 1 70.5 58" fill="none" stroke="#FFE600" stroke-width="2.3" stroke-linecap="round"/>
+
+  <!-- 4. Destello del golpe en la punta de la flecha -->
+  <circle cx="52" cy="57.8" r="7.4" fill="url(#impactFlash)"/>
+
+  <!-- 5. EL BEAT HAMMER esculpido -->
+  <g transform="translate(45, 47) rotate(-36)">
+    <!-- Mango eléctrico cian visible -->
+    <rect x="11.5" y="-3.0" width="11.5" height="6.0" rx="2.0"
+          fill="url(#handleCyan)" stroke="#09031A" stroke-width="2.1"/>
+    <!-- Empuñadura trasera magenta -->
+    <rect x="20.5" y="-3.9" width="11.0" height="7.8" rx="3.2"
+          fill="url(#gripMagenta)" stroke="#09031A" stroke-width="2.1"/>
+    <line x1="24.2" y1="-2.0" x2="24.2" y2="2.0" stroke="#FFE600" stroke-width="1.3" stroke-linecap="round"/>
+    <line x1="27.5" y1="-2.0" x2="27.5" y2="2.0" stroke="#FFE600" stroke-width="1.3" stroke-linecap="round"/>
+    <!-- Collarín dorado visible entre cabeza y mango -->
+    <rect x="8.2" y="-4.3" width="4.2" height="8.6" rx="1.4"
+          fill="#FFE600" stroke="#09031A" stroke-width="1.8"/>
+
+    <!-- Cabeza forjada del martillo (corona biselada + cintura ligeramente entallada + cara ancha de golpe) -->
+    <path d="M -9.2 -8.6 L 6.8 -8.6 L 9.2 -5.8 L 8.4 3.5 L 10.2 7.5 L 8.5 9.2 L -9.5 9.2 L -11.2 7.5 L -9.6 3.5 L -11.2 -5.8 Z"
+          fill="url(#headMetal)" stroke="#09031A" stroke-width="2.2" stroke-linejoin="round"/>
+    <!-- Bisel sombreado inferior -->
+    <path d="M -9.3 3.2 L 8.1 3.2 L 9.4 7.0 L 8.2 8.2 L -9.1 8.2 L -10.3 7.0 Z"
+          fill="url(#headSide)" opacity="0.45"/>
+    <!-- Luz superior del acero -->
+    <path d="M -8.4 -7.0 L 6.0 -7.0 L 7.4 -5.3 L -9.4 -5.3 Z"
+          fill="#FFFFFF" opacity="0.92"/>
+
+    <!-- Cara de impacto incandescente -->
+    <rect x="-10.8" y="7.6" width="19.6" height="4.4" rx="2.0"
+          fill="url(#strikeFace)" stroke="#09031A" stroke-width="1.9"/>
+
+    <!-- Barras ecualizadoras de neón grabadas en la cabeza -->
+    <rect x="-5.4" y="-3.2" width="2.3" height="5.0" rx="0.8" fill="#FF1E8A"/>
+    <rect x="-1.6" y="-5.0" width="2.3" height="6.8" rx="0.8" fill="#FFE600"/>
+    <rect x="2.2" y="-3.7" width="2.3" height="5.5" rx="0.8" fill="#00E5FF"/>
+  </g>
+
+  <!-- 6. Chispas separadas limpiamente en espacio abierto -->
+  <path d="M 38.2 55 L 39.5 58.0 L 42.5 59.3 L 39.5 60.6 L 38.2 63.6 L 36.9 60.6 L 33.9 59.3 L 36.9 58.0 Z"
+        fill="#FFE600" stroke="#09031A" stroke-width="1.0" stroke-linejoin="round"/>
+  <path d="M 65.5 54.5 L 66.7 57.1 L 69.3 58.3 L 66.7 59.5 L 65.5 62.1 L 64.3 59.5 L 61.7 58.3 L 64.3 57.1 Z"
+        fill="#00F5D4" stroke="#09031A" stroke-width="1.0" stroke-linejoin="round"/>
+  <circle cx="34.5" cy="73.2" r="1.7" fill="#FF1E8A" stroke="#09031A" stroke-width="0.9"/>
+  <circle cx="69.5" cy="72.8" r="1.7" fill="#FFE600" stroke="#09031A" stroke-width="0.9"/>
+</svg>
