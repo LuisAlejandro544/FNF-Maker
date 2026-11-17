@@ -239,21 +239,21 @@ impl SparrowAtlas {
 
 /// Ordena nombres de frames numéricamente para que `idle2` preceda a `idle10`.
 pub fn natural_frame_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let strip_ext = |s: &str| -> &str {
+    fn strip_ext(s: &str) -> &str {
         for ext in [".png", ".jpg", ".jpeg", ".webp", ".astc"] {
             if s.len() > ext.len() && s[s.len() - ext.len()..].eq_ignore_ascii_case(ext) {
                 return &s[..s.len() - ext.len()];
             }
         }
         s
-    };
-    let sa = strip_ext(a);
-    let sb = strip_ext(b);
-    let split_num = |s: &str| -> (&str, Option<u64>) {
-        let idx = s
-            .rfind(|c: char| !c.is_ascii_digit())
-            .map(|i| i + 1)
-            .unwrap_or(0);
+    }
+
+    fn split_num(s: &str) -> (&str, Option<u64>) {
+        let bytes = s.as_bytes();
+        let mut idx = bytes.len();
+        while idx > 0 && bytes[idx - 1].is_ascii_digit() {
+            idx -= 1;
+        }
         let (pref, digits) = s.split_at(idx);
         let num = if digits.is_empty() {
             None
@@ -261,7 +261,10 @@ pub fn natural_frame_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             digits.parse::<u64>().ok()
         };
         (pref, num)
-    };
+    }
+
+    let sa = strip_ext(a);
+    let sb = strip_ext(b);
     let (pa, na) = split_num(sa);
     let (pb, nb) = split_num(sb);
     match pa.cmp(pb) {
