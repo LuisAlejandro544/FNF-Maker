@@ -20,10 +20,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -46,6 +48,7 @@ data class StudioUiState(
     val characterIconsDialogOpen: Boolean = false,
     val audioPreviewPlaying: Boolean = false,
     val selectedTier: DeviceTier = DeviceTier.Balanced,
+    val hotCompileProgress: HotCompileProgress = HotCompileProgress(),
     val isBusy: Boolean = false,
     val statusBanner: String? = null,
     val statusIsError: Boolean = false,
@@ -841,6 +844,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     currentScreen = StudioScreen.HotCompile,
                     audioPreviewPlaying = false,
                     isBusy = true,
+                    hotCompileProgress = HotCompileProgress(
+                        active = true,
+                        progress = 0.02f,
+                        phase = "Iniciando compilador en caliente...",
+                        detail = "Verificando caché incremental y sprites WebP"
+                    ),
                     statusBanner = null,
                     // Liberar bitmaps del editor antes de cargar los bitmaps compilados de partida
                     entityBitmaps = emptyMap(),
@@ -851,9 +860,44 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
             synchronized(regionDecoderLock) { regionFrameCache.evictAll() }
             val tier = _uiState.value.selectedTier
-            val compileRaw = NativeEngineBridge.nativeHotCompile(tier.code)
+
+            // Sondeo real no bloqueante sobre `Dispatchers.IO` (nunca usa `engineIoDispatcher` ni `SESSION`)
+            val progressPoller = viewModelScope.launch(Dispatchers.IO) {
+                while (isActive) {
+                    val live = StudioJsonParser.parseHotCompileProgress(
+                        NativeEngineBridge.nativeGetHotCompileProgress()
+                    )
+                    if (live.active || live.progress > 0f) {
+                        _uiState.update { st ->
+                            val clampedPct = maxOf(st.hotCompileProgress.progress, live.progress)
+                            st.copy(
+                                hotCompileProgress = live.copy(progress = clampedPct)
+                            )
+                        }
+                    }
+                    delay(65L)
+                }
+            }
+
+            val compileRaw = try {
+                NativeEngineBridge.nativeHotCompile(tier.code)
+            } finally {
+                progressPoller.cancel()
+            }
+
             val compileRes = StudioJsonParser.parseActionResult(compileRaw)
             val snap = compileRes.snapshot ?: _uiState.value.snapshot
+
+            _uiState.update {
+                it.copy(
+                    hotCompileProgress = HotCompileProgress(
+                        active = true,
+                        progress = 0.92f,
+                        phase = "Cargando sprites WebP en memoria",
+                        detail = "Decodificando hojas compiladas e íconos HUD"
+                    )
+                )
+            }
 
             val compiledMap = loadCompiledBitmapsInternal(
                 snap.lastCompileReport?.compiledTexturePaths ?: emptyMap(),
@@ -864,6 +908,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val receptors = loadReceptorBitmapsInternal()
             val hudAssets = loadHudSvgAssetsInternal()
             val (normalIcons, losingIcons) = loadEntityIconsInternal(snap.stageEntities)
+
+            _uiState.update {
+                it.copy(
+                    hotCompileProgress = HotCompileProgress(
+                        active = true,
+                        progress = 0.97f,
+                        phase = "Arrancando máquinas virtuales y audio",
+                        detail = "Cargando Lua bytecode, QuickJS y streaming WAV"
+                    )
+                )
+            }
 
             val gpRaw = NativeEngineBridge.nativeStartGameplay()
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
@@ -876,6 +931,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update {
                 it.copy(
                     isBusy = false,
+                    hotCompileProgress = HotCompileProgress(
+                        active = false,
+                        progress = 1.0f,
+                        phase = "Compilación completada",
+                        detail = "Iniciando gameplay..."
+                    ),
                     snapshot = snap,
                     compiledBitmaps = compiledMap,
                     compiledBitmapsByIndex = compiledByIndex,

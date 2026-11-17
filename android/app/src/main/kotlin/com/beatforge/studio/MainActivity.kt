@@ -328,7 +328,10 @@ private fun BeatForgeRootContent(
                         }
                     )
 
-                    StudioScreen.HotCompile -> HotCompileScreen(tier = state.selectedTier)
+                    StudioScreen.HotCompile -> HotCompileScreen(
+                        tier = state.selectedTier,
+                        progress = state.hotCompileProgress
+                    )
 
                     StudioScreen.Gameplay -> {
                         val playerEntId = state.snapshot.stageEntities.firstOrNull { it.role == "player" }?.id

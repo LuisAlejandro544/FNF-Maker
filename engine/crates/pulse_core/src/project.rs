@@ -240,6 +240,12 @@ pub struct ScriptAsset {
     pub language: ScriptLanguage,
     pub source_code: String,
     pub enabled: bool,
+    /// JavaScript ya transpilado/validado durante `hot_compile` para omitir `oxc` al iniciar gameplay.
+    #[serde(skip)]
+    pub precompiled_js: Option<String>,
+    /// Bytecode Lua 5.4 compilado con `dump(false)` en `hot_compile` para arranque instantáneo.
+    #[serde(skip)]
+    pub precompiled_bytecode: Option<Vec<u8>>,
 }
 
 /// Ranura de pista de audio (máximo 3: Principal/Instrumental, Voces Jugador, Voces Rival).
@@ -370,6 +376,8 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
                     language: ScriptLanguage::Lua,
                     source_code: camera_lua,
                     enabled: true,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
                 },
                 ScriptAsset {
                     id: "script_beat_zoom".to_string(),
@@ -377,6 +385,8 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
                     language: ScriptLanguage::Lua,
                     source_code: default_lua.to_string(),
                     enabled: true,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
                 },
                 ScriptAsset {
                     id: "script_note_fx".to_string(),
@@ -384,6 +394,8 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
                     language: ScriptLanguage::TypeScript,
                     source_code: default_ts.to_string(),
                     enabled: true,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
                 },
             ],
             downscroll: false,
@@ -409,6 +421,8 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
                     language: ScriptLanguage::Lua,
                     source_code,
                     enabled: self.stage.camera.enabled,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
                 },
             );
         }

@@ -6,7 +6,13 @@
 use crate::bridge::{ScriptCommand, ScriptHostState, parse_color_argb};
 use rquickjs::{Context, Function, Runtime};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 use thiserror::Error;
+
+const JS_INIT_BUDGET_MS: u64 = 250;
+const JS_FRAME_BUDGET_MS: u64 = 25;
+const JS_MAX_WATCHDOG_TRIPS: u32 = 3;
 
 #[derive(Debug, Error)]
 pub enum JsVmError {
@@ -20,11 +26,47 @@ pub struct JsScriptVm {
     _runtime: Runtime,
     context: Context,
     host: Arc<ScriptHostState>,
+    script_name: String,
+    watchdog_origin: Instant,
+    watchdog_deadline_us: Arc<AtomicU64>,
+    watchdog_tripped: Arc<AtomicBool>,
+    watchdog_trips: u32,
+    disabled_by_watchdog: bool,
 }
 
 impl JsScriptVm {
     pub fn new(js_source: &str, host: Arc<ScriptHostState>) -> Result<Self, JsVmError> {
+        Self::new_named("script.js", js_source, host)
+    }
+
+    pub fn new_named(
+        script_name: &str,
+        js_source: &str,
+        host: Arc<ScriptHostState>,
+    ) -> Result<Self, JsVmError> {
         let runtime = Runtime::new().map_err(|e| JsVmError::Runtime(e.to_string()))?;
+        let watchdog_origin = Instant::now();
+        let watchdog_deadline_us = Arc::new(AtomicU64::new(0));
+        let watchdog_tripped = Arc::new(AtomicBool::new(false));
+
+        {
+            let origin = watchdog_origin;
+            let deadline_ref = Arc::clone(&watchdog_deadline_us);
+            let tripped_ref = Arc::clone(&watchdog_tripped);
+            runtime.set_interrupt_handler(Some(Box::new(move || -> bool {
+                let limit_us = deadline_ref.load(Ordering::Relaxed);
+                if limit_us == 0 {
+                    return false;
+                }
+                let elapsed = origin.elapsed().as_micros() as u64;
+                if elapsed > limit_us {
+                    tripped_ref.store(true, Ordering::Relaxed);
+                    return true;
+                }
+                false
+            })));
+        }
+
         let context = Context::full(&runtime).map_err(|e| JsVmError::Runtime(e.to_string()))?;
 
         context.with(|ctx| -> Result<(), JsVmError> {
@@ -459,8 +501,23 @@ impl JsScriptVm {
                 });
             }
 
-            ctx.eval::<(), _>(js_source)
-                .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            Self::arm_deadline(
+                &watchdog_origin,
+                &watchdog_deadline_us,
+                &watchdog_tripped,
+                JS_INIT_BUDGET_MS,
+            );
+            let eval_res = ctx.eval::<(), _>(js_source);
+            watchdog_deadline_us.store(0, Ordering::Relaxed);
+            if let Err(e) = eval_res {
+                if watchdog_tripped.load(Ordering::Relaxed) {
+                    return Err(JsVmError::Eval(format!(
+                        "Watchdog QuickJS: inicialización excedió {}ms y fue abortada",
+                        JS_INIT_BUDGET_MS
+                    )));
+                }
+                return Err(JsVmError::Eval(e.to_string()));
+            }
 
             Ok(())
         })?;
@@ -469,67 +526,199 @@ impl JsScriptVm {
             _runtime: runtime,
             context,
             host,
+            script_name: script_name.to_string(),
+            watchdog_origin,
+            watchdog_deadline_us,
+            watchdog_tripped,
+            watchdog_trips: 0,
+            disabled_by_watchdog: false,
         })
     }
 
+    fn arm_deadline(
+        origin: &Instant,
+        deadline: &AtomicU64,
+        tripped: &AtomicBool,
+        budget_ms: u64,
+    ) {
+        tripped.store(false, Ordering::Relaxed);
+        let now_us = origin.elapsed().as_micros() as u64;
+        deadline.store(now_us.saturating_add(budget_ms * 1000), Ordering::Relaxed);
+    }
+
+    fn handle_js_error(&mut self, fn_name: &str, err_msg: String) {
+        if self.watchdog_tripped.swap(false, Ordering::Relaxed) {
+            self.watchdog_trips += 1;
+            if self.watchdog_trips >= JS_MAX_WATCHDOG_TRIPS {
+                self.disabled_by_watchdog = true;
+                self.host.push_runtime_error(format!(
+                    "Watchdog JS/TS [{}]: script en cuarentena tras {} excesos en {}",
+                    self.script_name, self.watchdog_trips, fn_name
+                ));
+            } else {
+                self.host.push_runtime_error(format!(
+                    "Watchdog JS/TS [{}] ({}): interrumpido por superar {}ms",
+                    self.script_name, fn_name, JS_FRAME_BUDGET_MS
+                ));
+            }
+        } else {
+            self.host
+                .push_runtime_error(format!("JS [{}] {}: {}", self.script_name, fn_name, err_msg));
+        }
+    }
+
+    pub fn is_quarantined(&self) -> bool {
+        self.disabled_by_watchdog
+    }
+
     pub fn call_void(&mut self, fn_name: &str) {
+        if self.disabled_by_watchdog {
+            return;
+        }
+        let mut call_err: Option<String> = None;
         self.context.with(|ctx| {
             if let Ok(func) = ctx.globals().get::<_, Function>(fn_name) {
-                if let Err(e) = func.call::<_, ()>(()) {
-                    self.host.push_runtime_error(format!("JS {}: {}", fn_name, e));
+                Self::arm_deadline(
+                    &self.watchdog_origin,
+                    &self.watchdog_deadline_us,
+                    &self.watchdog_tripped,
+                    JS_FRAME_BUDGET_MS,
+                );
+                let res = func.call::<_, ()>(());
+                self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+                if let Err(e) = res {
+                    call_err = Some(e.to_string());
                 }
             }
         });
+        if let Some(err) = call_err {
+            self.handle_js_error(fn_name, err);
+        }
     }
 
     pub fn call_f32(&mut self, fn_name: &str, arg: f32) {
+        if self.disabled_by_watchdog {
+            return;
+        }
+        let mut call_err: Option<String> = None;
         self.context.with(|ctx| {
             if let Ok(func) = ctx.globals().get::<_, Function>(fn_name) {
-                if let Err(e) = func.call::<_, ()>((arg,)) {
-                    self.host.push_runtime_error(format!("JS {}: {}", fn_name, e));
+                Self::arm_deadline(
+                    &self.watchdog_origin,
+                    &self.watchdog_deadline_us,
+                    &self.watchdog_tripped,
+                    JS_FRAME_BUDGET_MS,
+                );
+                let res = func.call::<_, ()>((arg,));
+                self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+                if let Err(e) = res {
+                    call_err = Some(e.to_string());
                 }
             }
         });
+        if let Some(err) = call_err {
+            self.handle_js_error(fn_name, err);
+        }
     }
 
     pub fn call_i32(&mut self, fn_name: &str, arg: i32) {
+        if self.disabled_by_watchdog {
+            return;
+        }
+        let mut call_err: Option<String> = None;
         self.context.with(|ctx| {
             if let Ok(func) = ctx.globals().get::<_, Function>(fn_name) {
-                if let Err(e) = func.call::<_, ()>((arg,)) {
-                    self.host.push_runtime_error(format!("JS {}: {}", fn_name, e));
+                Self::arm_deadline(
+                    &self.watchdog_origin,
+                    &self.watchdog_deadline_us,
+                    &self.watchdog_tripped,
+                    JS_FRAME_BUDGET_MS,
+                );
+                let res = func.call::<_, ()>((arg,));
+                self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+                if let Err(e) = res {
+                    call_err = Some(e.to_string());
                 }
             }
         });
+        if let Some(err) = call_err {
+            self.handle_js_error(fn_name, err);
+        }
     }
 
     pub fn call_str(&mut self, fn_name: &str, arg: &str) {
+        if self.disabled_by_watchdog {
+            return;
+        }
+        let mut call_err: Option<String> = None;
         self.context.with(|ctx| {
             if let Ok(func) = ctx.globals().get::<_, Function>(fn_name) {
-                if let Err(e) = func.call::<_, ()>((arg,)) {
-                    self.host.push_runtime_error(format!("JS {}: {}", fn_name, e));
+                Self::arm_deadline(
+                    &self.watchdog_origin,
+                    &self.watchdog_deadline_us,
+                    &self.watchdog_tripped,
+                    JS_FRAME_BUDGET_MS,
+                );
+                let res = func.call::<_, ()>((arg,));
+                self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+                if let Err(e) = res {
+                    call_err = Some(e.to_string());
                 }
             }
         });
+        if let Some(err) = call_err {
+            self.handle_js_error(fn_name, err);
+        }
     }
 
     pub fn call_note_event(&mut self, fn_name: &str, lane: i32, is_player: bool) {
+        if self.disabled_by_watchdog {
+            return;
+        }
+        let mut call_err: Option<String> = None;
         self.context.with(|ctx| {
             if let Ok(func) = ctx.globals().get::<_, Function>(fn_name) {
-                if let Err(e) = func.call::<_, ()>((lane, is_player)) {
-                    self.host.push_runtime_error(format!("JS {}: {}", fn_name, e));
+                Self::arm_deadline(
+                    &self.watchdog_origin,
+                    &self.watchdog_deadline_us,
+                    &self.watchdog_tripped,
+                    JS_FRAME_BUDGET_MS,
+                );
+                let res = func.call::<_, ()>((lane, is_player));
+                self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+                if let Err(e) = res {
+                    call_err = Some(e.to_string());
                 }
             }
         });
+        if let Some(err) = call_err {
+            self.handle_js_error(fn_name, err);
+        }
     }
 
     pub fn call_chart_event(&mut self, name: &str, val1: &str, val2: &str) {
+        if self.disabled_by_watchdog {
+            return;
+        }
+        let mut call_err: Option<String> = None;
         self.context.with(|ctx| {
             if let Ok(func) = ctx.globals().get::<_, Function>("onEvent") {
-                if let Err(e) = func.call::<_, ()>((name, val1, val2)) {
-                    self.host.push_runtime_error(format!("JS onEvent: {}", e));
+                Self::arm_deadline(
+                    &self.watchdog_origin,
+                    &self.watchdog_deadline_us,
+                    &self.watchdog_tripped,
+                    JS_FRAME_BUDGET_MS,
+                );
+                let res = func.call::<_, ()>((name, val1, val2));
+                self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+                if let Err(e) = res {
+                    call_err = Some(e.to_string());
                 }
             }
         });
+        if let Some(err) = call_err {
+            self.handle_js_error("onEvent", err);
+        }
     }
 }
 
@@ -589,7 +778,7 @@ impl JsWorkerHandle {
                 let mut errors = Vec::new();
 
                 for (name, js_source) in scripts {
-                    match JsScriptVm::new(&js_source, Arc::clone(&host)) {
+                    match JsScriptVm::new_named(&name, &js_source, Arc::clone(&host)) {
                         Ok(vm) => vms.push(vm),
                         Err(e) => errors.push(format!("[{}] {}", name, e)),
                     }
@@ -768,5 +957,29 @@ impl Drop for JsWorkerHandle {
         if let Some(join) = self.thread.take() {
             let _ = join.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quickjs_watchdog_interrupts_infinite_loop_and_quarantines() {
+        let js = r#"
+            function onUpdate(dt) {
+                while (true) {}
+            }
+        "#;
+        let host = Arc::new(ScriptHostState::default());
+        let mut vm = JsScriptVm::new_named("loop.js", js, Arc::clone(&host))
+            .expect("carga inicial válida");
+
+        for _ in 0..3 {
+            vm.call_f32("onUpdate", 0.016);
+        }
+        assert!(vm.is_quarantined());
+        let errs = host.drain_runtime_errors();
+        assert!(errs.iter().any(|e| e.contains("cuarentena")));
     }
 }

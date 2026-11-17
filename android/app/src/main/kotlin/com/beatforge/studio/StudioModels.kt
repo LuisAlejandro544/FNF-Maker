@@ -146,18 +146,31 @@ data class ScriptSnapshot(
     val enabled: Boolean = true
 )
 
+data class HotCompileProgress(
+    val active: Boolean = false,
+    val progress: Float = 0f,
+    val phase: String = "Preparando compilador...",
+    val detail: String = ""
+)
+
 data class CompileReportSnapshot(
     val elapsedMs: Long = 0L,
     val keptEntities: Int = 0,
     val discardedInvisibleEntities: List<String> = emptyList(),
     val downscaledTextures: Int = 0,
     val skippedOptimalTextures: Int = 0,
+    val cachedTexturesReused: Int = 0,
+    val webpEncodedTextures: Int = 0,
     val discardedHeavyLoops: Int = 0,
     val neutralizedUnboundedLoops: Int = 0,
     val estimatedVramSavedKb: Int = 0,
     val mergedAudioTracks: Int = 0,
     val compiledAudioPath: String? = null,
     val estimatedAudioRamSavedKb: Int = 0,
+    val cachedAudioReused: Boolean = false,
+    val precompiledScripts: Int = 0,
+    val cachedScriptsReused: Int = 0,
+    val scriptPrecompileErrors: List<String> = emptyList(),
     val compiledTexturePaths: Map<String, String> = emptyMap()
 )
 
@@ -349,6 +362,20 @@ object StudioJsonParser {
         }
     }
 
+    fun parseHotCompileProgress(rawJson: String): HotCompileProgress {
+        return try {
+            val obj = JSONObject(rawJson)
+            HotCompileProgress(
+                active = obj.optBoolean("active", false),
+                progress = obj.optDouble("progress", 0.0).toFloat().coerceIn(0f, 1f),
+                phase = obj.optString("phase", "Preparando compilador..."),
+                detail = obj.optString("detail", "")
+            )
+        } catch (_: Exception) {
+            HotCompileProgress()
+        }
+    }
+
     fun parseProjectSnapshot(rawJson: String): ProjectSnapshot {
         return try {
             parseProjectObject(JSONObject(rawJson))
@@ -534,12 +561,18 @@ object StudioJsonParser {
                 discardedInvisibleEntities = stringList(r.optJSONArray("discardedInvisibleEntities")),
                 downscaledTextures = r.optInt("downscaledTextures", 0),
                 skippedOptimalTextures = r.optInt("skippedOptimalTextures", 0),
+                cachedTexturesReused = r.optInt("cachedTexturesReused", 0),
+                webpEncodedTextures = r.optInt("webpEncodedTextures", 0),
                 discardedHeavyLoops = r.optInt("discardedHeavyLoops", 0),
                 neutralizedUnboundedLoops = r.optInt("neutralizedUnboundedLoops", 0),
                 estimatedVramSavedKb = r.optInt("estimatedVramSavedKb", 0),
                 mergedAudioTracks = r.optInt("mergedAudioTracks", 0),
                 compiledAudioPath = optNullableString(r, "compiledAudioPath"),
                 estimatedAudioRamSavedKb = r.optInt("estimatedAudioRamSavedKb", 0),
+                cachedAudioReused = r.optBoolean("cachedAudioReused", false),
+                precompiledScripts = r.optInt("precompiledScripts", 0),
+                cachedScriptsReused = r.optInt("cachedScriptsReused", 0),
+                scriptPrecompileErrors = stringList(r.optJSONArray("scriptPrecompileErrors")),
                 compiledTexturePaths = stringMap(r.optJSONObject("compiledTexturePaths"))
             )
         }

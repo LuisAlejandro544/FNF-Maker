@@ -4,9 +4,15 @@
 //! gráficos/textos dinámicos, tweens, timers, pistas de audio y reporte de errores.
 
 use crate::bridge::{ScriptCommand, ScriptHostState, parse_color_argb};
-use mlua::{Function, Lua};
+use mlua::{Function, HookTriggers, Lua, VmState};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 use thiserror::Error;
+
+const LUA_INIT_BUDGET_MS: u64 = 250;
+const LUA_FRAME_BUDGET_MS: u64 = 25;
+const LUA_MAX_WATCHDOG_TRIPS: u32 = 3;
 
 #[derive(Debug, Error)]
 pub enum LuaVmError {
@@ -17,11 +23,58 @@ pub enum LuaVmError {
 pub struct LuaScriptVm {
     lua: Lua,
     host: Arc<ScriptHostState>,
+    script_name: String,
+    watchdog_origin: Instant,
+    watchdog_deadline_us: Arc<AtomicU64>,
+    watchdog_tripped: Arc<AtomicBool>,
+    watchdog_trips: u32,
+    disabled_by_watchdog: bool,
 }
 
 impl LuaScriptVm {
-    pub fn new(source: &str, host: Arc<ScriptHostState>) -> Result<Self, LuaVmError> {
+    /// Precompila código fuente Lua 5.4 a bytecode binario portable (manteniendo líneas para errores).
+    pub fn precompile_bytecode(source: &str) -> Result<Vec<u8>, LuaVmError> {
         let lua = Lua::new();
+        let func = lua.load(source).into_function()?;
+        Ok(func.dump(false))
+    }
+
+    pub fn new(source: &str, host: Arc<ScriptHostState>) -> Result<Self, LuaVmError> {
+        Self::new_with_bytecode("script.lua", source, None, host)
+    }
+
+    pub fn new_with_bytecode(
+        script_name: &str,
+        source: &str,
+        precompiled: Option<&[u8]>,
+        host: Arc<ScriptHostState>,
+    ) -> Result<Self, LuaVmError> {
+        let lua = Lua::new();
+        let watchdog_origin = Instant::now();
+        let watchdog_deadline_us = Arc::new(AtomicU64::new(0));
+        let watchdog_tripped = Arc::new(AtomicBool::new(false));
+
+        {
+            let origin = watchdog_origin;
+            let deadline_ref = Arc::clone(&watchdog_deadline_us);
+            let tripped_ref = Arc::clone(&watchdog_tripped);
+            let triggers = HookTriggers::new().every_nth_instruction(4096);
+            lua.set_hook(triggers, move |_lua, _debug| -> mlua::Result<VmState> {
+                let limit_us = deadline_ref.load(Ordering::Relaxed);
+                if limit_us > 0 {
+                    let now_us = origin.elapsed().as_micros() as u64;
+                    if now_us > limit_us {
+                        tripped_ref.store(true, Ordering::Relaxed);
+                        return Err(mlua::Error::RuntimeError(
+                            "Watchdog Lua: tiempo de ejecución excedido (bucle pesado/infinito)"
+                                .to_string(),
+                        ));
+                    }
+                }
+                Ok(VmState::Continue)
+            })?;
+        }
+
         let globals = lua.globals();
 
         {
@@ -620,56 +673,210 @@ impl LuaScriptVm {
             )?;
         }
 
-        lua.load(source).exec()?;
+        Self::arm_deadline(
+            &watchdog_origin,
+            &watchdog_deadline_us,
+            &watchdog_tripped,
+            LUA_INIT_BUDGET_MS,
+        );
+        let load_res = if let Some(bytecode) = precompiled {
+            match lua.load(bytecode).exec() {
+                Ok(()) => Ok(()),
+                Err(_) if !watchdog_tripped.load(Ordering::Relaxed) => lua.load(source).exec(),
+                Err(e) => Err(e),
+            }
+        } else {
+            lua.load(source).exec()
+        };
+        watchdog_deadline_us.store(0, Ordering::Relaxed);
+        load_res?;
 
-        Ok(Self { lua, host })
+        Ok(Self {
+            lua,
+            host,
+            script_name: script_name.to_string(),
+            watchdog_origin,
+            watchdog_deadline_us,
+            watchdog_tripped,
+            watchdog_trips: 0,
+            disabled_by_watchdog: false,
+        })
+    }
+
+    fn arm_deadline(
+        origin: &Instant,
+        deadline: &AtomicU64,
+        tripped: &AtomicBool,
+        budget_ms: u64,
+    ) {
+        tripped.store(false, Ordering::Relaxed);
+        let now_us = origin.elapsed().as_micros() as u64;
+        deadline.store(now_us.saturating_add(budget_ms * 1000), Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn begin_frame_watchdog(&self) {
+        Self::arm_deadline(
+            &self.watchdog_origin,
+            &self.watchdog_deadline_us,
+            &self.watchdog_tripped,
+            LUA_FRAME_BUDGET_MS,
+        );
+    }
+
+    #[inline]
+    fn end_frame_watchdog(&self) {
+        self.watchdog_deadline_us.store(0, Ordering::Relaxed);
+    }
+
+    fn handle_call_error(&mut self, fn_name: &str, err: mlua::Error) {
+        if self.watchdog_tripped.swap(false, Ordering::Relaxed) {
+            self.watchdog_trips += 1;
+            if self.watchdog_trips >= LUA_MAX_WATCHDOG_TRIPS {
+                self.disabled_by_watchdog = true;
+                self.host.push_runtime_error(format!(
+                    "Watchdog Lua [{}]: script puesto en cuarentena tras {} excesos en {}",
+                    self.script_name, self.watchdog_trips, fn_name
+                ));
+            } else {
+                self.host.push_runtime_error(format!(
+                    "Watchdog Lua [{}] ({}): interrumpido por superar {}ms",
+                    self.script_name, fn_name, LUA_FRAME_BUDGET_MS
+                ));
+            }
+        } else {
+            self.host
+                .push_runtime_error(format!("Lua [{}] {}: {}", self.script_name, fn_name, err));
+        }
+    }
+
+    pub fn is_quarantined(&self) -> bool {
+        self.disabled_by_watchdog
     }
 
     pub fn call_void(&mut self, fn_name: &str) {
+        if self.disabled_by_watchdog {
+            return;
+        }
         if let Ok(func) = self.lua.globals().get::<Function>(fn_name) {
-            if let Err(e) = func.call::<()>(()) {
-                self.host.push_runtime_error(format!("Lua {}: {}", fn_name, e));
+            self.begin_frame_watchdog();
+            let res = func.call::<()>(());
+            self.end_frame_watchdog();
+            if let Err(e) = res {
+                self.handle_call_error(fn_name, e);
             }
         }
     }
 
     pub fn call_f32(&mut self, fn_name: &str, arg: f32) {
+        if self.disabled_by_watchdog {
+            return;
+        }
         if let Ok(func) = self.lua.globals().get::<Function>(fn_name) {
-            if let Err(e) = func.call::<()>(arg) {
-                self.host.push_runtime_error(format!("Lua {}: {}", fn_name, e));
+            self.begin_frame_watchdog();
+            let res = func.call::<()>(arg);
+            self.end_frame_watchdog();
+            if let Err(e) = res {
+                self.handle_call_error(fn_name, e);
             }
         }
     }
 
     pub fn call_i32(&mut self, fn_name: &str, arg: i32) {
+        if self.disabled_by_watchdog {
+            return;
+        }
         if let Ok(func) = self.lua.globals().get::<Function>(fn_name) {
-            if let Err(e) = func.call::<()>(arg) {
-                self.host.push_runtime_error(format!("Lua {}: {}", fn_name, e));
+            self.begin_frame_watchdog();
+            let res = func.call::<()>(arg);
+            self.end_frame_watchdog();
+            if let Err(e) = res {
+                self.handle_call_error(fn_name, e);
             }
         }
     }
 
     pub fn call_str(&mut self, fn_name: &str, arg: &str) {
+        if self.disabled_by_watchdog {
+            return;
+        }
         if let Ok(func) = self.lua.globals().get::<Function>(fn_name) {
-            if let Err(e) = func.call::<()>(arg) {
-                self.host.push_runtime_error(format!("Lua {}: {}", fn_name, e));
+            self.begin_frame_watchdog();
+            let res = func.call::<()>(arg);
+            self.end_frame_watchdog();
+            if let Err(e) = res {
+                self.handle_call_error(fn_name, e);
             }
         }
     }
 
     pub fn call_note_event(&mut self, fn_name: &str, lane: i32, is_player: bool) {
+        if self.disabled_by_watchdog {
+            return;
+        }
         if let Ok(func) = self.lua.globals().get::<Function>(fn_name) {
-            if let Err(e) = func.call::<()>((lane, is_player)) {
-                self.host.push_runtime_error(format!("Lua {}: {}", fn_name, e));
+            self.begin_frame_watchdog();
+            let res = func.call::<()>((lane, is_player));
+            self.end_frame_watchdog();
+            if let Err(e) = res {
+                self.handle_call_error(fn_name, e);
             }
         }
     }
 
     pub fn call_chart_event(&mut self, name: &str, val1: &str, val2: &str) {
+        if self.disabled_by_watchdog {
+            return;
+        }
         if let Ok(func) = self.lua.globals().get::<Function>("onEvent") {
-            if let Err(e) = func.call::<()>((name, val1, val2)) {
-                self.host.push_runtime_error(format!("Lua onEvent: {}", e));
+            self.begin_frame_watchdog();
+            let res = func.call::<()>((name, val1, val2));
+            self.end_frame_watchdog();
+            if let Err(e) = res {
+                self.handle_call_error("onEvent", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lua_bytecode_precompile_loads_and_runs_cleanly() {
+        let src = r#"
+            function onBeatHit(beat)
+                setCameraZoom(1.0 + beat * 0.01)
+            end
+        "#;
+        let bytecode = LuaScriptVm::precompile_bytecode(src).expect("precompilación Lua");
+        assert!(!bytecode.is_empty());
+
+        let host = Arc::new(ScriptHostState::default());
+        let mut vm = LuaScriptVm::new_with_bytecode("test.lua", src, Some(&bytecode), Arc::clone(&host))
+            .expect("carga de bytecode");
+        vm.call_i32("onBeatHit", 4);
+        assert!((*host.camera_zoom.lock() - 1.04).abs() < 0.001);
+    }
+
+    #[test]
+    fn lua_watchdog_interrupts_infinite_loop_and_quarantines_after_three_trips() {
+        let src = r#"
+            function onUpdate(dt)
+                while true do
+                end
+            end
+        "#;
+        let host = Arc::new(ScriptHostState::default());
+        let mut vm = LuaScriptVm::new_with_bytecode("hang.lua", src, None, Arc::clone(&host))
+            .expect("carga inicial válida");
+
+        for _ in 0..3 {
+            vm.call_f32("onUpdate", 0.016);
+        }
+        assert!(vm.is_quarantined());
+        let errs = host.drain_runtime_errors();
+        assert!(errs.iter().any(|e| e.contains("cuarentena")));
     }
 }

@@ -173,12 +173,18 @@ pub struct CompileReportJson {
     pub discarded_invisible_entities: Vec<String>,
     pub downscaled_textures: usize,
     pub skipped_optimal_textures: usize,
+    pub cached_textures_reused: usize,
+    pub webp_encoded_textures: usize,
     pub discarded_heavy_loops: usize,
     pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<String>,
     pub estimated_audio_ram_saved_kb: usize,
+    pub cached_audio_reused: bool,
+    pub precompiled_scripts: usize,
+    pub cached_scripts_reused: usize,
+    pub script_precompile_errors: Vec<String>,
     pub compiled_texture_paths: HashMap<String, String>,
 }
 
@@ -544,6 +550,8 @@ impl EngineSession {
             discarded_invisible_entities: r.discarded_invisible_entities.clone(),
             downscaled_textures: r.downscaled_textures,
             skipped_optimal_textures: r.skipped_optimal_textures,
+            cached_textures_reused: r.cached_textures_reused,
+            webp_encoded_textures: r.webp_encoded_textures,
             discarded_heavy_loops: r.discarded_heavy_loops,
             neutralized_unbounded_loops: r.neutralized_unbounded_loops,
             estimated_vram_saved_kb: r.estimated_vram_saved_kb,
@@ -553,6 +561,10 @@ impl EngineSession {
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
             estimated_audio_ram_saved_kb: r.estimated_audio_ram_saved_kb,
+            cached_audio_reused: r.cached_audio_reused,
+            precompiled_scripts: r.precompiled_scripts,
+            cached_scripts_reused: r.cached_scripts_reused,
+            script_precompile_errors: r.script_precompile_errors.clone(),
             compiled_texture_paths: self.compiled_texture_paths.clone(),
         });
 

@@ -242,6 +242,9 @@ object NativeEngineBridge {
     external fun nativeHotCompile(tierCode: Int): String
 
     @JvmStatic
+    external fun nativeGetHotCompileProgress(): String
+
+    @JvmStatic
     external fun nativeStartGameplay(): String
 
     @JvmStatic

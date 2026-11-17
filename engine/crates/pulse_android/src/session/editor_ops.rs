@@ -330,6 +330,8 @@ impl EngineSession {
             language: lang,
             source_code: template.to_string(),
             enabled: true,
+            precompiled_js: None,
+            precompiled_bytecode: None,
         });
         self.save_active_project_now();
         self.ok_response("Script creado")
@@ -357,6 +359,8 @@ impl EngineSession {
                     language: lang,
                     source_code: src,
                     enabled: true,
+                    precompiled_js: None,
+                    precompiled_bytecode: None,
                 });
                 self.save_active_project_now();
                 self.ok_response("Script comunitario importado")

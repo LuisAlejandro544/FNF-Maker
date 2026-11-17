@@ -3,8 +3,9 @@
 //! (TexturePacker, `spritemap1.json`, `Animation.json`) y horneado por software de rigs Adobe Animate.
 
 use super::{EngineSession, SparrowFrameJson, parse_anim_kind};
-use image::ImageFormat;
-use pulse_core::astc_loader::{is_astc_path, load_sprite_image, read_sprite_dimensions};
+use pulse_core::astc_loader::{
+    is_astc_path, load_sprite_image, read_sprite_dimensions, save_lossless_webp,
+};
 use pulse_core::atlas_json::{DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, SparrowAtlas};
@@ -33,10 +34,9 @@ impl EngineSession {
 
         let baked_dir = self.project_textures_dir().join("animate_baked");
         let _ = std::fs::create_dir_all(&baked_dir);
-        let baked_path = baked_dir.join(format!("{}_baked.png", entity_id));
-        baked_sheet
-            .save_with_format(&baked_path, ImageFormat::Png)
-            .map_err(|e| format!("Error guardando spritesheet Animate horneado: {}", e))?;
+        let baked_path = baked_dir.join(format!("{}_baked.webp", entity_id));
+        save_lossless_webp(&baked_sheet, &baked_path)
+            .map_err(|e| format!("Error guardando spritesheet Animate WebP: {}", e))?;
 
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
             ent.image_path = Some(baked_path);
@@ -55,16 +55,16 @@ impl EngineSession {
         }
 
         let is_astc = is_astc_path(&path);
-        let display_png_path = if is_astc {
+        let display_img_path = if is_astc {
             match load_sprite_image(&path) {
                 Ok(decoded) => {
                     let dec_dir = self.project_textures_dir().join("decoded_textures");
                     let _ = std::fs::create_dir_all(&dec_dir);
-                    let out_png = dec_dir.join(format!("{}.png", entity_id));
-                    if let Err(e) = decoded.save_with_format(&out_png, ImageFormat::Png) {
-                        return self.err_response(format!("Error guardando caché ASTC->PNG: {}", e));
+                    let out_webp = dec_dir.join(format!("{}.webp", entity_id));
+                    if let Err(e) = save_lossless_webp(&decoded, &out_webp) {
+                        return self.err_response(format!("Error guardando caché ASTC->WebP: {}", e));
                     }
-                    out_png
+                    out_webp
                 }
                 Err(e) => return self.err_response(format!("Error decodificando .astc: {}", e)),
             }
@@ -72,10 +72,10 @@ impl EngineSession {
             path.clone()
         };
 
-        let dims = read_sprite_dimensions(&display_png_path).or_else(|| read_sprite_dimensions(&path));
+        let dims = read_sprite_dimensions(&display_img_path).or_else(|| read_sprite_dimensions(&path));
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
             ent.raw_image_path = Some(path);
-            ent.image_path = Some(display_png_path);
+            ent.image_path = Some(display_img_path);
             if let Some((w, h)) = dims {
                 if ent.atlas.is_none() && ent.role != EntityRole::Background && w > 0 && h > 0 {
                     // Ajustar tamaño lógico inicial manteniendo proporción razonable dentro de 1280x720.

@@ -1,30 +1,38 @@
 //! Archivo: engine/crates/pulse_core/src/hot_compile.rs
-//! Propósito: Compilador en caliente paralelo (`rayon`) inteligente que se ejecuta antes de jugar.
+//! Propósito: Compilador en caliente paralelo (`rayon`) inteligente con caché incremental en disco.
 //! Funciones clave:
-//! 1. Analiza scripts Lua, JS y TypeScript (`script_optimizer`) para descartar bucles pesados sin
-//!    lógica necesaria o neutralizar bucles infinitos que consumirían demasiados recursos.
-//! 2. Analiza visibilidad para DESCARTAR objetos que permanecerán invisibles toda la canción.
-//! 3. Evalúa de forma inteligente la resolución de cada sprite respecto a su tamaño real en pantalla
-//!    y la capacidad del teléfono (optimizado para 32-bit `armeabi-v7a` y 2-3 GB RAM):
-//!    si ya es óptima, pasa directo sin recompresión; si requiere ajuste, escribe el PNG optimizado
-//!    directo a caché en disco dentro del pool `rayon` sin retener buffers RGBA duplicados en RAM.
-//! 4. Rasteriza la skin de flechas `.svg` en paralelo y entrega un `CompiledBundle` listo para juego.
+//! 1. Calcula huellas FNV-1a (ruta, tamaño, mtime y muestras de bytes + tier + geometría) para
+//!    reutilizar texturas `.webp`, mezcla de audio `compiled_mix.wav` y scripts precompilados desde
+//!    `compiled_cache/manifest.json` sin recomprimir cuando nada relevante cambió.
+//! 2. Analiza visibilidad para DESCARTAR objetos que permanecerán invisibles toda la canción y elimina
+//!    artefactos huérfanos o obsoletos en disco.
+//! 3. Compila todos los sprites (`.png`, `.jpg`, `.astc` o reescalados inteligentes) a `.webp`
+//!    VP8L a máxima compresión sin pérdida de calidad ni canal alfa dentro del pool `rayon`.
+//! 4. Preoptimiza scripts Lua, TS y JS (`script_optimizer`) con caché por `source_hash` y rasteriza
+//!    flechas `.svg` con `resvg`.
 
-use crate::astc_loader::{is_astc_path, load_sprite_image, read_sprite_dimensions};
+use crate::astc_loader::{
+    is_astc_path, is_webp_path, load_sprite_image, read_sprite_dimensions, save_lossless_webp,
+};
 use crate::chart::NoteDirection;
-use crate::project::{ModProject, ScriptAsset};
-use crate::script_optimizer::optimize_scripts_for_hot_compile;
+use crate::project::{AudioTrackSlot, ModProject, ScriptAsset, ScriptLanguage};
+use crate::script_optimizer::optimize_single_script;
 use crate::stage::StageEntity;
 use crate::svg_skin::{RasterizedArrow, rasterize_arrow_skin};
-use image::ImageFormat;
 use image::imageops::FilterType;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
+
+/// Versión del esquema de manifiesto incremental en `compiled_cache/manifest.json`.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// Versión del analizador de bucles en scripts; incrementarla invalida caché previa de scripts.
+pub const SCRIPT_OPTIMIZER_CACHE_VERSION: u32 = 2;
 
 /// Perfil de optimización según la memoria/arquitectura del teléfono del usuario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +46,14 @@ pub enum DeviceResourceTier {
 }
 
 impl DeviceResourceTier {
+    pub fn as_code(self) -> u8 {
+        match self {
+            DeviceResourceTier::LowRam32Bit => 0,
+            DeviceResourceTier::Balanced => 1,
+            DeviceResourceTier::HighQuality => 2,
+        }
+    }
+
     pub fn max_texture_dim(self) -> u32 {
         match self {
             DeviceResourceTier::LowRam32Bit => 1536,
@@ -78,6 +94,275 @@ impl DeviceResourceTier {
     }
 }
 
+/// Hash determinista FNV-1a de 64 bits (sin dependencias externas ni colisiones triviales).
+pub fn fnv1a_64_bytes(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
+}
+
+/// Hash determinista FNV-1a de 64 bits sobre una cadena UTF-8.
+pub fn fnv1a_64_str(s: &str) -> u64 {
+    fnv1a_64_bytes(s.as_bytes())
+}
+
+/// Huella ligera de un archivo en disco combinando tamaño, fecha de modificación y hash FNV-1a
+/// de bloques inicial/medio/final (o completo si pesa <= 192 KB) para máxima velocidad en ARM32.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetFileFingerprint {
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified_ms: u64,
+    pub sample_hash: u64,
+}
+
+impl AssetFileFingerprint {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let size_bytes = meta.len();
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let mut f = std::fs::File::open(path).ok()?;
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |chunk: &[u8]| {
+            for &b in chunk {
+                hash ^= b as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+            }
+        };
+
+        const CHUNK: usize = 64 * 1024;
+        if size_bytes <= (CHUNK as u64) * 3 {
+            let mut buf = Vec::with_capacity(size_bytes as usize);
+            f.read_to_end(&mut buf).ok()?;
+            feed(&buf);
+        } else {
+            let mut buf = vec![0u8; CHUNK];
+            let n1 = f.read(&mut buf).ok()?;
+            feed(&buf[..n1]);
+
+            let mid_off = size_bytes / 2;
+            f.seek(SeekFrom::Start(mid_off)).ok()?;
+            let n2 = f.read(&mut buf).ok()?;
+            feed(&buf[..n2]);
+
+            let tail_off = size_bytes.saturating_sub(CHUNK as u64);
+            f.seek(SeekFrom::Start(tail_off)).ok()?;
+            let n3 = f.read(&mut buf).ok()?;
+            feed(&buf[..n3]);
+        }
+
+        Some(Self {
+            path: path.to_string_lossy().into_owned(),
+            size_bytes,
+            modified_ms,
+            sample_hash: hash,
+        })
+    }
+}
+
+/// Huella completa de una textura en el escenario + configuración del dispositivo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextureFingerprint {
+    pub file: AssetFileFingerprint,
+    pub tier_code: u8,
+    pub has_atlas: bool,
+    pub entity_w_bits: u32,
+    pub entity_h_bits: u32,
+    pub scale_bits: u32,
+    pub atlas_frame_hash: u64,
+}
+
+impl TextureFingerprint {
+    pub fn compute(entity: &StageEntity, path: &Path, tier: DeviceResourceTier) -> Option<Self> {
+        let file = AssetFileFingerprint::from_path(path)?;
+        let mut atlas_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        if let Some(atlas) = &entity.atlas {
+            let mut max_frame_w = 0u32;
+            let mut max_frame_h = 0u32;
+            let mut count = 0u64;
+            for anim in atlas.animations.values() {
+                for fr in &anim.frames {
+                    max_frame_w = max_frame_w.max(fr.width);
+                    max_frame_h = max_frame_h.max(fr.height);
+                    count += 1;
+                }
+            }
+            for bytes in [
+                max_frame_w.to_le_bytes().as_slice(),
+                max_frame_h.to_le_bytes().as_slice(),
+                count.to_le_bytes().as_slice(),
+            ] {
+                for &b in bytes {
+                    atlas_hash ^= b as u64;
+                    atlas_hash = atlas_hash.wrapping_mul(0x0000_0100_0000_01B3);
+                }
+            }
+        }
+        Some(Self {
+            file,
+            tier_code: tier.as_code(),
+            has_atlas: entity.atlas.is_some(),
+            entity_w_bits: entity.width.to_bits(),
+            entity_h_bits: entity.height.to_bits(),
+            scale_bits: entity.scale.to_bits(),
+            atlas_frame_hash: atlas_hash,
+        })
+    }
+}
+
+/// Entrada cacheada de textura WebP compilada en disco.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedTextureEntry {
+    pub entity_id: String,
+    pub fingerprint: TextureFingerprint,
+    pub compiled_webp_path: PathBuf,
+    pub downscaled: bool,
+    pub vram_saved_bytes: usize,
+}
+
+/// Huella de una ranura de audio para invalidar mezcla WAV solo cuando cambia archivo, ganancia o mute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioSlotFingerprint {
+    pub slot_index: usize,
+    pub file: AssetFileFingerprint,
+    pub gain_bits: u32,
+    pub muted: bool,
+    pub duck_on_miss: bool,
+}
+
+/// Huella global de mezcla de pistas hacia `compiled_mix.wav`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioMergeFingerprint {
+    pub target_sample_rate: u32,
+    pub slots: Vec<AudioSlotFingerprint>,
+}
+
+impl AudioMergeFingerprint {
+    pub fn compute(slots: &[AudioTrackSlot], target_sample_rate: u32) -> Option<Self> {
+        let mut active = Vec::new();
+        for slot in slots {
+            let Some(path) = slot.file_path.as_ref() else {
+                continue;
+            };
+            let file = AssetFileFingerprint::from_path(path)?;
+            active.push(AudioSlotFingerprint {
+                slot_index: slot.slot_index,
+                file,
+                gain_bits: slot.gain.to_bits(),
+                muted: slot.muted,
+                duck_on_miss: slot.duck_on_player_miss,
+            });
+        }
+        if active.len() <= 1 {
+            return None;
+        }
+        Some(Self {
+            target_sample_rate,
+            slots: active,
+        })
+    }
+}
+
+/// Entrada cacheada de la mezcla de audio en streaming WAV.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedAudioEntry {
+    pub fingerprint: AudioMergeFingerprint,
+    pub compiled_wav_path: PathBuf,
+    pub merged_tracks: usize,
+    pub estimated_ram_saved_kb: usize,
+}
+
+/// Entrada cacheada de un script optimizado y precompilado (`.luac` / `.js` transpilado).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedScriptEntry {
+    pub script_id: String,
+    pub language: ScriptLanguage,
+    pub enabled: bool,
+    pub source_hash: u64,
+    #[serde(default)]
+    pub optimized_source_hash: u64,
+    pub optimizer_version: u32,
+    pub optimized_source: String,
+    pub discarded_heavy_loops: usize,
+    pub neutralized_unbounded_loops: usize,
+    pub artifact_path: Option<PathBuf>,
+    pub compile_error: Option<String>,
+}
+
+/// Manifiesto persistente guardado en `compiled_cache/manifest.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotCompileManifest {
+    pub manifest_version: u32,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub textures: HashMap<String, CachedTextureEntry>,
+    #[serde(default)]
+    pub audio: Option<CachedAudioEntry>,
+    #[serde(default)]
+    pub scripts: HashMap<String, CachedScriptEntry>,
+}
+
+impl Default for HotCompileManifest {
+    fn default() -> Self {
+        Self {
+            manifest_version: MANIFEST_SCHEMA_VERSION,
+            project_id: String::new(),
+            textures: HashMap::new(),
+            audio: None,
+            scripts: HashMap::new(),
+        }
+    }
+}
+
+impl HotCompileManifest {
+    pub fn load_or_default(cache_dir: &Path, project_id: &str) -> Self {
+        let manifest_path = cache_dir.join("manifest.json");
+        let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
+            return Self {
+                project_id: project_id.to_string(),
+                ..Default::default()
+            };
+        };
+        let Ok(parsed) = serde_json::from_str::<Self>(&raw) else {
+            return Self {
+                project_id: project_id.to_string(),
+                ..Default::default()
+            };
+        };
+        if parsed.manifest_version != MANIFEST_SCHEMA_VERSION || parsed.project_id != project_id {
+            return Self {
+                project_id: project_id.to_string(),
+                ..Default::default()
+            };
+        }
+        parsed
+    }
+
+    pub fn save_to_dir(&self, cache_dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(cache_dir)
+            .map_err(|e| format!("Error creando directorio de caché: {}", e))?;
+        let target = cache_dir.join("manifest.json");
+        let tmp = cache_dir.join("manifest.json.tmp");
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Error serializando manifest.json: {}", e))?;
+        std::fs::write(&tmp, json)
+            .map_err(|e| format!("Error escribiendo manifest.json.tmp: {}", e))?;
+        std::fs::rename(&tmp, &target)
+            .map_err(|e| format!("Error moviendo manifest.json: {}", e))?;
+        Ok(())
+    }
+}
+
 /// Textura RGBA optimizada temporal (solo se retiene si no se indicó carpeta de caché en disco).
 #[derive(Debug, Clone)]
 pub struct OptimizedTexture {
@@ -96,12 +381,18 @@ pub struct HotCompileReport {
     pub discarded_invisible_entities: Vec<String>,
     pub downscaled_textures: usize,
     pub skipped_optimal_textures: usize,
+    pub cached_textures_reused: usize,
+    pub webp_encoded_textures: usize,
     pub discarded_heavy_loops: usize,
     pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<PathBuf>,
     pub estimated_audio_ram_saved_kb: usize,
+    pub cached_audio_reused: bool,
+    pub precompiled_scripts: usize,
+    pub cached_scripts_reused: usize,
+    pub script_precompile_errors: Vec<String>,
 }
 
 /// Paquete final ya compilado y optimizado que consume la pantalla de gameplay.
@@ -157,7 +448,7 @@ pub fn is_permanently_invisible(
 }
 
 /// Calcula inteligentemente si una textura requiere bajar resolución o si ya es óptima.
-/// Devuelve `1.0` cuando NO conviene tocarla (mantiene calidad original y evita recompresión).
+/// Devuelve `1.0` cuando NO conviene bajar resolución de píxeles.
 pub fn compute_smart_texture_scale(
     entity: &StageEntity,
     orig_w: u32,
@@ -204,7 +495,7 @@ pub fn compute_smart_texture_scale(
         }
     }
 
-    // Si la reducción sería menor al 8% (ratio >= 0.92), no vale la pena degradar ni recomprimir.
+    // Si la reducción sería menor al 8% (ratio >= 0.92) y cabe en tier_cap, conserva resolución 1:1.
     if target_ratio >= 0.92 && largest <= tier_cap {
         1.0
     } else {
@@ -213,9 +504,80 @@ pub fn compute_smart_texture_scale(
 }
 
 enum CompiledTexOutcome {
-    DiskCached(String, PathBuf),
+    CacheHit(String, CachedTextureEntry),
+    DiskWebp {
+        entity_id: String,
+        entry: Option<CachedTextureEntry>,
+        path: PathBuf,
+    },
     InMemory(String, OptimizedTexture),
     PassThrough(String, PathBuf),
+}
+
+/// Optimiza bucles pesados de scripts reutilizando resultados cacheados por `source_hash` cuando aplica,
+/// preservando artefactos `.luac`/`.js` precompilados en `manifest.scripts` si el hash coincide.
+fn optimize_scripts_with_manifest(
+    scripts: &[ScriptAsset],
+    manifest: &mut HotCompileManifest,
+) -> (Vec<ScriptAsset>, usize, usize) {
+    let mut optimized_scripts = Vec::with_capacity(scripts.len());
+    let mut discarded_heavy = 0usize;
+    let mut neutralized_unbounded = 0usize;
+    let mut next_scripts_map = HashMap::with_capacity(scripts.len());
+
+    for script in scripts {
+        if !script.enabled {
+            optimized_scripts.push(script.clone());
+            continue;
+        }
+        let source_hash = fnv1a_64_str(&script.source_code);
+        if let Some(prev) = manifest.scripts.get(&script.id) {
+            if prev.source_hash == source_hash
+                && prev.optimizer_version == SCRIPT_OPTIMIZER_CACHE_VERSION
+                && prev.language == script.language
+                && !prev.optimized_source.is_empty()
+            {
+                discarded_heavy += prev.discarded_heavy_loops;
+                neutralized_unbounded += prev.neutralized_unbounded_loops;
+                let mut cloned = script.clone();
+                cloned.source_code = prev.optimized_source.clone();
+                let mut updated = prev.clone();
+                updated.enabled = true;
+                next_scripts_map.insert(script.id.clone(), updated);
+                optimized_scripts.push(cloned);
+                continue;
+            }
+        }
+
+        let res = optimize_single_script(&script.source_code, script.language);
+        discarded_heavy += res.discarded_loops;
+        neutralized_unbounded += res.neutralized_loops;
+
+        let opt_hash = fnv1a_64_str(&res.optimized_source);
+        next_scripts_map.insert(
+            script.id.clone(),
+            CachedScriptEntry {
+                script_id: script.id.clone(),
+                language: script.language,
+                enabled: true,
+                source_hash,
+                optimized_source_hash: opt_hash,
+                optimizer_version: SCRIPT_OPTIMIZER_CACHE_VERSION,
+                optimized_source: res.optimized_source.clone(),
+                discarded_heavy_loops: res.discarded_loops,
+                neutralized_unbounded_loops: res.neutralized_loops,
+                artifact_path: None,
+                compile_error: None,
+            },
+        );
+
+        let mut cloned = script.clone();
+        cloned.source_code = res.optimized_source;
+        optimized_scripts.push(cloned);
+    }
+
+    manifest.scripts = next_scripts_map;
+    (optimized_scripts, discarded_heavy, neutralized_unbounded)
 }
 
 /// Ejecuta la compilación en caliente de todos los recursos y scripts del proyecto en paralelo usando `rayon`.
@@ -230,8 +592,7 @@ where
     hot_compile_project_to_dir(project, tier, None, on_progress)
 }
 
-/// Compila en caliente escribiendo las texturas reescaladas/decodificadas directamente a `out_dir`
-/// en disco para que NO queden copias RGBA duplicadas en la RAM nativa de Rust.
+/// Compila en caliente hacia `out_dir` administrando su propio `manifest.json` en disco.
 pub fn hot_compile_project_to_dir<F>(
     project: &ModProject,
     tier: DeviceResourceTier,
@@ -241,12 +602,41 @@ pub fn hot_compile_project_to_dir<F>(
 where
     F: Fn(f32, &str) + Send + Sync,
 {
+    let mut manifest = out_dir
+        .map(|d| HotCompileManifest::load_or_default(d, &project.id))
+        .unwrap_or_else(|| HotCompileManifest {
+            project_id: project.id.clone(),
+            ..Default::default()
+        });
+    let bundle =
+        hot_compile_project_to_dir_with_manifest(project, tier, out_dir, &mut manifest, on_progress);
+    if let Some(dir) = out_dir {
+        let _ = manifest.save_to_dir(dir);
+    }
+    bundle
+}
+
+/// Compila en caliente permitiendo compartir un `HotCompileManifest` externo (para integrar también
+/// caché incremental de mezcla WAV y scripts precompilados `.luac`/`.js` en `pulse_android`).
+pub fn hot_compile_project_to_dir_with_manifest<F>(
+    project: &ModProject,
+    tier: DeviceResourceTier,
+    out_dir: Option<&Path>,
+    manifest: &mut HotCompileManifest,
+    on_progress: F,
+) -> CompiledBundle
+where
+    F: Fn(f32, &str) + Send + Sync,
+{
     let started = Instant::now();
-    on_progress(0.08, "Analizando bucles en scripts Lua, TS y JS...");
+    manifest.manifest_version = MANIFEST_SCHEMA_VERSION;
+    manifest.project_id = project.id.clone();
 
-    let (optimized_scripts, script_report) = optimize_scripts_for_hot_compile(&project.scripts);
+    on_progress(0.06, "Optimizando bucles en scripts Lua, TS y JS...");
+    let (optimized_scripts, discarded_heavy_loops, neutralized_unbounded_loops) =
+        optimize_scripts_with_manifest(&project.scripts, manifest);
 
-    on_progress(0.18, "Analizando visibilidad y objetos del escenario...");
+    on_progress(0.14, "Analizando visibilidad y objetos del escenario...");
 
     let script_refs = collect_script_referenced_ids(project);
     let mut active_entities = Vec::new();
@@ -271,70 +661,135 @@ where
         let _ = std::fs::create_dir_all(dir);
     }
 
-    on_progress(0.35, "Evaluando resolución inteligente de sprites...");
+    on_progress(0.22, "Verificando caché incremental y compilando WebP sin pérdida...");
 
     let total_entities = active_entities.len().max(1);
     let done_counter = Arc::new(AtomicUsize::new(0));
     let vram_saved_bytes = Arc::new(AtomicUsize::new(0));
     let downscaled_count = Arc::new(AtomicUsize::new(0));
     let skipped_optimal_count = Arc::new(AtomicUsize::new(0));
+    let cached_reused_count = Arc::new(AtomicUsize::new(0));
+    let webp_encoded_count = Arc::new(AtomicUsize::new(0));
+
+    let prev_textures = &manifest.textures;
 
     let outcomes: Vec<CompiledTexOutcome> = active_entities
         .par_iter()
         .filter_map(|entity| {
             let path = entity.image_path.as_ref()?;
             let is_astc = is_astc_path(path);
+            let fp_opt = TextureFingerprint::compute(entity, path, tier);
 
-            // Lectura ultrarrápida de cabecera para decidir si realmente hace falta decodificar y reescalar
+            // 1. Cache Hit incremental en disco: misma huella, mismo tier y WebP existente
+            if out_dir.is_some() {
+                if let (Some(fp), Some(cached)) = (fp_opt.as_ref(), prev_textures.get(&entity.id)) {
+                    if &cached.fingerprint == fp
+                        && cached.compiled_webp_path.exists()
+                        && is_webp_path(&cached.compiled_webp_path)
+                    {
+                        cached_reused_count.fetch_add(1, Ordering::Relaxed);
+                        vram_saved_bytes.fetch_add(cached.vram_saved_bytes, Ordering::Relaxed);
+                        if cached.downscaled {
+                            downscaled_count.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                        let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+                        on_progress(
+                            pct,
+                            &format!("Caché WebP reutilizada ({}/{})", completed, total_entities),
+                        );
+                        return Some(CompiledTexOutcome::CacheHit(
+                            entity.id.clone(),
+                            cached.clone(),
+                        ));
+                    }
+                }
+            }
+
+            // 2. Si el sprite ya es .webp nativo y su escala inteligente es 1.0, pasar directo 1:1
             if let Some((orig_w, orig_h)) = read_sprite_dimensions(path) {
                 let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
-                if smart_scale >= 0.999 && !is_astc {
+                if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
                     skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
                     let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    let pct = 0.35 + 0.45 * ((completed as f32) / (total_entities as f32));
-                    on_progress(pct, "Textura óptima detectada (sin pérdida)...");
+                    let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+                    on_progress(
+                        pct,
+                        &format!("WebP óptimo directo ({}/{})", completed, total_entities),
+                    );
                     return Some(CompiledTexOutcome::PassThrough(entity.id.clone(), path.clone()));
                 }
             }
 
+            // 3. Cargar imagen origen (.png, .jpg, .astc, etc.) y compilar a WebP sin pérdida
             let img = load_sprite_image(path).ok()?;
             let orig_w = img.width();
             let orig_h = img.height();
             let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
 
-            if smart_scale >= 0.999 && !is_astc {
+            if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
                 skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
                 let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                let pct = 0.35 + 0.45 * ((completed as f32) / (total_entities as f32));
-                on_progress(pct, "Textura óptima detectada (sin pérdida)...");
+                let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+                on_progress(
+                    pct,
+                    &format!("WebP óptimo directo ({}/{})", completed, total_entities),
+                );
                 return Some(CompiledTexOutcome::PassThrough(entity.id.clone(), path.clone()));
             }
 
-            let (final_img, scale_applied) = if smart_scale < 0.999 {
+            let (final_img, scale_applied, downscaled, saved_bytes) = if smart_scale < 0.999 {
                 let new_w = ((orig_w as f32) * smart_scale).round().max(1.0) as u32;
                 let new_h = ((orig_h as f32) * smart_scale).round().max(1.0) as u32;
                 let orig_bytes = (orig_w as usize) * (orig_h as usize) * 4;
                 let new_bytes = (new_w as usize) * (new_h as usize) * 4;
-                vram_saved_bytes.fetch_add(orig_bytes.saturating_sub(new_bytes), Ordering::Relaxed);
+                let saved = orig_bytes.saturating_sub(new_bytes);
+                vram_saved_bytes.fetch_add(saved, Ordering::Relaxed);
                 downscaled_count.fetch_add(1, Ordering::Relaxed);
-                (img.resize_exact(new_w, new_h, FilterType::CatmullRom), smart_scale)
+                (
+                    img.resize_exact(new_w, new_h, FilterType::CatmullRom),
+                    smart_scale,
+                    true,
+                    saved,
+                )
             } else {
-                (img, 1.0)
+                skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                (img, 1.0, false, 0)
             };
 
             let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let pct = 0.35 + 0.45 * ((completed as f32) / (total_entities as f32));
-            on_progress(pct, "Optimizando spritesheets necesarios...");
+            let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+            on_progress(
+                pct,
+                &format!(
+                    "Comprimiendo sprites a WebP sin pérdida ({}/{})...",
+                    completed, total_entities
+                ),
+            );
 
-            // Si hay carpeta de caché en disco, escribir el PNG ahí y liberar RGBA inmediatamente
-            // para evitar retener doble/triple copia de texturas en RAM.
             if let Some(dir) = out_dir {
-                let target_file = dir.join(format!("{}.png", entity.id));
-                if final_img
-                    .save_with_format(&target_file, ImageFormat::Png)
-                    .is_ok()
-                {
-                    return Some(CompiledTexOutcome::DiskCached(entity.id.clone(), target_file));
+                let target_webp = dir.join(format!("{}.webp", entity.id));
+                if save_lossless_webp(&final_img, &target_webp).is_ok() {
+                    webp_encoded_count.fetch_add(1, Ordering::Relaxed);
+                    // Limpiar formato heredado `.png` si existía de versiones previas del caché
+                    let legacy_png = dir.join(format!("{}.png", entity.id));
+                    if legacy_png.exists() {
+                        let _ = std::fs::remove_file(&legacy_png);
+                    }
+                    let entry = fp_opt.map(|fingerprint| CachedTextureEntry {
+                        entity_id: entity.id.clone(),
+                        fingerprint,
+                        compiled_webp_path: target_webp.clone(),
+                        downscaled,
+                        vram_saved_bytes: saved_bytes,
+                    });
+                    return Some(CompiledTexOutcome::DiskWebp {
+                        entity_id: entity.id.clone(),
+                        entry,
+                        path: target_webp,
+                    });
                 }
             }
 
@@ -357,10 +812,23 @@ where
     let mut textures = HashMap::new();
     let mut compiled_texture_paths = HashMap::new();
     let mut passthrough_paths = HashMap::new();
+    let mut next_cached_textures = HashMap::new();
+
     for item in outcomes {
         match item {
-            CompiledTexOutcome::DiskCached(id, path) => {
-                compiled_texture_paths.insert(id, path);
+            CompiledTexOutcome::CacheHit(id, entry) => {
+                compiled_texture_paths.insert(id.clone(), entry.compiled_webp_path.clone());
+                next_cached_textures.insert(id, entry);
+            }
+            CompiledTexOutcome::DiskWebp {
+                entity_id,
+                entry,
+                path,
+            } => {
+                compiled_texture_paths.insert(entity_id.clone(), path);
+                if let Some(e) = entry {
+                    next_cached_textures.insert(entity_id, e);
+                }
             }
             CompiledTexOutcome::InMemory(id, tex) => {
                 textures.insert(id, tex);
@@ -372,10 +840,43 @@ where
         }
     }
 
-    on_progress(0.85, "Rasterizando skin de flechas SVG con resvg...");
+    // Limpiar archivos `.webp` / `.png` huérfanos en `out_dir` de entidades eliminadas o pasadas a passthrough
+    if let Some(dir) = out_dir {
+        for (old_id, old_entry) in &manifest.textures {
+            if !next_cached_textures.contains_key(old_id)
+                && old_entry.compiled_webp_path.starts_with(dir)
+            {
+                let _ = std::fs::remove_file(&old_entry.compiled_webp_path);
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for ent in entries.flatten() {
+                let p = ent.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let ext = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if ext == "webp" || ext == "png" {
+                    let keep = next_cached_textures
+                        .values()
+                        .any(|c| c.compiled_webp_path == p);
+                    if !keep {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
+        }
+    }
+    manifest.textures = next_cached_textures;
+
+    on_progress(0.68, "Rasterizando skin de flechas SVG con resvg...");
     let arrow_textures = rasterize_arrow_skin(&project.arrow_skin).unwrap_or_default();
 
-    on_progress(1.0, "Compilación en caliente completada");
+    on_progress(0.72, "Sprites listos en WebP sin pérdida");
 
     let report = HotCompileReport {
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -383,12 +884,18 @@ where
         discarded_invisible_entities: discarded,
         downscaled_textures: downscaled_count.load(Ordering::Relaxed),
         skipped_optimal_textures: skipped_optimal_count.load(Ordering::Relaxed),
-        discarded_heavy_loops: script_report.discarded_heavy_loops,
-        neutralized_unbounded_loops: script_report.neutralized_unbounded_loops,
+        cached_textures_reused: cached_reused_count.load(Ordering::Relaxed),
+        webp_encoded_textures: webp_encoded_count.load(Ordering::Relaxed),
+        discarded_heavy_loops,
+        neutralized_unbounded_loops,
         estimated_vram_saved_kb: vram_saved_bytes.load(Ordering::Relaxed) / 1024,
         merged_audio_tracks: 0,
         compiled_audio_path: None,
         estimated_audio_ram_saved_kb: 0,
+        cached_audio_reused: false,
+        precompiled_scripts: 0,
+        cached_scripts_reused: 0,
+        script_precompile_errors: Vec::new(),
     };
 
     CompiledBundle {
@@ -406,6 +913,7 @@ where
 mod tests {
     use super::*;
     use crate::stage::EntityRole;
+    use image::{DynamicImage, Rgba, RgbaImage};
 
     #[test]
     fn smart_scale_skips_optimal_sprites_and_downscales_oversized_ones() {
@@ -414,23 +922,78 @@ mod tests {
         prop.height = 720.0;
         prop.scale = 1.0;
 
-        // 1920x1080 en pantalla 1280x720 es óptimo -> no tocar (1.0)
         assert_eq!(
             compute_smart_texture_scale(&prop, 1920, 1080, DeviceResourceTier::Balanced),
             1.0
         );
 
-        // En modo 32-bit/RAM baja un fondo 4096 se ajusta a <=1536px
         let low_ratio =
             compute_smart_texture_scale(&prop, 4096, 2048, DeviceResourceTier::LowRam32Bit);
         assert!(low_ratio <= 1536.0 / 4096.0 + 0.001);
 
-        // 4096x4096 para un ícono de 200x200 -> sí reduce para ahorrar VRAM manteniendo nitidez
         let mut icon = StageEntity::new("icon", "Decoración", EntityRole::Decoration);
         icon.width = 200.0;
         icon.height = 200.0;
         icon.scale = 1.0;
         let ratio = compute_smart_texture_scale(&icon, 4096, 4096, DeviceResourceTier::Balanced);
         assert!(ratio < 0.6);
+    }
+
+    #[test]
+    fn incremental_webp_cache_reuses_valid_hits_and_invalidates_on_tier_or_source_change() {
+        let base_dir = std::env::temp_dir().join("beatforge_incremental_cache_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let cache_dir = base_dir.join("compiled_cache");
+        std::fs::create_dir_all(&base_dir).unwrap();
+
+        let src_png = base_dir.join("hero.png");
+        let img = RgbaImage::from_pixel(64, 64, Rgba([20, 180, 240, 255]));
+        DynamicImage::ImageRgba8(img)
+            .save_with_format(&src_png, image::ImageFormat::Png)
+            .unwrap();
+
+        let mut project = ModProject::new_demo();
+        project.stage.entities.clear();
+        let mut hero = StageEntity::new("hero_1", "Hero", EntityRole::Player);
+        hero.image_path = Some(src_png.clone());
+        hero.width = 220.0;
+        hero.height = 220.0;
+        project.stage.entities.push(hero);
+
+        // 1ra compilación: debe codificar .png -> .webp sin pérdida
+        let b1 = hot_compile_project_to_dir(
+            &project,
+            DeviceResourceTier::Balanced,
+            Some(&cache_dir),
+            |_, _| {},
+        );
+        assert_eq!(b1.report.webp_encoded_textures, 1);
+        assert_eq!(b1.report.cached_textures_reused, 0);
+        let cached_webp = b1.compiled_texture_paths.get("hero_1").unwrap();
+        assert_eq!(cached_webp.extension().and_then(|e| e.to_str()), Some("webp"));
+        assert!(cached_webp.exists());
+
+        // 2da compilación idéntica: Cache Hit sin recodificar
+        let b2 = hot_compile_project_to_dir(
+            &project,
+            DeviceResourceTier::Balanced,
+            Some(&cache_dir),
+            |_, _| {},
+        );
+        assert_eq!(b2.report.webp_encoded_textures, 0);
+        assert_eq!(b2.report.cached_textures_reused, 1);
+
+        // Cambio de Tier: debe invalidar caché y recompilar
+        let b3 = hot_compile_project_to_dir(
+            &project,
+            DeviceResourceTier::LowRam32Bit,
+            Some(&cache_dir),
+            |_, _| {},
+        );
+        assert_eq!(b3.report.webp_encoded_textures, 1);
+        assert_eq!(b3.report.cached_textures_reused, 0);
+
+        // Limpiar
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }

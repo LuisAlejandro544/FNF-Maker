@@ -42,3 +42,15 @@ pub fn transpile_typescript_to_js(filename: &str, ts_source: &str) -> Result<Str
     let js_output = Codegen::new().build(&program).code;
     Ok(js_output)
 }
+
+/// Valida sintácticamente un archivo JavaScript con `oxc_parser` sin ejecutar código de usuario.
+pub fn validate_js_syntax(_filename: &str, js_source: &str) -> Result<(), String> {
+    let allocator = Allocator::default();
+    let source_type = SourceType::default();
+    let parsed = Parser::new(&allocator, js_source, source_type).parse();
+    if parsed.diagnostics.has_errors() {
+        let msgs: Vec<String> = parsed.diagnostics.errors().map(|e| e.to_string()).collect();
+        return Err(format!("Error de sintaxis JavaScript: {}", msgs.join("; ")));
+    }
+    Ok(())
+}

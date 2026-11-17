@@ -5,7 +5,9 @@
 //! Permite importar mods móviles que traen spritesheets optimizados en `.astc` (ej. `spritemap1.astc`)
 //! sin depender de hardware GPU específico ni librerías C++.
 
-use image::{DynamicImage, RgbaImage};
+use image::codecs::webp::WebPEncoder;
+use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbaImage};
+use std::io::BufWriter;
 use std::path::Path;
 
 /// Firma mágica de los primeros 4 bytes de cualquier archivo estándar `.astc`.
@@ -94,6 +96,64 @@ pub fn is_astc_path(path: &Path) -> bool {
         }
     }
     false
+}
+
+/// Comprueba por extensión o cabecera RIFF/WEBP si la ruta ya es un archivo `.webp`.
+pub fn is_webp_path(path: &Path) -> bool {
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("webp"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Ok(mut f) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut head = [0u8; 12];
+        if f.read_exact(&mut head).is_ok() {
+            return &head[0..4] == b"RIFF" && &head[8..12] == b"WEBP";
+        }
+    }
+    false
+}
+
+/// Codifica cualquier `DynamicImage` a `.webp` sin pérdida (VP8L con predictores, transformaciones
+/// de color y compresión máxima sin pérdida de calidad ni alpha) de forma atómica en disco.
+pub fn save_lossless_webp(img: &DynamicImage, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let rgba = img.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
+    let tmp_path = path.with_extension("webp.tmp");
+
+    {
+        let file = std::fs::File::create(&tmp_path).map_err(|e| {
+            format!(
+                "No se pudo crear archivo WebP temporal '{}': {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
+        let writer = BufWriter::new(file);
+        let encoder = WebPEncoder::new_lossless(writer);
+        if let Err(e) = encoder.write_image(rgba.as_raw(), w, h, ExtendedColorType::Rgba8) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("Error codificando WebP sin pérdida: {}", e));
+        }
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!(
+            "No se pudo mover WebP compilado a '{}': {}",
+            path.display(),
+            e
+        ));
+    }
+    Ok(())
 }
 
 /// Decodifica bytes completos de un archivo `.astc` (cabecera 16 bytes + bloques) a `DynamicImage` RGBA8.
@@ -200,5 +260,31 @@ mod tests {
         assert_eq!(px[0], 255);
         assert_eq!(px[2], 0);
         assert_eq!(px[3], 255);
+    }
+
+    #[test]
+    fn lossless_webp_roundtrip_preserves_exact_rgba_pixels() {
+        let mut src = RgbaImage::new(4, 4);
+        src.put_pixel(0, 0, image::Rgba([255, 16, 128, 255]));
+        src.put_pixel(1, 0, image::Rgba([0, 224, 240, 120]));
+        src.put_pixel(2, 1, image::Rgba([42, 99, 17, 0]));
+        src.put_pixel(3, 3, image::Rgba([250, 250, 250, 255]));
+
+        let dyn_img = DynamicImage::ImageRgba8(src.clone());
+        let tmp_dir = std::env::temp_dir().join("beatforge_astc_webp_test");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let out_webp = tmp_dir.join("sample_sprite.webp");
+
+        save_lossless_webp(&dyn_img, &out_webp).expect("guardado WebP sin pérdida");
+        assert!(is_webp_path(&out_webp));
+
+        let loaded = load_sprite_image(&out_webp).expect("lectura WebP");
+        let loaded_rgba = loaded.to_rgba8();
+        assert_eq!(loaded_rgba.dimensions(), (4, 4));
+        assert_eq!(loaded_rgba.get_pixel(0, 0), src.get_pixel(0, 0));
+        assert_eq!(loaded_rgba.get_pixel(1, 0), src.get_pixel(1, 0));
+        assert_eq!(loaded_rgba.get_pixel(3, 3), src.get_pixel(3, 3));
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

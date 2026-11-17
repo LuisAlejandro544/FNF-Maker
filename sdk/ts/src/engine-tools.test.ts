@@ -34,6 +34,8 @@ import {
   estimateMergedAudioRamSavings,
   evaluateFnfHealthBar,
   evaluateHitJudgement,
+  evaluateWatchdogExecution,
+  fnv1a64Hex,
   mapRotatedSpriteSample,
   optimizeScriptLoops,
   packPosesIntoBoundedAtlas,
@@ -41,9 +43,13 @@ import {
   parseCameraConfigFromLua,
   parseChartJson,
   renderCameraLuaConfigBlock,
+  resolveCompiledSpriteTarget,
   resolveMobileTouchLanes,
   serializeChartJson,
   shouldDiscardInvisibleEntity,
+  shouldReuseCachedAudio,
+  shouldReuseCachedScript,
+  shouldReuseCachedTexture,
   sortProjectSummaries,
   stripTrailingFrameDigits,
   validateAudioTrackCount,
@@ -910,3 +916,125 @@ test('evaluateHitJudgement and evaluateFnfHealthBar drive rating popups, Sick sp
   assert.equal(modLoop.neutralizedLoops, 1);
   assert.ok(modLoop.optimizedSource.includes('setStrumProp'));
 });
+
+test('incremental cache fingerprints reuse valid texture/audio/script hits and invalidate on config or file changes', () => {
+  const hashA = fnv1a64Hex('sprite_bytes_v1');
+  const hashB = fnv1a64Hex('sprite_bytes_v2');
+  assert.equal(hashA.length, 16);
+  assert.notEqual(hashA, hashB);
+
+  const texPrev = {
+    entityId: 'hero',
+    tier: 'balanced' as const,
+    file: { fileLenBytes: 4096, modifiedEpochMs: 1700000, contentHash: hashA },
+    hasAtlas: true,
+    entityWidth: 320,
+    entityHeight: 420,
+    entityScale: 1.0,
+  };
+  assert.equal(shouldReuseCachedTexture(texPrev, { ...texPrev }, true), true);
+  assert.equal(shouldReuseCachedTexture(texPrev, { ...texPrev }, false), false);
+  assert.equal(shouldReuseCachedTexture(texPrev, { ...texPrev, tier: 'low_32bit' }, true), false);
+  assert.equal(
+    shouldReuseCachedTexture(
+      texPrev,
+      { ...texPrev, file: { ...texPrev.file, contentHash: hashB } },
+      true,
+    ),
+    false,
+  );
+
+  const audioPrev = {
+    sampleRate: 48000,
+    slots: [
+      {
+        slotIndex: 0,
+        file: { fileLenBytes: 100000, modifiedEpochMs: 1700000, contentHash: hashA },
+        volume: 1.0,
+        muted: false,
+      },
+    ],
+  };
+  assert.equal(shouldReuseCachedAudio(audioPrev, { ...audioPrev }, true), true);
+  assert.equal(
+    shouldReuseCachedAudio(
+      audioPrev,
+      { ...audioPrev, slots: [{ ...audioPrev.slots[0], volume: 0.65 }] },
+      true,
+    ),
+    false,
+  );
+
+  const scriptPrev = {
+    scriptId: 'mod_cam',
+    language: 'lua' as const,
+    optimizedSourceHash: hashA,
+    artifactExists: true,
+  };
+  assert.equal(
+    shouldReuseCachedScript(
+      scriptPrev,
+      { scriptId: 'mod_cam', language: 'lua', optimizedSourceHash: hashA },
+      true,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldReuseCachedScript(
+      scriptPrev,
+      { scriptId: 'mod_cam', language: 'lua', optimizedSourceHash: hashB },
+      true,
+    ),
+    false,
+  );
+});
+
+test('resolveCompiledSpriteTarget converts non-WebP or downscaled sprites to lossless .webp cache', () => {
+  const passthrough = resolveCompiledSpriteTarget({
+    entityId: 'bg',
+    sourcePath: '/cache/bg.webp',
+    cacheDir: '/cache/compiled',
+    scaleFactor: 1.0,
+  });
+  assert.equal(passthrough.mode, 'passthrough_webp');
+  assert.equal(passthrough.outputPath, '/cache/bg.webp');
+
+  const pngToWebp = resolveCompiledSpriteTarget({
+    entityId: 'hero',
+    sourcePath: '/imports/hero.png',
+    cacheDir: '/cache/compiled/',
+    scaleFactor: 1.0,
+  });
+  assert.equal(pngToWebp.mode, 'encode_lossless_webp');
+  assert.equal(pngToWebp.outputPath, '/cache/compiled/hero.webp');
+
+  const scaledWebp = resolveCompiledSpriteTarget({
+    entityId: 'stage_fx',
+    sourcePath: '/imports/stage_fx.webp',
+    cacheDir: '/cache/compiled',
+    scaleFactor: 0.5,
+  });
+  assert.equal(scaledWebp.mode, 'encode_lossless_webp');
+  assert.equal(scaledWebp.outputPath, '/cache/compiled/stage_fx.webp');
+});
+
+test('evaluateWatchdogExecution enforces 250ms init / 25ms frame budgets and quarantines after 3 trips', () => {
+  const initOk = evaluateWatchdogExecution({ phase: 'init', elapsedMs: 120, previousTrips: 0 });
+  assert.equal(initOk.timedOut, false);
+  assert.equal(initOk.quarantined, false);
+
+  const trip1 = evaluateWatchdogExecution({ phase: 'frame', elapsedMs: 32, previousTrips: 0 });
+  assert.equal(trip1.timedOut, true);
+  assert.equal(trip1.tripCount, 1);
+  assert.equal(trip1.quarantined, false);
+
+  const trip3 = evaluateWatchdogExecution({ phase: 'frame', elapsedMs: 40, previousTrips: 2 });
+  assert.equal(trip3.timedOut, true);
+  assert.equal(trip3.tripCount, 3);
+  assert.equal(trip3.quarantined, true);
+
+  const skipped = evaluateWatchdogExecution({ phase: 'frame', elapsedMs: 1, previousTrips: 3 });
+  assert.equal(skipped.skippedDueToQuarantine, true);
+  assert.equal(skipped.quarantined, true);
+});
+

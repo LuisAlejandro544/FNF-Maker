@@ -12,6 +12,46 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 static SESSION: OnceLock<Mutex<EngineSession>> = OnceLock::new();
+static HOT_COMPILE_PROGRESS: OnceLock<Mutex<HotCompileProgressState>> = OnceLock::new();
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotCompileProgressState {
+    pub active: bool,
+    pub progress: f32,
+    pub phase: String,
+    pub detail: String,
+}
+
+impl Default for HotCompileProgressState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            progress: 0.0,
+            phase: "Preparando compilador...".to_string(),
+            detail: String::new(),
+        }
+    }
+}
+
+fn progress_store() -> &'static Mutex<HotCompileProgressState> {
+    HOT_COMPILE_PROGRESS.get_or_init(|| Mutex::new(HotCompileProgressState::default()))
+}
+
+pub fn set_hot_compile_progress(active: bool, progress: f32, phase: &str, detail: &str) {
+    let mut guard = progress_store().lock();
+    guard.active = active;
+    guard.progress = progress.clamp(0.0, 1.0);
+    guard.phase = phase.to_string();
+    guard.detail = detail.to_string();
+}
+
+pub fn get_hot_compile_progress_json() -> String {
+    let guard = progress_store().lock();
+    serde_json::to_string(&*guard).unwrap_or_else(|_| {
+        "{\"active\":false,\"progress\":0.0,\"phase\":\"Preparando...\",\"detail\":\"\"}".to_string()
+    })
+}
 
 pub fn init_session(cache_dir: PathBuf) -> &'static Mutex<EngineSession> {
     init_session_with_dirs(cache_dir.clone(), cache_dir)
@@ -724,12 +764,39 @@ mod jni_exports {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetHotCompileProgress<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        // Lectura atómica sobre `HOT_COMPILE_PROGRESS` sin bloquear jamás el mutex `SESSION`.
+        let json = get_hot_compile_progress_json();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeHotCompile<'local>(
         mut env: JNIEnv<'local>,
         _cls: JClass<'local>,
         tier_code: jint,
     ) -> JString<'local> {
-        let json = session().lock().hot_compile(tier_code);
+        set_hot_compile_progress(
+            true,
+            0.02,
+            "Iniciando compilador en caliente...",
+            "Preparando caché incremental y pool paralelo",
+        );
+        let json = session().lock().hot_compile_with_progress(
+            tier_code,
+            |pct, phase, detail| {
+                set_hot_compile_progress(true, pct, phase, detail);
+            },
+        );
+        set_hot_compile_progress(
+            false,
+            0.90,
+            "Motor Rust completado",
+            "Cargando texturas WebP y audio hacia gameplay",
+        );
         to_jstr(&mut env, &json)
     }
 

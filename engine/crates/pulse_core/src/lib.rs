@@ -23,13 +23,19 @@ pub mod sparrow;
 pub mod stage;
 pub mod svg_skin;
 
-pub use astc_loader::{decode_astc_file_bytes, is_astc_path, load_sprite_image, read_sprite_dimensions};
+pub use astc_loader::{
+    decode_astc_file_bytes, is_astc_path, is_webp_path, load_sprite_image, read_sprite_dimensions,
+    save_lossless_webp,
+};
 pub use atlas_json::{AnimateDocument, AnimateSpritemap, DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
 pub use chart::{ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection};
 pub use frame_memory::{ArenaSpan, FrameBumpArena, FrameVisibleNote, LruCache, NotePlayState, NoteSlidingWindow};
 pub use hot_compile::{
-    CompiledBundle, DeviceResourceTier, HotCompileReport, hot_compile_project,
-    hot_compile_project_to_dir,
+    AssetFileFingerprint, AudioMergeFingerprint, AudioSlotFingerprint, CachedAudioEntry,
+    CachedScriptEntry, CachedTextureEntry, CompiledBundle, DeviceResourceTier,
+    HotCompileManifest, HotCompileReport, SCRIPT_OPTIMIZER_CACHE_VERSION, TextureFingerprint,
+    fnv1a_64_bytes, fnv1a_64_str, hot_compile_project, hot_compile_project_to_dir,
+    hot_compile_project_to_dir_with_manifest,
 };
 pub use project::{
     AudioTrackSlot, CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MobileControlMode, ModProject,

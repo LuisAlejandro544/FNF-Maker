@@ -1922,4 +1922,194 @@ export function evaluateFnfHealthBar(health: number): FnfHealthBarLayout {
   };
 }
 
+export interface FileFingerprintSpec {
+  fileLenBytes: number;
+  modifiedEpochMs: number;
+  contentHash: string;
+}
 
+export interface TextureCacheFingerprintSpec {
+  entityId: string;
+  tier: 'low_32bit' | 'balanced' | 'high_quality';
+  file: FileFingerprintSpec;
+  hasAtlas: boolean;
+  entityWidth: number;
+  entityHeight: number;
+  entityScale: number;
+}
+
+export interface AudioSlotCacheFingerprintSpec {
+  slotIndex: number;
+  file: FileFingerprintSpec;
+  volume: number;
+  muted: boolean;
+}
+
+export interface AudioMixCacheFingerprintSpec {
+  sampleRate: number;
+  slots: AudioSlotCacheFingerprintSpec[];
+}
+
+export interface ScriptCacheFingerprintSpec {
+  scriptId: string;
+  language: 'lua' | 'ts' | 'js';
+  optimizedSourceHash: string;
+  artifactExists: boolean;
+}
+
+export interface CompiledSpriteTargetSpec {
+  mode: 'passthrough_webp' | 'encode_lossless_webp';
+  outputPath: string;
+  scaleFactor: number;
+}
+
+/**
+ * Calcula una huella determinista FNV-1a de 64 bits en hexadecimal (16 caracteres),
+ * equivalente a `fnv1a_64_bytes` / `fnv1a_64_str` en `pulse_core::hot_compile`.
+ */
+export function fnv1a64Hex(input: string | Uint8Array): string {
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= BigInt(bytes[i]);
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+function sameFileFingerprint(a: FileFingerprintSpec, b: FileFingerprintSpec): boolean {
+  return (
+    a.fileLenBytes === b.fileLenBytes &&
+    a.modifiedEpochMs === b.modifiedEpochMs &&
+    a.contentHash === b.contentHash
+  );
+}
+
+/**
+ * Determina si una textura WebP compilada en caché puede reutilizarse sin re-decodificar ni re-codificar.
+ */
+export function shouldReuseCachedTexture(
+  previous: TextureCacheFingerprintSpec | undefined,
+  current: TextureCacheFingerprintSpec,
+  cachedFileExists: boolean,
+): boolean {
+  if (!previous || !cachedFileExists) return false;
+  return (
+    previous.entityId === current.entityId &&
+    previous.tier === current.tier &&
+    previous.hasAtlas === current.hasAtlas &&
+    Math.round(previous.entityWidth) === Math.round(current.entityWidth) &&
+    Math.round(previous.entityHeight) === Math.round(current.entityHeight) &&
+    Math.abs(previous.entityScale - current.entityScale) < 0.0005 &&
+    sameFileFingerprint(previous.file, current.file)
+  );
+}
+
+/**
+ * Determina si `compiled_mix.wav` sigue vigente según pistas, volumen, silencio y sample rate.
+ */
+export function shouldReuseCachedAudio(
+  previous: AudioMixCacheFingerprintSpec | undefined,
+  current: AudioMixCacheFingerprintSpec,
+  compiledWavExists: boolean,
+): boolean {
+  if (!previous || !compiledWavExists) return false;
+  if (previous.sampleRate !== current.sampleRate) return false;
+  if (previous.slots.length !== current.slots.length) return false;
+
+  for (let i = 0; i < current.slots.length; i++) {
+    const prev = previous.slots[i];
+    const curr = current.slots[i];
+    if (
+      prev.slotIndex !== curr.slotIndex ||
+      prev.muted !== curr.muted ||
+      Math.abs(prev.volume - curr.volume) >= 0.001 ||
+      !sameFileFingerprint(prev.file, curr.file)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Determina si el artefacto pre-compilado de script (`.luac` o `.js`) coincide con el hash optimizado.
+ */
+export function shouldReuseCachedScript(
+  previous: ScriptCacheFingerprintSpec | undefined,
+  current: Omit<ScriptCacheFingerprintSpec, 'artifactExists'>,
+  artifactExists: boolean,
+): boolean {
+  if (!previous || !artifactExists) return false;
+  return (
+    previous.scriptId === current.scriptId &&
+    previous.language === current.language &&
+    previous.optimizedSourceHash === current.optimizedSourceHash
+  );
+}
+
+/**
+ * Decide si el sprite fuente ya es `.webp` en escala 1:1 (pass-through) o si debe compilarse
+ * hacia `<cacheDir>/<entityId>.webp` mediante WebP lossless de máxima compresión.
+ */
+export function resolveCompiledSpriteTarget(params: {
+  entityId: string;
+  sourcePath: string;
+  cacheDir: string;
+  scaleFactor: number;
+}): CompiledSpriteTargetSpec {
+  const isAlreadyWebp = params.sourcePath.trim().toLowerCase().endsWith('.webp');
+  const needsRescale = params.scaleFactor < 0.9999;
+  if (isAlreadyWebp && !needsRescale) {
+    return {
+      mode: 'passthrough_webp',
+      outputPath: params.sourcePath,
+      scaleFactor: 1.0,
+    };
+  }
+  const cleanDir = params.cacheDir.replace(/\/+$/, '');
+  return {
+    mode: 'encode_lossless_webp',
+    outputPath: `${cleanDir}/${params.entityId}.webp`,
+    scaleFactor: Math.min(1.0, Math.max(0.05, params.scaleFactor)),
+  };
+}
+
+export interface WatchdogExecutionOutcome {
+  timedOut: boolean;
+  tripCount: number;
+  quarantined: boolean;
+  skippedDueToQuarantine: boolean;
+}
+
+/**
+ * Modela el Watchdog real de scripts en runtime (`lua_vm.rs` / `js_vm.rs`):
+ * presupuesto de 250 ms en `onCreate` o 25 ms por frame y cuarentena automática tras 3 disparos.
+ */
+export function evaluateWatchdogExecution(params: {
+  phase: 'init' | 'frame';
+  elapsedMs: number;
+  previousTrips: number;
+  maxTripsBeforeQuarantine?: number;
+}): WatchdogExecutionOutcome {
+  const maxTrips = params.maxTripsBeforeQuarantine ?? 3;
+  if (params.previousTrips >= maxTrips) {
+    return {
+      timedOut: false,
+      tripCount: params.previousTrips,
+      quarantined: true,
+      skippedDueToQuarantine: true,
+    };
+  }
+  const budgetMs = params.phase === 'init' ? 250 : 25;
+  const timedOut = params.elapsedMs > budgetMs;
+  const tripCount = timedOut ? params.previousTrips + 1 : params.previousTrips;
+  return {
+    timedOut,
+    tripCount,
+    quarantined: tripCount >= maxTrips,
+    skippedDueToQuarantine: false,
+  };
+}
