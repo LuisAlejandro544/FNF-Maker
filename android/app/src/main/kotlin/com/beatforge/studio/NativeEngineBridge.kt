@@ -170,6 +170,19 @@ object NativeEngineBridge {
     external fun nativeReorderStageEntity(entityId: String, action: String): String
 
     @JvmStatic
+    external fun nativeUpdateStageCamera(
+        enabled: Boolean,
+        baseX: Float,
+        baseY: Float,
+        baseZoom: Float,
+        followMode: String,
+        followIntervalBeats: Int,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean
+    ): String
+
+    @JvmStatic
     external fun nativeAddScript(language: String): String
 
     @JvmStatic

@@ -37,6 +37,19 @@ pub struct ProjectSummaryJson {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StageCameraSnapshotJson {
+    pub enabled: bool,
+    pub base_x: f32,
+    pub base_y: f32,
+    pub base_zoom: f32,
+    pub follow_mode: String,
+    pub follow_interval_beats: u32,
+    pub smooth_speed: f32,
+    pub pan_strength: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSnapshotJson {
     pub id: String,
     pub name: String,
@@ -46,6 +59,7 @@ pub struct ProjectSnapshotJson {
     pub audio_offset_ms: f64,
     pub chart: ChartSnapshotJson,
     pub audio_tracks: Vec<AudioTrackSnapshotJson>,
+    pub stage_camera: StageCameraSnapshotJson,
     pub stage_entities: Vec<StageEntitySnapshotJson>,
     pub scripts: Vec<ScriptSnapshotJson>,
     pub arrow_skin_name: String,
@@ -159,6 +173,9 @@ pub struct CompileReportJson {
     pub discarded_heavy_loops: usize,
     pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
+    pub merged_audio_tracks: usize,
+    pub compiled_audio_path: Option<String>,
+    pub estimated_audio_ram_saved_kb: usize,
     pub compiled_texture_paths: HashMap<String, String>,
 }
 
@@ -399,8 +416,26 @@ impl EngineSession {
             discarded_heavy_loops: r.discarded_heavy_loops,
             neutralized_unbounded_loops: r.neutralized_unbounded_loops,
             estimated_vram_saved_kb: r.estimated_vram_saved_kb,
+            merged_audio_tracks: r.merged_audio_tracks,
+            compiled_audio_path: r
+                .compiled_audio_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            estimated_audio_ram_saved_kb: r.estimated_audio_ram_saved_kb,
             compiled_texture_paths: self.compiled_texture_paths.clone(),
         });
+
+        let cam_cfg = &self.project.stage.camera;
+        let stage_camera = StageCameraSnapshotJson {
+            enabled: cam_cfg.enabled,
+            base_x: cam_cfg.base_x,
+            base_y: cam_cfg.base_y,
+            base_zoom: cam_cfg.base_zoom,
+            follow_mode: cam_cfg.follow_mode.as_lua_str().to_string(),
+            follow_interval_beats: cam_cfg.follow_interval_beats,
+            smooth_speed: cam_cfg.smooth_speed,
+            pan_strength: cam_cfg.pan_strength,
+        };
 
         ProjectSnapshotJson {
             id: self.project.id.clone(),
@@ -474,6 +509,7 @@ impl EngineSession {
                     .collect(),
             },
             audio_tracks,
+            stage_camera,
             stage_entities,
             scripts,
             arrow_skin_name: self.project.arrow_skin.skin_name.clone(),

@@ -8,6 +8,8 @@ package com.beatforge.studio
 import org.json.JSONArray
 import org.json.JSONObject
 
+const val CAMERA_SELECTION_ID = "__camera__"
+
 enum class StudioScreen(val label: String) {
     Hub("Inicio"),
     Projects("Proyectos"),
@@ -21,7 +23,7 @@ enum class StudioScreen(val label: String) {
 }
 
 enum class DeviceTier(val code: Int, val label: String, val subtitle: String) {
-    LowRam32Bit(0, "32-bit / RAM Baja", "Fondos <=2048px, atlas <=3072px para móviles modestos"),
+    LowRam32Bit(0, "32-bit / RAM Baja", "Fondos <=1536px, atlas <=2560px y audio streaming"),
     Balanced(1, "Equilibrado HD", "Atlas hasta 4096px y fondos <=2560px en 32/64 bits"),
     HighQuality(2, "Alta Calidad", "Texturas y atlas hasta 4096px, máxima nitidez HD")
 }
@@ -146,6 +148,9 @@ data class CompileReportSnapshot(
     val discardedHeavyLoops: Int = 0,
     val neutralizedUnboundedLoops: Int = 0,
     val estimatedVramSavedKb: Int = 0,
+    val mergedAudioTracks: Int = 0,
+    val compiledAudioPath: String? = null,
+    val estimatedAudioRamSavedKb: Int = 0,
     val compiledTexturePaths: Map<String, String> = emptyMap()
 )
 
@@ -163,6 +168,17 @@ data class ProjectSummary(
     val isActive: Boolean = false
 )
 
+data class StageCameraSnapshot(
+    val enabled: Boolean = true,
+    val baseX: Float = 640f,
+    val baseY: Float = 360f,
+    val baseZoom: Float = 1f,
+    val followMode: String = "beats",
+    val followIntervalBeats: Int = 4,
+    val smoothSpeed: Float = 6f,
+    val panStrength: Float = 0.72f
+)
+
 data class ProjectSnapshot(
     val id: String = "",
     val name: String = "Nuevo Mod BeatForge",
@@ -172,6 +188,7 @@ data class ProjectSnapshot(
     val audioOffsetMs: Double = 0.0,
     val chart: ChartSnapshot = ChartSnapshot(),
     val audioTracks: List<AudioTrackSnapshot> = emptyList(),
+    val stageCamera: StageCameraSnapshot = StageCameraSnapshot(),
     val stageEntities: List<StageEntitySnapshot> = emptyList(),
     val scripts: List<ScriptSnapshot> = emptyList(),
     val arrowSkinName: String = "Vector Original",
@@ -475,8 +492,27 @@ object StudioJsonParser {
                 discardedHeavyLoops = r.optInt("discardedHeavyLoops", 0),
                 neutralizedUnboundedLoops = r.optInt("neutralizedUnboundedLoops", 0),
                 estimatedVramSavedKb = r.optInt("estimatedVramSavedKb", 0),
+                mergedAudioTracks = r.optInt("mergedAudioTracks", 0),
+                compiledAudioPath = optNullableString(r, "compiledAudioPath"),
+                estimatedAudioRamSavedKb = r.optInt("estimatedAudioRamSavedKb", 0),
                 compiledTexturePaths = stringMap(r.optJSONObject("compiledTexturePaths"))
             )
+        }
+
+        val camObj = obj.optJSONObject("stageCamera")
+        val stageCamera = if (camObj != null) {
+            StageCameraSnapshot(
+                enabled = camObj.optBoolean("enabled", true),
+                baseX = camObj.optDouble("baseX", 640.0).toFloat(),
+                baseY = camObj.optDouble("baseY", 360.0).toFloat(),
+                baseZoom = camObj.optDouble("baseZoom", 1.0).toFloat(),
+                followMode = camObj.optString("followMode", "beats"),
+                followIntervalBeats = camObj.optInt("followIntervalBeats", 4),
+                smoothSpeed = camObj.optDouble("smoothSpeed", 6.0).toFloat(),
+                panStrength = camObj.optDouble("panStrength", 0.72).toFloat()
+            )
+        } else {
+            StageCameraSnapshot()
         }
 
         return ProjectSnapshot(
@@ -488,6 +524,7 @@ object StudioJsonParser {
             audioOffsetMs = obj.optDouble("audioOffsetMs", 0.0),
             chart = chart,
             audioTracks = tracks,
+            stageCamera = stageCamera,
             stageEntities = entities,
             scripts = scripts,
             arrowSkinName = obj.optString("arrowSkinName", "Original"),

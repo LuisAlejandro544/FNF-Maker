@@ -11,11 +11,11 @@ use super::{
     SparrowFrameJson, VisibleNoteJson, control_mode_to_key, dir_to_anim, parse_anim_kind,
     role_to_key, trigger_role_anim,
 };
-use image::ImageFormat;
+use pulse_audio::{StreamingAudioSource, merge_tracks_to_wav};
 use pulse_core::EntityRole;
 use pulse_core::frame_memory::{ArenaSpan, FrameBumpArena, FrameVisibleNote, NotePlayState, NoteSlidingWindow};
-use pulse_core::hot_compile::{DeviceResourceTier, hot_compile_project};
-use pulse_core::project::MobileControlMode;
+use pulse_core::hot_compile::{DeviceResourceTier, hot_compile_project_to_dir};
+use pulse_core::project::{MAX_AUDIO_TRACKS, MobileControlMode};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_scripting::{ModScriptRuntime, ScriptCommand};
 use std::collections::HashMap;
@@ -32,12 +32,59 @@ pub const BINARY_NOTE_SIZE: usize = 28;
 struct StepSimOutput {
     song_pos_ms: f64,
     active_bpm: f64,
+    beat_phase: f32,
     countdown_stage: i32,
     countdown_label: String,
     countdown_progress: f32,
     player_holding_mask: u8,
     opp_holding_mask: u8,
     visible_span: ArenaSpan<FrameVisibleNote>,
+}
+
+fn sync_script_host_state(
+    state: &pulse_scripting::ScriptHostState,
+    stage: &pulse_core::StageScene,
+    entities: &[pulse_core::StageEntity],
+    song_pos_ms: f64,
+    active_bpm: f64,
+    must_hit: bool,
+) {
+    *state.song_pos_ms.lock() = song_pos_ms;
+    *state.current_bpm.lock() = active_bpm;
+    *state.camera_x.lock() = stage.camera_x;
+    *state.camera_y.lock() = stage.camera_y;
+    *state.camera_zoom.lock() = stage.camera_zoom;
+    *state.camera_base_zoom.lock() = stage.camera_base_zoom;
+    *state.must_hit_section.lock() = must_hit;
+
+    let mut pos_map = state.entity_positions.lock();
+    pos_map.clear();
+    let mut has_opp_alias = false;
+    let mut has_player_alias = false;
+    let mut has_bg_alias = false;
+    let mut has_deco_alias = false;
+    for ent in entities {
+        pos_map.insert(ent.id.clone(), (ent.x, ent.y));
+        match ent.role {
+            EntityRole::Opponent if !has_opp_alias => {
+                pos_map.insert("opponent".to_string(), (ent.x, ent.y));
+                has_opp_alias = true;
+            }
+            EntityRole::Player if !has_player_alias => {
+                pos_map.insert("player".to_string(), (ent.x, ent.y));
+                has_player_alias = true;
+            }
+            EntityRole::Background if !has_bg_alias => {
+                pos_map.insert("background".to_string(), (ent.x, ent.y));
+                has_bg_alias = true;
+            }
+            EntityRole::Decoration if !has_deco_alias => {
+                pos_map.insert("decoration".to_string(), (ent.x, ent.y));
+                has_deco_alias = true;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn role_to_code(role: EntityRole) -> u32 {
@@ -128,40 +175,49 @@ impl EngineSession {
             _ => DeviceResourceTier::Balanced,
         };
 
-        self.texture_lru_cache
-            .set_budget(tier.lru_cache_budget_bytes(), 64);
+        if self.project.active_audio_count() > 0
+            && self.decoded_tracks.iter().all(|t| t.is_none())
+        {
+            self.reload_project_audio_tracks();
+        }
 
-        let bundle = hot_compile_project(&self.project, tier, |_pct, _msg| {});
         let out_dir = self.cache_dir.join("compiled_cache");
         let _ = std::fs::create_dir_all(&out_dir);
 
-        let mut texture_paths = HashMap::new();
+        // Escribe PNGs reescalados/ASTC directo a disco sin retener buffers RGBA en RAM
+        let mut bundle = hot_compile_project_to_dir(&self.project, tier, Some(&out_dir), |_pct, _msg| {});
 
-        // Entidades cuya resolución ya era óptima pasan directo sin recompresión ni escritura extra
-        for (entity_id, orig_path) in &bundle.passthrough_paths {
+        let mut texture_paths = HashMap::with_capacity(bundle.compiled_texture_paths.len());
+        for (entity_id, path) in &bundle.compiled_texture_paths {
             texture_paths.insert(
                 entity_id.clone(),
-                orig_path.to_string_lossy().into_owned(),
+                path.to_string_lossy().into_owned(),
             );
         }
 
-        // Entidades optimizadas o decodificadas de .astc se guardan en caché disco + caché LRU en RAM
-        for (entity_id, tex) in &bundle.textures {
-            let byte_size = tex.rgba.len();
-            self.texture_lru_cache
-                .insert(entity_id.clone(), tex.clone(), byte_size);
-
-            if let Some(rgba_img) = image::RgbaImage::from_raw(tex.width, tex.height, tex.rgba.clone()) {
-                let target_file = out_dir.join(format!("{}.png", entity_id));
-                if image::DynamicImage::ImageRgba8(rgba_img)
-                    .save_with_format(&target_file, ImageFormat::Png)
-                    .is_ok()
-                {
-                    texture_paths.insert(
-                        entity_id.clone(),
-                        target_file.to_string_lossy().into_owned(),
-                    );
-                }
+        // Fusionar las 1–3 pistas activas en un único archivo WAV compilado en caliente para streaming
+        let target_sr = self
+            .audio_engine
+            .mixer
+            .sample_rate
+            .load(Ordering::Relaxed)
+            .max(8000);
+        let compiled_wav = out_dir.join("compiled_mix.wav");
+        match merge_tracks_to_wav(
+            &self.decoded_tracks,
+            &self.project.audio_tracks,
+            target_sr,
+            &compiled_wav,
+        ) {
+            Ok(Some(merge_rep)) => {
+                bundle.report.merged_audio_tracks = merge_rep.merged_tracks;
+                bundle.report.compiled_audio_path = Some(merge_rep.output_path.clone());
+                bundle.report.estimated_audio_ram_saved_kb = merge_rep.estimated_ram_saved_kb;
+                self.compiled_audio_path = Some(merge_rep.output_path);
+            }
+            _ => {
+                let _ = std::fs::remove_file(&compiled_wav);
+                self.compiled_audio_path = None;
             }
         }
 
@@ -173,10 +229,16 @@ impl EngineSession {
 
     pub fn start_gameplay(&mut self) -> String {
         self.gameplay = None;
-        let bundle = self
-            .compiled_bundle
-            .take()
-            .unwrap_or_else(|| hot_compile_project(&self.project, DeviceResourceTier::Balanced, |_, _| {}));
+        self.project.ensure_camera_script();
+        self.project
+            .stage
+            .apply_camera_config(self.project.stage.camera.clone());
+        self.project.stage.camera_shake = 0.0;
+
+        let out_dir = self.cache_dir.join("compiled_cache");
+        let bundle = self.compiled_bundle.clone().unwrap_or_else(|| {
+            hot_compile_project_to_dir(&self.project, DeviceResourceTier::Balanced, Some(&out_dir), |_, _| {})
+        });
 
         // Asegurar orden cronológico para el descarte progresivo por ventana deslizante
         self.project
@@ -186,10 +248,42 @@ impl EngineSession {
 
         let (mut runtime, script_errors) =
             ModScriptRuntime::load_from_scripts(&bundle.optimized_scripts);
+        let initial_must_hit = self.project.chart.must_hit_at_ms(0.0);
+        sync_script_host_state(
+            &runtime.state,
+            &self.project.stage,
+            &bundle.active_entities,
+            0.0,
+            self.project.chart.bpm.max(40.0),
+            initial_must_hit,
+        );
         runtime.call_on_create();
 
+        self.audio_engine.mixer.pause();
+        self.audio_engine.mixer.clear_stream_source();
         self.audio_engine.ensure_started();
-        let any_audio = self.project.active_audio_count() > 0;
+
+        // Si existe mezcla compilada en disco, reproducir en streaming (~512 KB) y liberar
+        // de RAM las pistas PCM sueltas (1–3 archivos completos) durante la partida.
+        let compiled_audio = self
+            .compiled_audio_path
+            .clone()
+            .or_else(|| bundle.report.compiled_audio_path.clone());
+        let mut using_stream = false;
+        if let Some(wav_path) = compiled_audio {
+            if wav_path.exists() {
+                if let Ok(stream) = StreamingAudioSource::open(&wav_path) {
+                    self.audio_engine.mixer.set_stream_source(Some(stream));
+                    self.audio_engine.mixer.clear_tracks();
+                    for slot in 0..MAX_AUDIO_TRACKS {
+                        self.decoded_tracks[slot] = None;
+                    }
+                    using_stream = true;
+                }
+            }
+        }
+
+        let any_audio = using_stream || self.project.active_audio_count() > 0;
         self.audio_engine
             .mixer
             .use_demo_synth
@@ -263,7 +357,10 @@ impl EngineSession {
         };
         let active_bpm = self.project.chart.bpm_at_ms(song_pos_ms.max(0.0)).max(40.0);
         let beat_ms = 60_000.0 / active_bpm;
+        let beat_sec = (beat_ms / 1000.0) as f32;
+        let beat_phase = (song_pos_ms.rem_euclid(beat_ms) / beat_ms) as f32;
         let current_beat = (song_pos_ms / beat_ms).floor() as i32;
+        let must_hit_now = self.project.chart.must_hit_at_ms(song_pos_ms.max(0.0));
 
         let (countdown_stage, countdown_label, countdown_progress) = if in_countdown {
             let cd_beat_ms = 60_000.0 / self.project.chart.bpm.max(40.0);
@@ -303,17 +400,50 @@ impl EngineSession {
         let mut opp_holding_mask: u8 = 0;
 
         if !session.paused && !session.finished {
-            *session.runtime.state.song_pos_ms.lock() = song_pos_ms;
+            sync_script_host_state(
+                &session.runtime.state,
+                &self.project.stage,
+                &session.bundle.active_entities,
+                song_pos_ms,
+                active_bpm,
+                must_hit_now,
+            );
+
             if current_beat > session.last_beat {
                 session.last_beat = current_beat;
                 session.runtime.call_on_beat_hit(current_beat);
+
+                // Sincroniza el ciclo Idle de cada personaje con el pulso del BPM activo en chart.json.
+                // Si el Idle dura bastante más que 1 beat, alterna cada 2 beats para evitar cortes bruscos.
+                for ent in &mut session.bundle.active_entities {
+                    if ent.active_anim == CharacterAnimKind::Idle
+                        && matches!(ent.role, EntityRole::Player | EntityRole::Opponent)
+                    {
+                        let idle_dur = ent
+                            .atlas
+                            .as_ref()
+                            .map(|a| a.anim_duration_sec(CharacterAnimKind::Idle))
+                            .unwrap_or(0.0);
+                        let beat_every = if idle_dur > beat_sec * 1.35 { 2 } else { 1 };
+                        if current_beat.rem_euclid(beat_every) == 0 {
+                            ent.anim_timer_sec = 0.0;
+                        }
+                    }
+                }
             }
             session.runtime.call_on_update(dt);
 
             for cmd in session.runtime.drain_commands() {
                 match cmd {
+                    ScriptCommand::SetCameraPos { x, y } => {
+                        self.project.stage.camera_x = x.clamp(-1000.0, 2600.0);
+                        self.project.stage.camera_y = y.clamp(-1000.0, 1800.0);
+                    }
                     ScriptCommand::SetCameraZoom(z) => {
-                        self.project.stage.camera_zoom = z.clamp(0.5, 2.5);
+                        self.project.stage.camera_zoom = z.clamp(0.35, 2.5);
+                    }
+                    ScriptCommand::SetCameraBaseZoom(z) => {
+                        self.project.stage.camera_base_zoom = z.clamp(0.35, 2.5);
                     }
                     ScriptCommand::ShakeCamera { intensity } => {
                         self.project.stage.camera_shake = intensity.clamp(0.0, 25.0);
@@ -363,7 +493,9 @@ impl EngineSession {
                 }
             }
 
-            self.project.stage.camera_zoom += (1.0 - self.project.stage.camera_zoom) * (dt * 6.0);
+            let target_base_zoom = self.project.stage.camera_base_zoom.clamp(0.35, 2.5);
+            self.project.stage.camera_zoom +=
+                (target_base_zoom - self.project.stage.camera_zoom) * (dt * 6.0);
             self.project.stage.camera_shake *= (1.0 - dt * 10.0).max(0.0);
 
             let mut any_recent_miss = false;
@@ -502,9 +634,10 @@ impl EngineSession {
                 .player_missed_recently
                 .store(any_recent_miss, Ordering::Relaxed);
 
+            let sing_hold_sec = (beat_sec * 0.90).clamp(0.28, 0.58);
             for ent in &mut session.bundle.active_entities {
                 ent.anim_timer_sec += dt;
-                if ent.active_anim != CharacterAnimKind::Idle && ent.anim_timer_sec > 0.48 {
+                if ent.active_anim != CharacterAnimKind::Idle && ent.anim_timer_sec > sing_hold_sec {
                     ent.active_anim = CharacterAnimKind::Idle;
                     ent.anim_timer_sec = 0.0;
                 }
@@ -541,6 +674,7 @@ impl EngineSession {
         Some(StepSimOutput {
             song_pos_ms,
             active_bpm,
+            beat_phase,
             countdown_stage,
             countdown_label,
             countdown_progress,
@@ -595,44 +729,62 @@ impl EngineSession {
         };
 
         let session = self.gameplay.as_mut().expect("gameplay active");
+        let beat_pulse = (1.0 - sim.beat_phase).clamp(0.0, 1.0).powi(2);
 
         let mut entities = std::mem::take(&mut session.step_entities_scratch);
         entities.clear();
         for ent in &session.bundle.active_entities {
-            // Tocar el caché LRU si la entidad reside en él para mantener frescura de uso
-            let _ = self.texture_lru_cache.get(&ent.id);
-
             let tex_path = session
                 .compiled_texture_paths
                 .get(&ent.id)
                 .cloned()
                 .or_else(|| ent.image_path.as_ref().map(|p| p.to_string_lossy().into_owned()));
-            let frame = ent
+            let is_char = matches!(ent.role, EntityRole::Player | EntityRole::Opponent);
+            let clamp_idle = ent.active_anim == CharacterAnimKind::Idle && is_char;
+            let frame_obj = ent
                 .atlas
                 .as_ref()
-                .and_then(|a| a.frame_at(ent.active_anim, ent.anim_timer_sec))
-                .map(|f| SparrowFrameJson {
-                    found: true,
-                    raw_name: f.raw_name.clone(),
-                    x: f.x,
-                    y: f.y,
-                    width: f.width,
-                    height: f.height,
-                    frame_x: f.frame_x,
-                    frame_y: f.frame_y,
-                    frame_width: f.frame_width,
-                    frame_height: f.frame_height,
-                    rotated: f.rotated,
-                });
+                .and_then(|a| a.frame_at_synced(ent.active_anim, ent.anim_timer_sec, clamp_idle));
+            let idle_frames = ent
+                .atlas
+                .as_ref()
+                .map(|a| a.frame_count(CharacterAnimKind::Idle))
+                .unwrap_or(0);
+            let use_static_bpm_bounce =
+                is_char && ent.active_anim == CharacterAnimKind::Idle && idle_frames <= 1;
+            let render_y = if use_static_bpm_bounce {
+                ent.y - beat_pulse * 6.0
+            } else {
+                ent.y
+            };
+            let render_scale = if use_static_bpm_bounce {
+                ent.scale * (1.0 + beat_pulse * 0.025)
+            } else {
+                ent.scale
+            };
+
+            let frame = frame_obj.map(|f| SparrowFrameJson {
+                found: true,
+                raw_name: f.raw_name.clone(),
+                x: f.x,
+                y: f.y,
+                width: f.width,
+                height: f.height,
+                frame_x: f.frame_x,
+                frame_y: f.frame_y,
+                frame_width: f.frame_width,
+                frame_height: f.frame_height,
+                rotated: f.rotated,
+            });
             entities.push(GameplayEntityFrameJson {
                 id: ent.id.clone(),
                 display_name: ent.display_name.clone(),
                 role: role_to_key(ent.role).to_string(),
                 x: ent.x,
-                y: ent.y,
+                y: render_y,
                 width: ent.width,
                 height: ent.height,
-                scale: ent.scale,
+                scale: render_scale,
                 opacity: ent.opacity,
                 flip_x: ent.flip_x,
                 visible: ent.visible,
@@ -740,6 +892,7 @@ impl EngineSession {
         };
 
         let session = self.gameplay.as_mut().expect("gameplay active");
+        let beat_pulse = (1.0 - sim.beat_phase).clamp(0.0, 1.0).powi(2);
         let entity_count = session.bundle.active_entities.len().min(u16::MAX as usize);
         let visible_notes = session.frame_arena.get_slice(sim.visible_span);
         let note_count = visible_notes.len().min(u16::MAX as usize);
@@ -837,11 +990,29 @@ impl EngineSession {
         w.write_u16(note_count as u16);
 
         for ent in session.bundle.active_entities.iter().take(entity_count) {
-            let _ = self.texture_lru_cache.get(&ent.id);
+            let is_char = matches!(ent.role, EntityRole::Player | EntityRole::Opponent);
+            let clamp_idle = ent.active_anim == CharacterAnimKind::Idle && is_char;
             let frame = ent
                 .atlas
                 .as_ref()
-                .and_then(|a| a.frame_at(ent.active_anim, ent.anim_timer_sec));
+                .and_then(|a| a.frame_at_synced(ent.active_anim, ent.anim_timer_sec, clamp_idle));
+            let idle_frames = ent
+                .atlas
+                .as_ref()
+                .map(|a| a.frame_count(CharacterAnimKind::Idle))
+                .unwrap_or(0);
+            let use_static_bpm_bounce =
+                is_char && ent.active_anim == CharacterAnimKind::Idle && idle_frames <= 1;
+            let render_y = if use_static_bpm_bounce {
+                ent.y - beat_pulse * 6.0
+            } else {
+                ent.y
+            };
+            let render_scale = if use_static_bpm_bounce {
+                ent.scale * (1.0 + beat_pulse * 0.025)
+            } else {
+                ent.scale
+            };
 
             let mut e_flags: u32 = (role_to_code(ent.role) & 0x3) << 4;
             if ent.visible {
@@ -858,10 +1029,10 @@ impl EngineSession {
             }
 
             w.write_f32(ent.x);
-            w.write_f32(ent.y);
+            w.write_f32(render_y);
             w.write_f32(ent.width);
             w.write_f32(ent.height);
-            w.write_f32(ent.scale);
+            w.write_f32(render_scale);
             w.write_f32(ent.opacity);
             w.write_u32(e_flags);
 
@@ -928,7 +1099,13 @@ impl EngineSession {
 
     pub fn stop_gameplay(&mut self) -> String {
         self.audio_engine.mixer.pause();
+        self.audio_engine.mixer.clear_stream_source();
         self.gameplay = None;
+        if self.project.active_audio_count() > 0
+            && self.decoded_tracks.iter().all(|t| t.is_none())
+        {
+            self.reload_project_audio_tracks();
+        }
         self.ok_response("Partida finalizada")
     }
 }

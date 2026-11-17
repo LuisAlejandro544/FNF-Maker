@@ -136,10 +136,13 @@ fun GameplayScreen(
             val shakeX = sin(shakePhase) * frameState.cameraShake * sx
             val shakeY = cos(shakePhase * 1.3f) * frameState.cameraShake * sy
             val pivot = Offset(size.width * 0.5f, size.height * 0.5f)
+            val camTransX = pivot.x - frameState.cameraX * sx
+            val camTransY = pivot.y - frameState.cameraY * sy
 
             withTransform({
                 translate(shakeX, shakeY)
                 scale(frameState.cameraZoom, frameState.cameraZoom, pivot = pivot)
+                translate(camTransX, camTransY)
             }) {
                 // 1. Dibujar entidades compiladas en Z-order usando índice pre-resuelto O(1)
                 val entCount = frameState.entityCount

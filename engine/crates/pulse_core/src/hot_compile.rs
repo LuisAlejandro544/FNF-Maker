@@ -5,8 +5,9 @@
 //!    lógica necesaria o neutralizar bucles infinitos que consumirían demasiados recursos.
 //! 2. Analiza visibilidad para DESCARTAR objetos que permanecerán invisibles toda la canción.
 //! 3. Evalúa de forma inteligente la resolución de cada sprite respecto a su tamaño real en pantalla
-//!    y la capacidad del teléfono: si ya es óptima, la deja pasar sin pérdida ni recompresión;
-//!    si es excesiva, la ajusta suavemente sin que se note bajón de calidad.
+//!    y la capacidad del teléfono (optimizado para 32-bit `armeabi-v7a` y 2-3 GB RAM):
+//!    si ya es óptima, pasa directo sin recompresión; si requiere ajuste, escribe el PNG optimizado
+//!    directo a caché en disco dentro del pool `rayon` sin retener buffers RGBA duplicados en RAM.
 //! 4. Rasteriza la skin de flechas `.svg` en paralelo y entrega un `CompiledBundle` listo para juego.
 
 use crate::astc_loader::{is_astc_path, load_sprite_image, read_sprite_dimensions};
@@ -15,11 +16,12 @@ use crate::project::{ModProject, ScriptAsset};
 use crate::script_optimizer::optimize_scripts_for_hot_compile;
 use crate::stage::StageEntity;
 use crate::svg_skin::{RasterizedArrow, rasterize_arrow_skin};
+use image::ImageFormat;
 use image::imageops::FilterType;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -27,7 +29,7 @@ use std::time::Instant;
 /// Perfil de optimización según la memoria/arquitectura del teléfono del usuario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceResourceTier {
-    /// Teléfonos 32-bit o poca RAM: protege atlas multi-frame hasta 3072px y fondos hasta 2048px.
+    /// Teléfonos 32-bit (`armeabi-v7a`) o 2–3 GB RAM: atlas hasta 2560px y fondos estáticos hasta 1536px.
     LowRam32Bit,
     /// Teléfonos gama media 64-bit: protege atlas hasta 4096px y fondos hasta 2560px.
     Balanced,
@@ -38,18 +40,18 @@ pub enum DeviceResourceTier {
 impl DeviceResourceTier {
     pub fn max_texture_dim(self) -> u32 {
         match self {
-            DeviceResourceTier::LowRam32Bit => 2048,
+            DeviceResourceTier::LowRam32Bit => 1536,
             DeviceResourceTier::Balanced => 2560,
             DeviceResourceTier::HighQuality => 4096,
         }
     }
 
     /// Los atlas multi-frame (Sparrow/Animate) dividen la hoja entre decenas de cuadros,
-    /// por lo que reducirlos agresivamente destruye la nitidez del personaje.
+    /// por lo que conservar mayor margen en atlas evita borrosidad del personaje.
     pub fn max_dim_for_entity(self, has_atlas: bool) -> u32 {
         if has_atlas {
             match self {
-                DeviceResourceTier::LowRam32Bit => 3072,
+                DeviceResourceTier::LowRam32Bit => 2560,
                 DeviceResourceTier::Balanced => 4096,
                 DeviceResourceTier::HighQuality => 4096,
             }
@@ -58,25 +60,25 @@ impl DeviceResourceTier {
         }
     }
 
-    /// Presupuesto de memoria RAM para la caché LRU de texturas según la gama del dispositivo.
+    /// Presupuesto de memoria RAM recomendado para caché auxiliar según la gama del dispositivo.
     pub fn lru_cache_budget_bytes(self) -> usize {
         match self {
-            DeviceResourceTier::LowRam32Bit => 48 * 1024 * 1024,
-            DeviceResourceTier::Balanced => 96 * 1024 * 1024,
-            DeviceResourceTier::HighQuality => 192 * 1024 * 1024,
+            DeviceResourceTier::LowRam32Bit => 24 * 1024 * 1024,
+            DeviceResourceTier::Balanced => 64 * 1024 * 1024,
+            DeviceResourceTier::HighQuality => 128 * 1024 * 1024,
         }
     }
 
     pub fn label_es(self) -> &'static str {
         match self {
-            DeviceResourceTier::LowRam32Bit => "Económico (32-bit / Atlas <=3072px)",
+            DeviceResourceTier::LowRam32Bit => "Económico (32-bit / <=1536–2560px)",
             DeviceResourceTier::Balanced => "Balanceado HD (Atlas <=4096px)",
             DeviceResourceTier::HighQuality => "Máxima Calidad (<=4096px)",
         }
     }
 }
 
-/// Textura RGBA optimizada en RAM lista para cargarse a GPU o caché LRU.
+/// Textura RGBA optimizada temporal (solo se retiene si no se indicó carpeta de caché en disco).
 #[derive(Debug, Clone)]
 pub struct OptimizedTexture {
     pub entity_id: String,
@@ -97,13 +99,19 @@ pub struct HotCompileReport {
     pub discarded_heavy_loops: usize,
     pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
+    pub merged_audio_tracks: usize,
+    pub compiled_audio_path: Option<PathBuf>,
+    pub estimated_audio_ram_saved_kb: usize,
 }
 
 /// Paquete final ya compilado y optimizado que consume la pantalla de gameplay.
+/// Cuando se compila hacia caché en disco (`out_dir`), `textures` queda vacío para evitar
+/// copias dobles/triples de píxeles RGBA en RAM.
 #[derive(Debug, Clone)]
 pub struct CompiledBundle {
     pub active_entities: Vec<StageEntity>,
     pub textures: HashMap<String, OptimizedTexture>,
+    pub compiled_texture_paths: HashMap<String, PathBuf>,
     pub passthrough_paths: HashMap<String, PathBuf>,
     pub optimized_scripts: Vec<ScriptAsset>,
     pub arrow_textures: HashMap<NoteDirection, RasterizedArrow>,
@@ -205,7 +213,8 @@ pub fn compute_smart_texture_scale(
 }
 
 enum CompiledTexOutcome {
-    Optimized(String, OptimizedTexture),
+    DiskCached(String, PathBuf),
+    InMemory(String, OptimizedTexture),
     PassThrough(String, PathBuf),
 }
 
@@ -213,6 +222,20 @@ enum CompiledTexOutcome {
 pub fn hot_compile_project<F>(
     project: &ModProject,
     tier: DeviceResourceTier,
+    on_progress: F,
+) -> CompiledBundle
+where
+    F: Fn(f32, &str) + Send + Sync,
+{
+    hot_compile_project_to_dir(project, tier, None, on_progress)
+}
+
+/// Compila en caliente escribiendo las texturas reescaladas/decodificadas directamente a `out_dir`
+/// en disco para que NO queden copias RGBA duplicadas en la RAM nativa de Rust.
+pub fn hot_compile_project_to_dir<F>(
+    project: &ModProject,
+    tier: DeviceResourceTier,
+    out_dir: Option<&Path>,
     on_progress: F,
 ) -> CompiledBundle
 where
@@ -243,6 +266,10 @@ where
     }
 
     active_entities.sort_by_key(|e| e.z_index);
+
+    if let Some(dir) = out_dir {
+        let _ = std::fs::create_dir_all(dir);
+    }
 
     on_progress(0.35, "Evaluando resolución inteligente de sprites...");
 
@@ -295,15 +322,26 @@ where
                 (img, 1.0)
             };
 
-            let rgba8 = final_img.to_rgba8();
-            let w = rgba8.width();
-            let h = rgba8.height();
-
             let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
             let pct = 0.35 + 0.45 * ((completed as f32) / (total_entities as f32));
             on_progress(pct, "Optimizando spritesheets necesarios...");
 
-            Some(CompiledTexOutcome::Optimized(
+            // Si hay carpeta de caché en disco, escribir el PNG ahí y liberar RGBA inmediatamente
+            // para evitar retener doble/triple copia de texturas en RAM.
+            if let Some(dir) = out_dir {
+                let target_file = dir.join(format!("{}.png", entity.id));
+                if final_img
+                    .save_with_format(&target_file, ImageFormat::Png)
+                    .is_ok()
+                {
+                    return Some(CompiledTexOutcome::DiskCached(entity.id.clone(), target_file));
+                }
+            }
+
+            let rgba8 = final_img.to_rgba8();
+            let w = rgba8.width();
+            let h = rgba8.height();
+            Some(CompiledTexOutcome::InMemory(
                 entity.id.clone(),
                 OptimizedTexture {
                     entity_id: entity.id.clone(),
@@ -317,13 +355,18 @@ where
         .collect();
 
     let mut textures = HashMap::new();
+    let mut compiled_texture_paths = HashMap::new();
     let mut passthrough_paths = HashMap::new();
     for item in outcomes {
         match item {
-            CompiledTexOutcome::Optimized(id, tex) => {
+            CompiledTexOutcome::DiskCached(id, path) => {
+                compiled_texture_paths.insert(id, path);
+            }
+            CompiledTexOutcome::InMemory(id, tex) => {
                 textures.insert(id, tex);
             }
             CompiledTexOutcome::PassThrough(id, path) => {
+                compiled_texture_paths.insert(id.clone(), path.clone());
                 passthrough_paths.insert(id, path);
             }
         }
@@ -343,11 +386,15 @@ where
         discarded_heavy_loops: script_report.discarded_heavy_loops,
         neutralized_unbounded_loops: script_report.neutralized_unbounded_loops,
         estimated_vram_saved_kb: vram_saved_bytes.load(Ordering::Relaxed) / 1024,
+        merged_audio_tracks: 0,
+        compiled_audio_path: None,
+        estimated_audio_ram_saved_kb: 0,
     };
 
     CompiledBundle {
         active_entities,
         textures,
+        compiled_texture_paths,
         passthrough_paths,
         optimized_scripts,
         arrow_textures,
@@ -372,6 +419,11 @@ mod tests {
             compute_smart_texture_scale(&prop, 1920, 1080, DeviceResourceTier::Balanced),
             1.0
         );
+
+        // En modo 32-bit/RAM baja un fondo 4096 se ajusta a <=1536px
+        let low_ratio =
+            compute_smart_texture_scale(&prop, 4096, 2048, DeviceResourceTier::LowRam32Bit);
+        assert!(low_ratio <= 1536.0 / 4096.0 + 0.001);
 
         // 4096x4096 para un ícono de 200x200 -> sí reduce para ahorrar VRAM manteniendo nitidez
         let mut icon = StageEntity::new("icon", "Decoración", EntityRole::Decoration);

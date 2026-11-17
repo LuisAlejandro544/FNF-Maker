@@ -300,7 +300,11 @@ private fun BeatForgeRootContent(
                         onReorderEntity = { id, action -> viewModel.reorderStageEntity(id, action) },
                         onRequestImportPng = { entityId ->
                             viewModel.requestImport(ImportKind.SpritePng(entityId))
-                        }
+                        },
+                        onUpdateCamera = { enabled, bx, by, bz, mode, beats, smooth, pan, commit ->
+                            viewModel.updateStageCamera(enabled, bx, by, bz, mode, beats, smooth, pan, commit)
+                        },
+                        onOpenCameraScript = { viewModel.openCameraScriptInStudio() }
                     )
 
                     StudioScreen.ScriptStudio -> ScriptStudioScreen(

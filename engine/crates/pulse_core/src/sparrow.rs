@@ -217,8 +217,47 @@ impl SparrowAtlas {
         bindings
     }
 
+    /// Devuelve la cantidad de frames asignados a una animación.
+    pub fn frame_count(&self, kind: CharacterAnimKind) -> usize {
+        self.bindings
+            .get(&kind)
+            .or_else(|| self.bindings.get(&CharacterAnimKind::Idle))
+            .and_then(|prefix| self.animations.get(prefix))
+            .map(|anim| anim.frames.len())
+            .unwrap_or(0)
+    }
+
+    /// Devuelve la duración total en segundos de una reproducción de la animación.
+    pub fn anim_duration_sec(&self, kind: CharacterAnimKind) -> f32 {
+        let Some(prefix) = self
+            .bindings
+            .get(&kind)
+            .or_else(|| self.bindings.get(&CharacterAnimKind::Idle))
+        else {
+            return 0.0;
+        };
+        let Some(anim) = self.animations.get(prefix) else {
+            return 0.0;
+        };
+        if anim.frames.is_empty() {
+            return 0.0;
+        }
+        (anim.frames.len() as f32) / anim.fps.max(1.0)
+    }
+
     /// Devuelve el fotograma correspondiente al tiempo transcurrido de animación.
     pub fn frame_at(&self, kind: CharacterAnimKind, elapsed_sec: f32) -> Option<&SparrowFrame> {
+        self.frame_at_synced(kind, elapsed_sec, false)
+    }
+
+    /// Devuelve el fotograma permitiendo sujetar (`force_clamp`) el último frame entre beats
+    /// cuando el `Idle` se dispara al ritmo del BPM en gameplay.
+    pub fn frame_at_synced(
+        &self,
+        kind: CharacterAnimKind,
+        elapsed_sec: f32,
+        force_clamp: bool,
+    ) -> Option<&SparrowFrame> {
         let prefix = self
             .bindings
             .get(&kind)
@@ -228,7 +267,7 @@ impl SparrowAtlas {
             return None;
         }
         let raw_idx = (elapsed_sec.max(0.0) * anim.fps.max(1.0)) as usize;
-        let idx = if anim.looped {
+        let idx = if anim.looped && !force_clamp {
             raw_idx % anim.frames.len()
         } else {
             raw_idx.min(anim.frames.len() - 1)

@@ -27,9 +27,15 @@ pub use astc_loader::{decode_astc_file_bytes, is_astc_path, load_sprite_image, r
 pub use atlas_json::{AnimateDocument, AnimateSpritemap, DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
 pub use chart::{ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection};
 pub use frame_memory::{ArenaSpan, FrameBumpArena, FrameVisibleNote, LruCache, NotePlayState, NoteSlidingWindow};
-pub use hot_compile::{CompiledBundle, DeviceResourceTier, HotCompileReport, hot_compile_project};
-pub use project::{AudioTrackSlot, MobileControlMode, ModProject, ScriptAsset, ScriptLanguage};
+pub use hot_compile::{
+    CompiledBundle, DeviceResourceTier, HotCompileReport, hot_compile_project,
+    hot_compile_project_to_dir,
+};
+pub use project::{
+    AudioTrackSlot, CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MobileControlMode, ModProject,
+    ScriptAsset, ScriptLanguage, parse_camera_config_from_lua, render_camera_lua_script,
+};
 pub use script_optimizer::{ScriptBatchReport, ScriptLoopOptResult, optimize_scripts_for_hot_compile, optimize_single_script};
 pub use sparrow::{AnimSet, CharacterAnimKind, SparrowAtlas, SparrowFrame};
-pub use stage::{EntityRole, StageEntity, StageScene};
+pub use stage::{CameraFollowMode, EntityRole, StageCameraConfig, StageEntity, StageScene};
 pub use svg_skin::{ArrowSkinSet, RasterizedArrow, default_arrow_svg_bundle, default_receptor_svg_bundle, desaturate_to_neutral_receptor, rasterize_arrow_skin};

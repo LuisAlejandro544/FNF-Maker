@@ -7,9 +7,15 @@
 use super::{ActionResultJson, EngineSession, parse_control_mode_key, parse_lang_key, parse_role_key};
 use image::ImageFormat;
 use pulse_audio::decode_audio_file;
-use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_core::project::{
+    CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MAX_AUDIO_TRACKS, parse_camera_config_from_lua,
+    render_camera_lua_script,
+};
 use pulse_core::svg_skin::{ArrowSkinSet, rasterize_svg_str};
-use pulse_core::{ChartData, NoteDirection, ScriptAsset, ScriptLanguage, StageEntity};
+use pulse_core::{
+    CameraFollowMode, ChartData, NoteDirection, ScriptAsset, ScriptLanguage, StageCameraConfig,
+    StageEntity,
+};
 use pulse_scripting::validate_script_syntax;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -234,7 +240,11 @@ impl EngineSession {
             ent.visible = visible;
             ent.flip_x = flip_x;
             self.mark_dirty_and_maybe_save(commit_save);
-            self.ok_response("Objeto actualizado")
+            if commit_save {
+                self.ok_response("Objeto actualizado")
+            } else {
+                "{\"ok\":true,\"message\":\"Objeto actualizado\",\"data\":null}".to_string()
+            }
         } else {
             self.err_response("Objeto no encontrado")
         }
@@ -252,6 +262,52 @@ impl EngineSession {
         self.ok_response("Orden Z actualizado")
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_stage_camera(
+        &mut self,
+        enabled: bool,
+        base_x: f32,
+        base_y: f32,
+        base_zoom: f32,
+        follow_mode_key: &str,
+        follow_interval_beats: i32,
+        smooth_speed: f32,
+        pan_strength: f32,
+        commit_save: bool,
+    ) -> String {
+        let cfg = StageCameraConfig {
+            enabled,
+            base_x,
+            base_y,
+            base_zoom,
+            follow_mode: CameraFollowMode::from_str_loose(follow_mode_key),
+            follow_interval_beats: follow_interval_beats.clamp(1, 32) as u32,
+            smooth_speed,
+            pan_strength,
+        };
+        self.project.stage.apply_camera_config(cfg);
+        self.project.ensure_camera_script();
+
+        let applied_cfg = self.project.stage.camera.clone();
+        if let Some(cam_script) = self
+            .project
+            .scripts
+            .iter_mut()
+            .find(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME)
+        {
+            cam_script.enabled = applied_cfg.enabled;
+            cam_script.source_code =
+                render_camera_lua_script(&applied_cfg, Some(&cam_script.source_code));
+        }
+
+        self.mark_dirty_and_maybe_save(commit_save);
+        if commit_save {
+            self.ok_response("Cámara y camera_system.lua actualizados")
+        } else {
+            "{\"ok\":true,\"message\":\"Cámara actualizada\",\"data\":null}".to_string()
+        }
+    }
+
     pub fn add_script(&mut self, lang_key: &str) -> String {
         let lang = parse_lang_key(lang_key);
         let idx = self.project.scripts.len() + 1;
@@ -259,7 +315,7 @@ impl EngineSession {
         let name = format!("custom_{}.{}", idx, lang.extension());
         let template = match lang {
             ScriptLanguage::Lua => {
-                "-- Nuevo script Lua 5.4\nfunction onBeatHit(beat)\n    setCameraZoom(1.03)\nend\n"
+                "-- Nuevo script Lua 5.4\nfunction onBeatHit(beat)\n    setCameraZoom(getCameraBaseZoom() + 0.03)\nend\n"
             }
             ScriptLanguage::TypeScript => {
                 "// Nuevo script TypeScript (oxc)\nfunction onBeatHit(beat: number): void {\n    if (beat % 4 === 0) shakeCamera(4.0);\n}\n"
@@ -310,14 +366,35 @@ impl EngineSession {
     }
 
     pub fn update_script(&mut self, script_id: &str, enabled: bool, source_code: String) -> String {
+        let mut is_camera_script = false;
+        let mut parsed_cam_cfg: Option<StageCameraConfig> = None;
+
         if let Some(script) = self.project.scripts.iter_mut().find(|s| s.id == script_id) {
             script.enabled = enabled;
             script.source_code = source_code;
-            self.mark_dirty_and_maybe_save(false);
-            self.ok_response("Script guardado")
+            if script.id == CAMERA_SCRIPT_ID || script.name == CAMERA_SCRIPT_NAME {
+                is_camera_script = true;
+                let mut cfg =
+                    parse_camera_config_from_lua(&script.source_code, &self.project.stage.camera);
+                cfg.enabled = enabled;
+                parsed_cam_cfg = Some(cfg);
+            }
         } else {
-            self.err_response("Script no encontrado")
+            return self.err_response("Script no encontrado");
         }
+
+        if is_camera_script {
+            if let Some(cfg) = parsed_cam_cfg {
+                self.project.stage.apply_camera_config(cfg);
+            }
+        }
+
+        self.mark_dirty_and_maybe_save(true);
+        self.ok_response(if is_camera_script {
+            "Script camera_system.lua y cámara del escenario sincronizados"
+        } else {
+            "Script guardado"
+        })
     }
 
     pub fn validate_script(&self, script_id: &str) -> String {

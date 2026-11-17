@@ -37,14 +37,17 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Oponente/Decoración) y Z-order
 │       │       ├── svg_skin.rs          # Flechas SVG originales + rasterizador resvg a RGBA8888
 │       │       ├── project.rs           # Modelo ModProject, límites (máx. 3 pistas audio) y demo integrada
-│       │       └── hot_compile.rs       # Compilación en caliente paralela (rayon) y poda de invisibles
+│       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
+│       │       ├── script_optimizer.rs  # Poda y neutralización de bucles pesados en Lua/TS/JS
+│       │       └── hot_compile.rs       # Compilación en caliente paralela (rayon) directa a disco, poda y límites 32-bit
 │       │
 │       ├── pulse_audio/                 # Subsistema de audio de baja latencia 100% Rust puro
 │       │   ├── Cargo.toml
 │       │   └── src/
-│       │       ├── lib.rs               # AudioEngineHandle y control del stream
-│       │       ├── decoder.rs           # Decodificación OGG (lewton), WAV (hound), MP3 (rmp3) y resampleo
-│       │       ├── mixer.rs             # Mezclador lock-free 3 pistas + reloj maestro + voces/tonos de cuenta regresiva BPM
+│       │       ├── lib.rs               # AudioEngineHandle, merge_tracks_to_wav y control del stream
+│       │       ├── decoder.rs           # Decodificación OGG/WAV/MP3 a PCM i16 compacto (50% menos RAM) y resampleo
+│       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`) + streaming SPSC 512 KB desde disco
+│       │       ├── mixer.rs             # Mezclador lock-free (stream único o pistas estudio) + reloj maestro + countdown BPM
 │       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados
@@ -61,12 +64,13 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           ├── build.rs                 # Script de compilación limpio (sin C++ ni GameActivity)
 │           └── src/
 │               ├── lib.rs               # Exportaciones JNI (`Java_com_beatforge_studio_NativeEngineBridge_*`)
-│               └── session/             # `EngineSession` modularizado por responsabilidad
+│               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession`, constructores y helpers compartidos
-│                   ├── dto.rs           # DTOs serializables hacia Kotlin (`ProjectSnapshot` y respuestas JSON)
+│                   ├── dto.rs           # DTOs serializables hacia Kotlin (`ProjectSnapshot` y reportes compilados)
 │                   ├── editor_ops.rs    # Operaciones de editor de chart, audio, escenario, scripts y skins SVG
 │                   ├── sprite_ops.rs    # Importación PNG/ASTC, Sparrow XML, baking Animate y previsualización
-│                   └── gameplay_ops.rs  # Hot-compile en caliente, bucle 60 FPS, notas y evaluación gameplay
+│                   ├── persistence_ops.rs # Guardado/carga de proyectos en disco y recarga de pistas PCM
+│                   └── gameplay_ops.rs  # Hot-compile texturas + WAV único, streaming en gameplay y paquete binario BFGP
 │
 ├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
@@ -82,10 +86,11 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           └── kotlin/com/beatforge/studio/
 │               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + CreateDocument (.json)
 │               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
+│               ├── GameplayFrameState.kt# Decoder binario BFGP sin GC por frame en Kotlin
 │               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so`
 │               ├── SafFileBridge.kt     # Copia segura de URIs SAF a almacenamiento interno
 │               ├── StudioModels.kt      # Data classes Kotlin y parsers `org.json` de snapshots Rust
-│               ├── StudioViewModel.kt   # Estado reactivo (`StateFlow`), detección RAM/ABI, corrutinas IO y Bitmaps
+│               ├── StudioViewModel.kt   # Estado reactivo (`StateFlow`), detección RAM/ABI/lowMemory, exclusión mutua Bitmaps
 │               └── ui/
 │                   ├── theme/
 │                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
@@ -96,20 +101,23 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   │   └── ChartJsonDetailsDialog.kt # Modal para editar metadatos `chart.json`, `changeBPM` y eventos
 │                   └── screens/
 │                       ├── HubScreen.kt           # Metadatos del mod, métricas y accesos directos modulares
+│                       ├── ProjectsScreen.kt      # Gestión, creación, respaldo y carga de proyectos locales
 │                       ├── ChartScreen.kt         # Coordinador del editor manual de 8 carriles
 │                       ├── chart/                 # Subcomponentes modulares del editor de chart
 │                       │   ├── ChartToolsPanel.kt # Panel izquierdo: importar/exportar, BPM, sustain y salto por secciones
 │                       │   └── ChartTimelineGrid.kt # Rejilla vertical continua de 8 carriles y toggle de cámara
 │                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda en vivo
 │                       ├── SpriteLabScreen.kt     # Importador PNG/ASTC + XML/JSON (Animate) y visor 24 FPS con rotación
-│                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas
+│                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas (60 FPS)
 │                       ├── stage/                 # Subcomponentes modulares del editor de escenario
-│                       │   ├── StageLayersPanel.kt    # Panel izquierdo de capas Z-order, visibilidad y reordenado
-│                       │   ├── StageCanvasPreview.kt  # Lienzo interactivo 16:9 con rejilla guía y arrastre táctil
-│                       │   └── StageEntityInspector.kt# Inspector derecho: rol 2x2, cruceta 1/10/35px, escala y flipX
-│                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS y validador de sintaxis Rust
-│                       ├── HotCompileScreen.kt    # Pantalla de carga durante la optimización automática Rayon
-│                       └── GameplayScreen.kt      # Renderizado Canvas 60 FPS, overlay cuenta regresiva BPM y 4 zonas touch
+│                       │   ├── StageLiveTransformState.kt # Estado en vivo 60Hz aislado para entidades y marco de cámara
+│                       │   ├── StageLayersPanel.kt    # Panel izquierdo con capa `Cámara (.lua)` y lista virtualizada `LazyColumn`
+│                       │   ├── StageCanvasPreview.kt  # Lienzo 16:9 con marco de captura de cámara, culling y arrastre táctil
+│                       │   ├── StageCameraInspector.kt# Inspector de Cámara (beats/secciones, captura/zoom, cruceta y enlace .lua)
+│                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders y flipX
+│                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS (incluyendo `camera_system.lua`) y validador Rust
+│                       ├── HotCompileScreen.kt    # Pantalla de carga durante optimización Rayon + fusión de audio en caliente
+│                       └── GameplayScreen.kt      # Renderizado Canvas 60 FPS, traslación/zoom de cámara, Idle BPM y 4 zonas touch
 │
 ├── sdk/                                 # Recursos y SDK para creadores de mods y pruebas locales
 │   ├── assets/arrows/                   # Flechas SVG originales libres de derechos (left, down, up, right)

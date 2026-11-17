@@ -1,7 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/StageEditorScreen.kt
 // Propósito: Coordinador del editor visual de escenario en 3 columnas modulares:
-// capas Z-order (`StageLayersPanel`), lienzo interactivo 16:9 (`StageCanvasPreview`)
-// e inspector de propiedades (`StageEntityInspector`).
+// capas Z-order virtualizadas (`StageLayersPanel`), lienzo interactivo 16:9 (`StageCanvasPreview`)
+// e inspector de propiedades (`StageEntityInspector`) sincronizados con `StageLiveTransformState`
+// para fluidez de 60 FPS incluso con decenas de elementos en escena.
 
 package com.beatforge.studio.ui.screens
 
@@ -16,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -24,11 +26,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.beatforge.studio.CAMERA_SELECTION_ID
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.ProjectSnapshot
+import com.beatforge.studio.ui.screens.stage.StageCameraInspector
 import com.beatforge.studio.ui.screens.stage.StageCanvasPreview
 import com.beatforge.studio.ui.screens.stage.StageEntityInspector
 import com.beatforge.studio.ui.screens.stage.StageLayersPanel
+import com.beatforge.studio.ui.screens.stage.StageLiveTransformState
 import com.beatforge.studio.ui.theme.StudioColors
 
 @Composable
@@ -54,11 +59,46 @@ fun StageEditorScreen(
         commitSave: Boolean
     ) -> Unit,
     onReorderEntity: (entityId: String, action: String) -> Unit,
-    onRequestImportPng: (entityId: String) -> Unit
+    onRequestImportPng: (entityId: String) -> Unit,
+    onUpdateCamera: (
+        enabled: Boolean,
+        baseX: Float,
+        baseY: Float,
+        baseZoom: Float,
+        followMode: String,
+        followIntervalBeats: Int,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean
+    ) -> Unit,
+    onOpenCameraScript: () -> Unit
 ) {
     val entities = snapshot.stageEntities
-    val selected = entities.find { it.id == selectedEntityId } ?: entities.firstOrNull()
+    val stageCamera = snapshot.stageCamera
+    val isCameraSelected = selectedEntityId == CAMERA_SELECTION_ID
+    val selected = remember(entities, selectedEntityId, isCameraSelected) {
+        if (isCameraSelected) null else (entities.find { it.id == selectedEntityId } ?: entities.firstOrNull())
+    }
     var stepPx by remember { mutableIntStateOf(10) }
+    val liveTransform = remember { StageLiveTransformState() }
+
+    LaunchedEffect(
+        selected?.id,
+        selected?.x,
+        selected?.y,
+        selected?.scale,
+        selected?.opacity
+    ) {
+        liveTransform.syncFromEntity(selected)
+    }
+
+    LaunchedEffect(
+        stageCamera.baseX,
+        stageCamera.baseY,
+        stageCamera.baseZoom
+    ) {
+        liveTransform.syncFromCamera(stageCamera)
+    }
 
     Row(
         modifier = Modifier
@@ -69,7 +109,23 @@ fun StageEditorScreen(
         StageLayersPanel(
             entities = entities,
             selected = selected,
+            stageCamera = stageCamera,
+            isCameraSelected = isCameraSelected,
             onSelectEntity = onSelectEntity,
+            onSelectCamera = { onSelectEntity(CAMERA_SELECTION_ID) },
+            onToggleCameraEnabled = {
+                onUpdateCamera(
+                    !stageCamera.enabled,
+                    stageCamera.baseX,
+                    stageCamera.baseY,
+                    stageCamera.baseZoom,
+                    stageCamera.followMode,
+                    stageCamera.followIntervalBeats,
+                    stageCamera.smoothSpeed,
+                    stageCamera.panStrength,
+                    true
+                )
+            },
             onAddEntity = onAddEntity,
             onToggleVisibility = { ent ->
                 onUpdateEntity(
@@ -95,13 +151,30 @@ fun StageEditorScreen(
         StageCanvasPreview(
             entities = entities,
             selected = selected,
+            stageCamera = stageCamera,
+            isCameraSelected = isCameraSelected,
             entityBitmaps = entityBitmaps,
+            liveTransform = liveTransform,
             onSelectEntity = onSelectEntity,
+            onSelectCamera = { onSelectEntity(CAMERA_SELECTION_ID) },
             onUpdateEntity = onUpdateEntity,
+            onUpdateCamera = { bx, by, bz, commit ->
+                onUpdateCamera(
+                    stageCamera.enabled,
+                    bx,
+                    by,
+                    bz,
+                    stageCamera.followMode,
+                    stageCamera.followIntervalBeats,
+                    stageCamera.smoothSpeed,
+                    stageCamera.panStrength,
+                    commit
+                )
+            },
             modifier = Modifier.weight(0.43f)
         )
 
-        // Columna derecha: Inspector del objeto seleccionado
+        // Columna derecha: Inspector de Cámara o del objeto seleccionado
         Surface(
             modifier = Modifier
                 .weight(0.33f)
@@ -110,7 +183,17 @@ fun StageEditorScreen(
             color = StudioColors.BgPanel,
             border = BorderStroke(1.dp, StudioColors.BorderSubtle)
         ) {
-            if (selected == null) {
+            if (isCameraSelected) {
+                StageCameraInspector(
+                    camera = stageCamera,
+                    entities = entities,
+                    stepPx = stepPx,
+                    liveTransform = liveTransform,
+                    onStepChange = { stepPx = it },
+                    onUpdateCamera = onUpdateCamera,
+                    onOpenCameraScript = onOpenCameraScript
+                )
+            } else if (selected == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Selecciona una capa", color = StudioColors.TextMuted, fontSize = 12.sp)
                 }
@@ -118,6 +201,7 @@ fun StageEditorScreen(
                 StageEntityInspector(
                     entity = selected,
                     stepPx = stepPx,
+                    liveTransform = liveTransform,
                     onStepChange = { stepPx = it },
                     onUpdate = onUpdateEntity,
                     onRequestImportPng = { onRequestImportPng(selected.id) }

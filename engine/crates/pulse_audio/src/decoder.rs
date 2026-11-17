@@ -1,8 +1,8 @@
 //! Archivo: engine/crates/pulse_audio/src/decoder.rs
 //! Propósito: Decodifica archivos de audio `.ogg` (lewton), `.wav` (hound) y `.mp3` (rmp3)
-//! a PCM estéreo flotante (`Vec<f32>` intercalado L/R) y los remuestrea automáticamente
-//! a la frecuencia nativa de salida de Oboe (típicamente 48000 Hz) para mantener
-//! las hasta 3 pistas perfectamente sincronizadas sin deriva.
+//! a PCM estéreo compacto de 16 bits (`Vec<i16>` intercalado L/R, 50% menos RAM que `f32`)
+//! y los remuestrea automáticamente a la frecuencia nativa de salida (típicamente 48000 Hz)
+//! para mantener las hasta 3 pistas sincronizadas sin deriva en teléfonos 32 y 64 bits.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -23,12 +23,12 @@ pub enum AudioDecodeError {
     Mp3Empty,
 }
 
-/// Pista decodificada en memoria lista para mezclar en tiempo real por el hilo de Oboe.
+/// Pista decodificada en memoria compacta (`i16`) para previsualización en estudio y horneado.
 #[derive(Debug, Clone)]
 pub struct DecodedTrack {
     pub sample_rate: u32,
-    /// Muestras estéreo intercaladas `[L0, R0, L1, R1, ...]`.
-    pub stereo_samples: Vec<f32>,
+    /// Muestras estéreo intercaladas en 16 bits `[L0, R0, L1, R1, ...]` (mitad de RAM que `f32`).
+    pub stereo_samples: Vec<i16>,
     /// Picos normalizados (64 barras) para dibujar la forma de onda en la UI.
     pub waveform_peaks: Vec<f32>,
 }
@@ -41,6 +41,10 @@ impl DecodedTrack {
     pub fn duration_ms(&self) -> f64 {
         let frames = self.frame_count() as f64;
         (frames / (self.sample_rate.max(1) as f64)) * 1000.0
+    }
+
+    pub fn memory_bytes(&self) -> usize {
+        self.stereo_samples.len() * std::mem::size_of::<i16>()
     }
 }
 
@@ -77,7 +81,7 @@ pub fn decode_audio_file(
     })
 }
 
-fn decode_ogg(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
+fn decode_ogg(path: &Path) -> Result<(u32, Vec<i16>), AudioDecodeError> {
     let file = File::open(path)?;
     let mut reader = lewton::inside_ogg::OggStreamReader::new(BufReader::new(file))
         .map_err(|e| AudioDecodeError::Ogg(e.to_string()))?;
@@ -89,16 +93,17 @@ fn decode_ogg(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
         .read_dec_packet_itl()
         .map_err(|e| AudioDecodeError::Ogg(e.to_string()))?
     {
-        if channels == 1 {
+        if channels <= 1 {
+            out.reserve(packet.len() * 2);
             for s in packet {
-                let f = (s as f32) / 32768.0;
-                out.push(f);
-                out.push(f);
+                out.push(s);
+                out.push(s);
             }
         } else {
+            out.reserve((packet.len() / channels) * 2);
             for chunk in packet.chunks_exact(channels) {
-                out.push((chunk[0] as f32) / 32768.0);
-                out.push((chunk[1] as f32) / 32768.0);
+                out.push(chunk[0]);
+                out.push(chunk[1]);
             }
         }
     }
@@ -106,30 +111,39 @@ fn decode_ogg(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
     Ok((rate, out))
 }
 
-fn decode_wav(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
+fn decode_wav(path: &Path) -> Result<(u32, Vec<i16>), AudioDecodeError> {
     let mut reader =
         hound::WavReader::open(path).map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
     let spec = reader.spec();
-    let channels = spec.channels as usize;
-    let mut mono_or_multi: Vec<f32> = Vec::new();
+    let channels = (spec.channels as usize).max(1);
+    let mut mono_or_multi: Vec<i16> = Vec::new();
 
     match spec.sample_format {
         hound::SampleFormat::Float => {
             for s in reader.samples::<f32>() {
-                mono_or_multi.push(s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?);
+                let f = s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
+                let q = (f.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                mono_or_multi.push(q);
             }
         }
         hound::SampleFormat::Int => {
-            let max_val = ((1_i64 << (spec.bits_per_sample.saturating_sub(1))) as f32).max(1.0);
-            for s in reader.samples::<i32>() {
-                let v = s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
-                mono_or_multi.push((v as f32) / max_val);
+            if spec.bits_per_sample == 16 {
+                for s in reader.samples::<i16>() {
+                    mono_or_multi.push(s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?);
+                }
+            } else {
+                let max_val = ((1_i64 << (spec.bits_per_sample.saturating_sub(1))) as f32).max(1.0);
+                for s in reader.samples::<i32>() {
+                    let v = s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
+                    let norm = ((v as f32) / max_val).clamp(-1.0, 1.0);
+                    mono_or_multi.push((norm * 32767.0).round() as i16);
+                }
             }
         }
     }
 
-    let mut stereo = Vec::with_capacity((mono_or_multi.len() / channels.max(1)) * 2);
-    if channels <= 1 {
+    let mut stereo = Vec::with_capacity((mono_or_multi.len() / channels) * 2);
+    if channels == 1 {
         for s in mono_or_multi {
             stereo.push(s);
             stereo.push(s);
@@ -144,7 +158,7 @@ fn decode_wav(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
     Ok((spec.sample_rate, stereo))
 }
 
-fn decode_mp3(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
+fn decode_mp3(path: &Path) -> Result<(u32, Vec<i16>), AudioDecodeError> {
     let bytes = std::fs::read(path)?;
     let mut decoder = rmp3::Decoder::new(&bytes);
     let mut out = Vec::new();
@@ -155,16 +169,17 @@ fn decode_mp3(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
             detected_rate = audio.sample_rate();
             let ch = audio.channels() as usize;
             let samples = audio.samples();
-            if ch == 1 {
+            if ch <= 1 {
+                out.reserve(samples.len() * 2);
                 for &s in samples {
-                    let f = (s as f32) / 32768.0;
-                    out.push(f);
-                    out.push(f);
+                    out.push(s);
+                    out.push(s);
                 }
             } else {
+                out.reserve((samples.len() / ch) * 2);
                 for pair in samples.chunks_exact(ch) {
-                    out.push((pair[0] as f32) / 32768.0);
-                    out.push((pair[1] as f32) / 32768.0);
+                    out.push(pair[0]);
+                    out.push(pair[1]);
                 }
             }
         }
@@ -177,8 +192,8 @@ fn decode_mp3(path: &Path) -> Result<(u32, Vec<f32>), AudioDecodeError> {
     Ok((detected_rate, out))
 }
 
-/// Remuestreo lineal estéreo rápido para unificar las 3 pistas al sample rate del hardware.
-fn resample_stereo_linear(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+/// Remuestreo lineal estéreo rápido en `i16` para unificar las 3 pistas al sample rate del hardware.
+fn resample_stereo_linear(src: &[i16], src_rate: u32, dst_rate: u32) -> Vec<i16> {
     let src_frames = src.len() / 2;
     if src_frames < 2 || src_rate == 0 || dst_rate == 0 {
         return src.to_vec();
@@ -194,8 +209,13 @@ fn resample_stereo_linear(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32>
         let i0 = idx.min(src_frames - 1);
         let i1 = (idx + 1).min(src_frames - 1);
 
-        let l = src[i0 * 2] + (src[i1 * 2] - src[i0 * 2]) * frac;
-        let r = src[i0 * 2 + 1] + (src[i1 * 2 + 1] - src[i0 * 2 + 1]) * frac;
+        let l0 = src[i0 * 2] as f32;
+        let l1 = src[i1 * 2] as f32;
+        let r0 = src[i0 * 2 + 1] as f32;
+        let r1 = src[i1 * 2 + 1] as f32;
+
+        let l = (l0 + (l1 - l0) * frac).round().clamp(-32768.0, 32767.0) as i16;
+        let r = (r0 + (r1 - r0) * frac).round().clamp(-32768.0, 32767.0) as i16;
         out.push(l);
         out.push(r);
     }
@@ -203,7 +223,7 @@ fn resample_stereo_linear(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32>
     out
 }
 
-fn compute_waveform_peaks(stereo: &[f32], bar_count: usize) -> Vec<f32> {
+fn compute_waveform_peaks(stereo: &[i16], bar_count: usize) -> Vec<f32> {
     let frames = stereo.len() / 2;
     if frames == 0 || bar_count == 0 {
         return vec![0.0; bar_count];
@@ -213,14 +233,16 @@ fn compute_waveform_peaks(stereo: &[f32], bar_count: usize) -> Vec<f32> {
     for b in 0..bar_count {
         let start = b * step;
         let end = ((b + 1) * step).min(frames);
-        let mut max_amp = 0.0_f32;
+        let mut max_amp = 0_i32;
         for f in start..end {
-            let amp = stereo[f * 2].abs().max(stereo[f * 2 + 1].abs());
+            let l = (stereo[f * 2] as i32).abs();
+            let r = (stereo[f * 2 + 1] as i32).abs();
+            let amp = l.max(r);
             if amp > max_amp {
                 max_amp = amp;
             }
         }
-        peaks.push(max_amp.clamp(0.0, 1.0));
+        peaks.push(((max_amp as f32) / 32768.0).clamp(0.0, 1.0));
     }
     peaks
 }

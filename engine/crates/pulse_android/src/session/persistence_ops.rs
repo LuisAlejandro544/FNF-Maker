@@ -133,7 +133,8 @@ impl EngineSession {
             }
         }
 
-        if let Some(proj) = latest {
+        if let Some(mut proj) = latest {
+            proj.ensure_camera_script();
             self.project = proj;
             let _ = std::fs::write(
                 self.active_project_marker(),
@@ -149,8 +150,9 @@ impl EngineSession {
         let proj_file = self.project_dir_for(project_id).join("project.json");
         let raw = std::fs::read_to_string(&proj_file)
             .map_err(|e| format!("No se pudo leer el proyecto: {}", e))?;
-        let proj = serde_json::from_str::<ModProject>(&raw)
+        let mut proj = serde_json::from_str::<ModProject>(&raw)
             .map_err(|e| format!("Proyecto con formato inválido: {}", e))?;
+        proj.ensure_camera_script();
         self.project = proj;
         Ok(())
     }
@@ -158,6 +160,8 @@ impl EngineSession {
     /// Re-decodifica las pistas de audio guardadas del proyecto actual hacia `pulse_audio`.
     pub fn reload_project_audio_tracks(&mut self) {
         self.audio_engine.mixer.pause();
+        self.audio_engine.mixer.clear_stream_source();
+        self.compiled_audio_path = None;
         for slot in 0..MAX_AUDIO_TRACKS {
             self.decoded_tracks[slot] = None;
             self.audio_engine.mixer.set_track(slot, None);

@@ -11,18 +11,22 @@ BeatForge Studio (`com.beatforge.studio`) es un **motor de creación de mods de 
 1. **Editor Manual de Charts, Configuración Completa y Exportación (`chart.json`)**:
    - Línea de tiempo larga continua de **8 carriles** (4 Oponente + 4 Jugador) para colocar/quitar notas manualmente por paso, elegir duración de *sustain*, ajustar BPM global o por sección (`changeBPM`), agregar secciones y cambiar enfoque de cámara o escuchar cada sección al instante.
    - Modal `Config .json` para editar metadatos completos (`player1`, `player2`, `gfVersion`, `stage`, `speed`, `needsVoices`) y eventos de canción (`events` globales e inline `-1`), además de **importar y exportar `.json`** completo compatible vía SAF.
-2. **Mezclador de Audio en Rust Puro (AAudio C ABI) + Cuenta Regresiva BPM**:
+2. **Mezclador y Streaming de Audio en Rust Puro (AAudio C ABI) + Cuenta Regresiva BPM**:
    - Motor de audio 100% en Rust (`libaaudio.so` vía `libc::dlopen`, cero dependencias de C++ ni `libc++_shared.so`, con reloj de respaldo para Android 7.x `minSdk = 24`).
    - Al entrar a jugar o reiniciar, ejecuta una **cuenta regresiva sincronizada al BPM real de la canción** (`"3"`, `"2"`, `"1"`, `"¡YA!"`) con voces/tonos sintetizados lock-free en `pulse_audio` y animación visual sincronizada en `GameplayScreen` antes de arrancar en `0.0 ms`.
-   - Soporta mods con **1 archivo** (mix completo), **2 archivos** (Instrumental + Voces) o **3 archivos** (Instrumental + Voces Jugador + Voces Oponente) en **OGG** (`lewton`), **WAV** (`hound`) y **MP3** (`rmp3`).
+   - Soporta mods con **1 archivo** (mix completo), **2 archivos** (Instrumental + Voces) o **3 archivos** (Instrumental + Voces Jugador + Voces Oponente) en **OGG** (`lewton`), **WAV** (`hound`) y **MP3** (`rmp3`), almacenados en **PCM `i16` compacto** en el editor (50 % menos RAM) y fusionados en caliente en un único stream de disco (~512 KB de buffer circular) al jugar.
 3. **Ensamblador Automático de Spritesheets (`.png`, `.astc`, `.xml`, `.json`)**:
    - Decodificación nativa de texturas comprimidas **`.astc`** en Rust puro (`texture2ddecoder`, sin GLES obligatorio en el editor) junto a `.png`/`.jpg`/`.webp`.
    - Soporte de atlas **`.xml` Sparrow** y formatos **`.json`** de mods optimizados: **TexturePacker / Aseprite** (Hash/Array), **`spritemap1.json`** y **`Animation.json`** (Adobe Animate Texture Atlas), horneando automáticamente las poses a spritesheet RGBA y detectando `Idle`, `Arriba`, `Abajo`, `Izquierda` y `Derecha` (con soporte de frames rotados 90°).
-4. **Editor Visual de Escenario Horizontal (`1280×720`)**:
-   - Mueve tus assets con **cruceta direccional** (pasos configurables de 1px, 10px, 35px) o arrastrando directamente sobre el lienzo 16:9 con etiquetas visibles.
-   - Ajusta escala, opacidad, volteo horizontal (`Flip X`), rol en cuadrícula 2×2 (`Fondo`, `Oponente`, `Jugador`, `Decoración`) y **orden de capa Z** (`Subir`, `Bajar`, `Frente`, `Fondo`).
-5. **Compilación en Caliente Automática (`Hot Compile`)**:
-   - Detecta automáticamente la RAM disponible y arquitectura (32/64 bits) de tu teléfono y muestra una pantalla de carga mientras **Rust** (`rayon`) optimiza y cachea texturas (incluyendo `.astc` decodificados y rigs Animate horneados), **descartando automáticamente objetos invisibles** durante toda la canción para ahorrar RAM/VRAM.
+4. **Editor Visual de Escenario Horizontal (`1280×720`) y Sistema de Cámara en Lua**:
+   - Mueve tus assets con **cruceta direccional** (pasos configurables de 1px, 10px, 35px) o arrastrando directamente sobre el lienzo 16:9 con etiquetas pre-medidas, *culling* fuera de vista y transformaciones en vivo (`StageLiveTransformState`) sin recomponer ni disparar JNI en cada píxel del arrastre.
+   - Panel de capas virtualizado (`LazyColumn`) para escalar decenas de objetos sin lag de interfaz, con ajustes de escala, opacidad, volteo horizontal (`Flip X`), rol en cuadrícula 2×2 (`Fondo`, `Oponente`, `Jugador`, `Decoración`) y **orden de capa Z**.
+   - **Sistema de Cámara (`Cámara (.lua)` ↔ `camera_system.lua`)**: Selecciona la capa de cámara en `Escena` para mover su centro, agrandar o achicar el marco de captura (zoom base `0.35x–2.50x`), configurar seguimiento automático entre **Enemigo y Jugador** (cada N beats o siguiendo `mustHitSection` de `chart.json`) y abrir/editar su script real `camera_system.lua` en Lua 5.4.
+   - **Idle Sincronizado al BPM**: Las poses de reposo (`Idle`) del Jugador y Rival se disparan alineadas al reloj de beats/BPM activo de `chart.json` (respetando `changeBPM`), con cadencia automática cada 1 o 2 beats y pulso rítmico sutil para personajes PNG estáticos.
+5. **Compilación en Caliente Automática (`Hot Compile`) con Audio Fusionado y Cero Copias Duplicadas**:
+   - Detecta automáticamente la RAM disponible (`ActivityManager.MemoryInfo`, incluyendo `lowMemory`) y arquitectura (32/64 bits) de tu teléfono y muestra una pantalla de carga mientras **Rust** (`rayon`):
+     - **Fusiona las 1–3 pistas activas en un único archivo WAV (`compiled_mix.wav`)** en disco (aplicando ganancia, omitiendo silenciadas y protegiendo con limitador suave `tanh`), liberando decenas/cientos de MB de PCM de la RAM al entrar a gameplay mediante un buffer circular SPSC lock-free de **512 KB**.
+     - Optimiza y escribe texturas reescaladas **directamente a caché en disco** sin retener buffers RGBA dobles o triples en RAM, descartando objetos permanentemente invisibles y aplicando límites seguros para teléfonos de 32 bits (`armeabi-v7a`) o 2–3 GB de RAM (`1536 px` estáticos / `2560 px` atlas).
 6. **Skins de Flechas `.svg` Personalizables**:
    - Incluye flechas vectoriales propias en formato `.svg` libres de derechos de autor (`sdk/assets/arrows/`) rasterizadas por `resvg` en Rust, con popup modal (`ArrowSkinDialog`) para importar `.svg` por dirección.
 7. **Scripting Comunitario en Lua 5.4, TypeScript y JavaScript**:

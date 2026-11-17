@@ -1,11 +1,12 @@
 //! Archivo: engine/crates/pulse_audio/src/mixer.rs
-//! Propósito: Mezclador en tiempo real lock-free para hasta 3 pistas simultáneas
-//! (1: Mix completo o Instrumental, 2: Voces Player, 3: Voces Enemigo).
-//! Incluye cuenta regresiva sincronizada al BPM ("3, 2, 1, ¡YA!") con síntesis
-//! de tonos/formantes vocales libres de derechos antes de iniciar la pista en `0.0 ms`,
-//! manteniendo un reloj maestro basado en frames (`AtomicU64`) compatible con 32 y 64 bits.
+//! Propósito: Mezclador en tiempo real lock-free para:
+//! - Modo estudio/editor: hasta 3 pistas compactas `i16` en RAM (`tracks`).
+//! - Modo gameplay compilado: 1 único stream en disco (`stream_source`) vía buffer circular
+//!   lock-free de ~512 KB, liberando la RAM de las pistas sueltas en móviles de 32 bits / 2-3 GB.
+//! Incluye cuenta regresiva sincronizada al BPM ("3, 2, 1, ¡YA!") con reloj maestro `AtomicU64`.
 
 use crate::decoder::DecodedTrack;
+use crate::streaming::StreamingAudioSource;
 use parking_lot::RwLock;
 use pulse_core::project::MAX_AUDIO_TRACKS;
 use std::f32::consts::PI;
@@ -53,6 +54,7 @@ pub struct AudioMixerState {
     pub countdown_remaining_frames: AtomicU64,
     pub countdown_beat_frames: AtomicU64,
     pub tracks: RwLock<[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS]>,
+    pub stream_source: RwLock<Option<Arc<StreamingAudioSource>>>,
     pub configs: [TrackRuntimeConfig; MAX_AUDIO_TRACKS],
 }
 
@@ -69,6 +71,7 @@ impl AudioMixerState {
             countdown_remaining_frames: AtomicU64::new(0),
             countdown_beat_frames: AtomicU64::new(0),
             tracks: RwLock::new([None, None, None]),
+            stream_source: RwLock::new(None),
             configs: [
                 TrackRuntimeConfig::default(),
                 TrackRuntimeConfig::default(),
@@ -82,6 +85,22 @@ impl AudioMixerState {
             let mut guard = self.tracks.write();
             guard[slot] = track;
         }
+    }
+
+    pub fn clear_tracks(&self) {
+        let mut guard = self.tracks.write();
+        for slot in guard.iter_mut() {
+            *slot = None;
+        }
+    }
+
+    pub fn set_stream_source(&self, source: Option<Arc<StreamingAudioSource>>) {
+        let mut guard = self.stream_source.write();
+        *guard = source;
+    }
+
+    pub fn clear_stream_source(&self) {
+        self.set_stream_source(None);
     }
 
     pub fn play(&self) {
@@ -105,6 +124,9 @@ impl AudioMixerState {
         let beat_frames = ((60.0 / safe_bpm) * sr).round().max(1.0) as u64;
         let total_frames = beat_frames * 4;
         self.frame_cursor.store(0, Ordering::Release);
+        if let Some(stream) = self.stream_source.read().as_ref() {
+            stream.seek_frame(0);
+        }
         self.countdown_beat_frames.store(beat_frames, Ordering::Release);
         self.countdown_total_frames.store(total_frames, Ordering::Release);
         self.countdown_remaining_frames.store(total_frames, Ordering::Release);
@@ -115,6 +137,9 @@ impl AudioMixerState {
         let sr = self.sample_rate.load(Ordering::Relaxed) as f64;
         let frame = ((ms.max(0.0) / 1000.0) * sr).round() as u64;
         self.frame_cursor.store(frame, Ordering::Release);
+        if let Some(stream) = self.stream_source.read().as_ref() {
+            stream.seek_frame(frame);
+        }
     }
 
     /// Devuelve el tiempo actual en milisegundos (negativo durante la cuenta regresiva 3-2-1-¡YA!).
@@ -176,26 +201,40 @@ impl AudioMixerState {
         let miss_duck = self.player_missed_recently.load(Ordering::Relaxed);
 
         let mut any_track = false;
-        if let Some(guard) = self.tracks.try_read() {
-            for slot in 0..MAX_AUDIO_TRACKS {
-                if let Some(track) = &guard[slot] {
-                    any_track = true;
-                    if self.configs[slot].muted.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    let mut gain = self.configs[slot].gain();
-                    if miss_duck && self.configs[slot].duck_on_miss.load(Ordering::Relaxed) {
-                        gain *= 0.12;
-                    }
 
-                    let total_frames = track.frame_count();
-                    for f in 0..frames_requested {
-                        let idx = cursor + f;
-                        if idx >= total_frames {
-                            break;
+        // Prioridad 1: archivo único compilado en streaming desde disco (~512 KB RAM)
+        if let Some(stream_guard) = self.stream_source.try_read() {
+            if let Some(stream) = stream_guard.as_ref() {
+                any_track = true;
+                stream.read_frames_add(slice_out, 1.0);
+            }
+        }
+
+        // Prioridad 2 (solo estudio/editor): pistas compactas `i16` en memoria
+        if !any_track {
+            if let Some(guard) = self.tracks.try_read() {
+                for slot in 0..MAX_AUDIO_TRACKS {
+                    if let Some(track) = &guard[slot] {
+                        any_track = true;
+                        if self.configs[slot].muted.load(Ordering::Relaxed) {
+                            continue;
                         }
-                        slice_out[f * 2] += track.stereo_samples[idx * 2] * gain;
-                        slice_out[f * 2 + 1] += track.stereo_samples[idx * 2 + 1] * gain;
+                        let mut gain = self.configs[slot].gain();
+                        if miss_duck && self.configs[slot].duck_on_miss.load(Ordering::Relaxed) {
+                            gain *= 0.12;
+                        }
+                        let scale = gain / 32768.0;
+
+                        let total_frames = track.frame_count();
+                        for f in 0..frames_requested {
+                            let idx = cursor + f;
+                            if idx >= total_frames {
+                                break;
+                            }
+                            slice_out[f * 2] += (track.stereo_samples[idx * 2] as f32) * scale;
+                            slice_out[f * 2 + 1] +=
+                                (track.stereo_samples[idx * 2 + 1] as f32) * scale;
+                        }
                     }
                 }
             }

@@ -1025,10 +1025,10 @@ export function computeSmartTextureScale(params: {
   const largest = Math.max(origWidth, origHeight);
   const tierCap = hasAtlas
     ? tier === 'low_32bit'
-      ? 3072
+      ? 2560
       : 4096
     : tier === 'low_32bit'
-      ? 2048
+      ? 1536
       : tier === 'balanced'
         ? 2560
         : 4096;
@@ -1565,5 +1565,181 @@ export function sortProjectSummaries<T extends ProjectSummaryItem>(projects: T[]
   });
 }
 
+export const STREAM_RING_FRAMES = 131_072;
+export const STREAM_RING_BYTES = STREAM_RING_FRAMES * 4;
 
+export interface AudioTrackRamSpec {
+  frameCount: number;
+  muted: boolean;
+}
+
+export interface MergedAudioRamEstimate {
+  mergedTracks: number;
+  sourceRamBytes: number;
+  streamRingBytes: number;
+  estimatedRamSavedKb: number;
+}
+
+/**
+ * Estima la memoria PCM ahorrada al fusionar 1–3 pistas (almacenadas en estéreo i16 = 4 bytes/frame)
+ * en un único WAV en disco leído por un buffer circular SPSC de 512 KB (`STREAM_RING_BYTES`).
+ */
+export function estimateMergedAudioRamSavings(
+  tracks: AudioTrackRamSpec[],
+): MergedAudioRamEstimate {
+  let mergedTracks = 0;
+  let sourceRamBytes = 0;
+
+  for (const track of tracks.slice(0, 3)) {
+    const frames = Math.max(0, Math.floor(track.frameCount));
+    if (frames <= 0) continue;
+    sourceRamBytes += frames * 4;
+    if (!track.muted) {
+      mergedTracks += 1;
+    }
+  }
+
+  const streamRingBytes = mergedTracks > 0 ? STREAM_RING_BYTES : 0;
+  const savedBytes = Math.max(0, sourceRamBytes - streamRingBytes);
+
+  return {
+    mergedTracks,
+    sourceRamBytes,
+    streamRingBytes,
+    estimatedRamSavedKb: Math.floor(savedBytes / 1024),
+  };
+}
+
+export type CameraFollowMode = 'beats' | 'sections';
+
+export interface StageCameraConfigSpec {
+  enabled: boolean;
+  baseX: number;
+  baseY: number;
+  baseZoom: number;
+  followMode: CameraFollowMode;
+  followIntervalBeats: number;
+  smoothSpeed: number;
+  panStrength: number;
+}
+
+export interface CameraCaptureBox {
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+  zoom: number;
+}
+
+/**
+ * Calcula el rectángulo lógico de captura de la cámara en el espacio virtual (1280×720).
+ * Agrandar la caja de captura reduce `zoom` (aleja cámara); achicarla aumenta `zoom` (acerca cámara).
+ */
+export function computeCameraCaptureBox(
+  baseX: number,
+  baseY: number,
+  baseZoom: number,
+  virtualWidth = 1280,
+  virtualHeight = 720,
+): CameraCaptureBox {
+  const safeZoom = Math.min(2.5, Math.max(0.35, Number.isFinite(baseZoom) ? baseZoom : 1.0));
+  return {
+    centerX: Math.min(2600, Math.max(-1000, Number.isFinite(baseX) ? baseX : 640)),
+    centerY: Math.min(1800, Math.max(-1000, Number.isFinite(baseY) ? baseY : 360)),
+    width: virtualWidth / safeZoom,
+    height: virtualHeight / safeZoom,
+    zoom: safeZoom,
+  };
+}
+
+/**
+ * Genera el bloque de configuración sincronizado dentro de `camera_system.lua`.
+ */
+export function renderCameraLuaConfigBlock(cfg: StageCameraConfigSpec): string {
+  return [
+    '-- [CAM_CFG_START]',
+    `local CAM_ENABLED = ${cfg.enabled ? 'true' : 'false'}`,
+    `local CAM_BASE_X = ${cfg.baseX.toFixed(1)}`,
+    `local CAM_BASE_Y = ${cfg.baseY.toFixed(1)}`,
+    `local CAM_BASE_ZOOM = ${cfg.baseZoom.toFixed(3)}`,
+    `local CAM_MODE = "${cfg.followMode}"`,
+    `local CAM_INTERVAL_BEATS = ${Math.max(1, Math.min(32, Math.round(cfg.followIntervalBeats)))}`,
+    `local CAM_SMOOTH = ${cfg.smoothSpeed.toFixed(2)}`,
+    `local CAM_PAN_STRENGTH = ${cfg.panStrength.toFixed(2)}`,
+    '-- [CAM_CFG_END]',
+  ].join('\n');
+}
+
+/**
+ * Extrae parámetros editados manualmente desde `camera_system.lua` manteniendo valores válidos.
+ */
+export function parseCameraConfigFromLua(
+  source: string,
+  current: StageCameraConfigSpec,
+): StageCameraConfigSpec {
+  const next: StageCameraConfigSpec = { ...current };
+  for (const line of source.split(/\r?\n/)) {
+    const noComment = line.trim().split('--')[0]?.trim() ?? '';
+    const eqIdx = noComment.indexOf('=');
+    if (eqIdx <= 0) continue;
+    const key = noComment.slice(0, eqIdx).trim().replace(/^local\s+/, '').trim();
+    const val = noComment.slice(eqIdx + 1).trim();
+
+    if (key === 'CAM_ENABLED') {
+      if (/^true$/i.test(val)) next.enabled = true;
+      else if (/^false$/i.test(val)) next.enabled = false;
+    } else if (key === 'CAM_BASE_X') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.baseX = Math.min(2600, Math.max(-1000, n));
+    } else if (key === 'CAM_BASE_Y') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.baseY = Math.min(1800, Math.max(-1000, n));
+    } else if (key === 'CAM_BASE_ZOOM') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.baseZoom = Math.min(2.5, Math.max(0.35, n));
+    } else if (key === 'CAM_MODE') {
+      const clean = val.replace(/^['"]|['"]$/g, '').toLowerCase();
+      next.followMode = clean.includes('section') || clean === 'chart' || clean === '1' ? 'sections' : 'beats';
+    } else if (key === 'CAM_INTERVAL_BEATS') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.followIntervalBeats = Math.min(32, Math.max(1, Math.round(n)));
+    } else if (key === 'CAM_SMOOTH') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.smoothSpeed = Math.min(20, Math.max(1, n));
+    } else if (key === 'CAM_PAN_STRENGTH') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.panStrength = Math.min(1, Math.max(0, n));
+    }
+  }
+  return next;
+}
+
+export interface BpmSyncedIdleCadence {
+  beatSec: number;
+  beatInterval: 1 | 2;
+  shouldTriggerBeat: boolean;
+  singReturnThresholdSec: number;
+}
+
+/**
+ * Calcula la cadencia del Idle sincronizado al BPM activo de `chart.json`
+ * (igual que `gameplay_ops.rs`: cada 2 beats si el ciclo Idle supera 1.35 beats, si no cada beat).
+ */
+export function computeBpmSyncedIdleCadence(params: {
+  bpm: number;
+  idleDurationSec: number;
+  beatIndex: number;
+}): BpmSyncedIdleCadence {
+  const safeBpm = Math.max(20, Math.min(400, Number.isFinite(params.bpm) ? params.bpm : 120));
+  const beatSec = 60 / safeBpm;
+  const beatInterval: 1 | 2 = params.idleDurationSec > beatSec * 1.35 ? 2 : 1;
+  const shouldTriggerBeat = ((params.beatIndex % beatInterval) + beatInterval) % beatInterval === 0;
+  const singReturnThresholdSec = Math.min(0.58, Math.max(0.28, beatSec * 0.9));
+  return {
+    beatSec,
+    beatInterval,
+    shouldTriggerBeat,
+    singReturnThresholdSec,
+  };
+}
 

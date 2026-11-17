@@ -14,10 +14,13 @@ import {
   BINARY_GAMEPLAY_MAGIC,
   BINARY_GAMEPLAY_NOTE_BYTES,
   LruResourceCache,
+  STREAM_RING_BYTES,
   advanceNoteSlidingWindow,
   autoBindSparrowPrefixes,
   clampEntityScale,
   compareNaturalFrameNames,
+  computeBpmSyncedIdleCadence,
+  computeCameraCaptureBox,
   computeCountdownState,
   computeReceptorLayout,
   computeSmartTextureScale,
@@ -27,11 +30,14 @@ import {
   decodeBinaryGameplayFrame,
   desaturateToNeutralRgba,
   detectSpriteJsonFormat,
+  estimateMergedAudioRamSavings,
   mapRotatedSpriteSample,
   optimizeScriptLoops,
   packPosesIntoBoundedAtlas,
   parseAstcHeader,
+  parseCameraConfigFromLua,
   parseChartJson,
+  renderCameraLuaConfigBlock,
   resolveMobileTouchLanes,
   serializeChartJson,
   shouldDiscardInvisibleEntity,
@@ -437,6 +443,29 @@ test('computeSmartTextureScale passes through optimal sprites without quality lo
     tier: 'balanced',
   });
   assert.ok(oversized < 0.6);
+
+  // Teléfonos 32-bit / 2-3 GB RAM: fondos <= 1536px y atlas <= 2560px
+  const low32Static = computeSmartTextureScale({
+    origWidth: 2048,
+    origHeight: 2048,
+    entityWidth: 1280,
+    entityHeight: 720,
+    entityScale: 1.0,
+    hasAtlas: false,
+    tier: 'low_32bit',
+  });
+  assert.ok(low32Static <= 1536 / 2048 + 0.0001);
+
+  const low32Atlas = computeSmartTextureScale({
+    origWidth: 4096,
+    origHeight: 4096,
+    entityWidth: 500,
+    entityHeight: 600,
+    entityScale: 1.0,
+    hasAtlas: true,
+    tier: 'low_32bit',
+  });
+  assert.ok(low32Atlas <= 2560 / 4096 + 0.0001);
 });
 
 test('advanceNoteSlidingWindow and LruResourceCache discard resolved notes and evict oldest textures deterministically', () => {
@@ -695,4 +724,93 @@ test('clampEntityScale and sortProjectSummaries enforce valid bounds and active-
     ['p3', 'p2', 'p1'],
   );
 });
+
+test('estimateMergedAudioRamSavings models i16 PCM release vs 512 KB streaming ring buffer', () => {
+  // 3 minutos @ 48 kHz = 8,640,000 frames (~33.0 MB por pista en i16 estéreo)
+  const frames3Min = 48_000 * 180;
+  const est = estimateMergedAudioRamSavings([
+    { frameCount: frames3Min, muted: false },
+    { frameCount: frames3Min, muted: false },
+    { frameCount: frames3Min, muted: true }, // cargada en RAM del editor pero silenciada
+  ]);
+
+  assert.equal(est.mergedTracks, 2);
+  assert.equal(est.streamRingBytes, STREAM_RING_BYTES);
+  assert.equal(est.streamRingBytes, 512 * 1024);
+  assert.equal(est.sourceRamBytes, frames3Min * 4 * 3);
+  assert.ok(est.estimatedRamSavedKb > 100_000);
+
+  const emptyEst = estimateMergedAudioRamSavings([
+    { frameCount: frames3Min, muted: true },
+  ]);
+  assert.equal(emptyEst.mergedTracks, 0);
+  assert.equal(emptyEst.streamRingBytes, 0);
+});
+
+test('computeCameraCaptureBox and camera_system.lua block stay bidirectionally synchronized', () => {
+  const zoomedOut = computeCameraCaptureBox(320, 410, 0.5);
+  assert.equal(zoomedOut.width, 2560);
+  assert.equal(zoomedOut.height, 1440);
+
+  const zoomedIn = computeCameraCaptureBox(980, 430, 2.0);
+  assert.equal(zoomedIn.width, 640);
+  assert.equal(zoomedIn.height, 360);
+
+  const initialCfg = {
+    enabled: true,
+    baseX: 640,
+    baseY: 360,
+    baseZoom: 1.0,
+    followMode: 'beats' as const,
+    followIntervalBeats: 4,
+    smoothSpeed: 6.0,
+    panStrength: 0.72,
+  };
+  const luaBlock = renderCameraLuaConfigBlock({
+    ...initialCfg,
+    baseX: 480,
+    baseY: 390,
+    baseZoom: 1.25,
+    followMode: 'sections',
+    followIntervalBeats: 8,
+  });
+  const parsed = parseCameraConfigFromLua(
+    `${luaBlock}\nfunction onBeatHit(beat)\n  setCameraZoom(getCameraBaseZoom() + 0.02)\nend`,
+    initialCfg,
+  );
+  assert.equal(parsed.enabled, true);
+  assert.equal(parsed.baseX, 480);
+  assert.equal(parsed.baseY, 390);
+  assert.equal(parsed.baseZoom, 1.25);
+  assert.equal(parsed.followMode, 'sections');
+  assert.equal(parsed.followIntervalBeats, 8);
+});
+
+test('computeBpmSyncedIdleCadence adapts beat interval to chart BPM and idle duration', () => {
+  // 120 BPM => beatSec = 0.5s. Animación larga (0.95s > 0.675s) -> cada 2 beats
+  const longIdle = computeBpmSyncedIdleCadence({
+    bpm: 120,
+    idleDurationSec: 0.95,
+    beatIndex: 3,
+  });
+  assert.equal(longIdle.beatInterval, 2);
+  assert.equal(longIdle.shouldTriggerBeat, false);
+
+  const longIdleEven = computeBpmSyncedIdleCadence({
+    bpm: 120,
+    idleDurationSec: 0.95,
+    beatIndex: 4,
+  });
+  assert.equal(longIdleEven.shouldTriggerBeat, true);
+
+  // 120 BPM + animación corta (0.4s) -> cada beat
+  const shortIdle = computeBpmSyncedIdleCadence({
+    bpm: 120,
+    idleDurationSec: 0.4,
+    beatIndex: 5,
+  });
+  assert.equal(shortIdle.beatInterval, 1);
+  assert.equal(shortIdle.shouldTriggerBeat, true);
+});
+
 

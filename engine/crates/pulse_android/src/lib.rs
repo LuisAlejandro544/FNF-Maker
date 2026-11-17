@@ -511,6 +511,35 @@ mod jni_exports {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateStageCamera<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        enabled: jboolean,
+        base_x: jfloat,
+        base_y: jfloat,
+        base_zoom: jfloat,
+        follow_mode: JString<'local>,
+        follow_interval_beats: jint,
+        smooth_speed: jfloat,
+        pan_strength: jfloat,
+        commit_save: jboolean,
+    ) -> JString<'local> {
+        let mode_s = read_str(&mut env, &follow_mode);
+        let json = session().lock().update_stage_camera(
+            enabled != 0,
+            base_x,
+            base_y,
+            base_zoom,
+            &mode_s,
+            follow_interval_beats,
+            smooth_speed,
+            pan_strength,
+            commit_save != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddScript<'local>(
         mut env: JNIEnv<'local>,
         _cls: JClass<'local>,

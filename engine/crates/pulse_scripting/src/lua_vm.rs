@@ -37,11 +37,111 @@ impl LuaScriptVm {
         {
             let h = Arc::clone(&host);
             globals.set(
-                "setCameraZoom",
-                lua.create_function(move |_, zoom: f32| {
-                    h.push_command(ScriptCommand::SetCameraZoom(zoom));
+                "setCameraPos",
+                lua.create_function(move |_, (x, y): (f32, f32)| {
+                    if x.is_finite() && y.is_finite() {
+                        *h.camera_x.lock() = x;
+                        *h.camera_y.lock() = y;
+                        h.push_command(ScriptCommand::SetCameraPos { x, y });
+                    }
                     Ok(())
                 })?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setCameraZoom",
+                lua.create_function(move |_, zoom: f32| {
+                    if zoom.is_finite() {
+                        *h.camera_zoom.lock() = zoom;
+                        h.push_command(ScriptCommand::SetCameraZoom(zoom));
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setCameraBaseZoom",
+                lua.create_function(move |_, zoom: f32| {
+                    if zoom.is_finite() {
+                        *h.camera_base_zoom.lock() = zoom;
+                        h.push_command(ScriptCommand::SetCameraBaseZoom(zoom));
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getCameraX",
+                lua.create_function(move |_, ()| Ok(*h.camera_x.lock()))?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getCameraY",
+                lua.create_function(move |_, ()| Ok(*h.camera_y.lock()))?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getCameraZoom",
+                lua.create_function(move |_, ()| Ok(*h.camera_zoom.lock()))?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getCameraBaseZoom",
+                lua.create_function(move |_, ()| Ok(*h.camera_base_zoom.lock()))?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getEntityX",
+                lua.create_function(move |_, id_or_role: String| {
+                    Ok(h.entity_positions.lock().get(&id_or_role).map(|p| p.0))
+                })?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getEntityY",
+                lua.create_function(move |_, id_or_role: String| {
+                    Ok(h.entity_positions.lock().get(&id_or_role).map(|p| p.1))
+                })?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getMustHitSection",
+                lua.create_function(move |_, ()| Ok(*h.must_hit_section.lock()))?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getActiveBpm",
+                lua.create_function(move |_, ()| Ok(*h.current_bpm.lock()))?,
             )?;
         }
 
@@ -75,6 +175,20 @@ impl LuaScriptVm {
             let h = Arc::clone(&host);
             globals.set(
                 "playAnim",
+                lua.create_function(move |_, (entity_id, anim_name): (String, String)| {
+                    h.push_command(ScriptCommand::PlayEntityAnim {
+                        entity_id,
+                        anim_name,
+                    });
+                    Ok(())
+                })?,
+            )?;
+        }
+
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "playEntityAnim",
                 lua.create_function(move |_, (entity_id, anim_name): (String, String)| {
                     h.push_command(ScriptCommand::PlayEntityAnim {
                         entity_id,

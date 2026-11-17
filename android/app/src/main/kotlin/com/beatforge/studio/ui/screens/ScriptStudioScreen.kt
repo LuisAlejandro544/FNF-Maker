@@ -302,7 +302,7 @@ fun ScriptStudioScreen(
                     )
 
                     Text(
-                        text = "API: onCreate() · onBeatHit(beat) · onUpdate(dt) · onNoteHit(lane, isPlayer) · setCameraZoom(z) · shakeCamera(px) · setEntityProp(id, prop, val) · playEntityAnim(id, anim)",
+                        text = "API: onCreate() · onBeatHit(beat) · onUpdate(dt) · setCameraPos(x, y) · setCameraZoom(z) · setCameraBaseZoom(z) · getCameraX/Y() · getEntityX/Y(id) · getMustHitSection() · getActiveBpm() · shakeCamera(px) · setEntityProp(id, prop, val) · playEntityAnim(id, anim)",
                         color = StudioColors.TextMuted,
                         fontSize = 10.sp
                     )

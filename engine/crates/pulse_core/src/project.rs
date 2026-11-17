@@ -8,13 +8,193 @@
 //! - Skin de flechas SVG seleccionada y opciones de gameplay (downscroll, offset Oboe)
 
 use crate::chart::ChartData;
-use crate::stage::StageScene;
+use crate::stage::{CameraFollowMode, StageCameraConfig, StageScene};
 use crate::svg_skin::ArrowSkinSet;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Máximo absoluto de pistas de música permitidas por proyecto según la especificación.
 pub const MAX_AUDIO_TRACKS: usize = 3;
+
+/// Identificador estable del script Lua que controla el sistema de cámara del escenario.
+pub const CAMERA_SCRIPT_ID: &str = "script_camera_system";
+/// Nombre visible del archivo Lua de cámara editable por el usuario en Script Studio.
+pub const CAMERA_SCRIPT_NAME: &str = "camera_system.lua";
+
+const CAM_CFG_START_MARKER: &str = "-- [CAM_CFG_START]";
+const CAM_CFG_END_MARKER: &str = "-- [CAM_CFG_END]";
+
+/// Genera o actualiza el bloque de parámetros del script `camera_system.lua` preservando
+/// cualquier lógica personalizada que el usuario haya añadido debajo de los marcadores.
+pub fn render_camera_lua_script(cfg: &StageCameraConfig, existing_source: Option<&str>) -> String {
+    let config_block = format!(
+        "{}\n\
+local CAM_ENABLED = {}\n\
+local CAM_BASE_X = {:.1}\n\
+local CAM_BASE_Y = {:.1}\n\
+local CAM_BASE_ZOOM = {:.3}\n\
+local CAM_MODE = \"{}\" -- \"beats\" = cada N beats | \"sections\" = chart.json mustHitSection\n\
+local CAM_INTERVAL_BEATS = {}\n\
+local CAM_SMOOTH = {:.2}\n\
+local CAM_PAN_STRENGTH = {:.2}\n\
+{}",
+        CAM_CFG_START_MARKER,
+        if cfg.enabled { "true" } else { "false" },
+        cfg.base_x,
+        cfg.base_y,
+        cfg.base_zoom,
+        cfg.follow_mode.as_lua_str(),
+        cfg.follow_interval_beats.max(1),
+        cfg.smooth_speed,
+        cfg.pan_strength,
+        CAM_CFG_END_MARKER
+    );
+
+    if let Some(src) = existing_source {
+        if let (Some(start_idx), Some(end_idx)) =
+            (src.find(CAM_CFG_START_MARKER), src.find(CAM_CFG_END_MARKER))
+        {
+            if end_idx >= start_idx {
+                let tail_start = end_idx + CAM_CFG_END_MARKER.len();
+                let prefix = &src[..start_idx];
+                let suffix = &src[tail_start..];
+                return format!("{}{}{}", prefix, config_block, suffix);
+            }
+        }
+    }
+
+    format!(
+        "-- Script real del Sistema de Cámara (BeatForge Studio)\n\
+-- Sincronizado automáticamente con el editor visual del Escenario.\n\
+-- Puedes editar estos valores o personalizar el comportamiento abajo en Lua 5.4:\n\
+{}\n\n\
+local targetX = CAM_BASE_X\n\
+local targetY = CAM_BASE_Y\n\
+local focusPlayer = false\n\n\
+local function updateCameraTarget(isPlayerTurn)\n\
+    local roleId = isPlayerTurn and \"player\" or \"opponent\"\n\
+    local charX = getEntityX(roleId)\n\
+    local charY = getEntityY(roleId)\n\
+    if charX ~= nil and charY ~= nil then\n\
+        targetX = CAM_BASE_X + (charX - CAM_BASE_X) * CAM_PAN_STRENGTH\n\
+        targetY = CAM_BASE_Y + ((charY - 24.0) - CAM_BASE_Y) * CAM_PAN_STRENGTH\n\
+    else\n\
+        targetX = CAM_BASE_X\n\
+        targetY = CAM_BASE_Y\n\
+    end\n\
+end\n\n\
+function onCreate()\n\
+    setCameraBaseZoom(CAM_BASE_ZOOM)\n\
+    setCameraZoom(CAM_BASE_ZOOM)\n\
+    if not CAM_ENABLED then\n\
+        setCameraPos(CAM_BASE_X, CAM_BASE_Y)\n\
+        return\n\
+    end\n\
+    if CAM_MODE == \"sections\" then\n\
+        focusPlayer = getMustHitSection()\n\
+    else\n\
+        focusPlayer = false\n\
+    end\n\
+    updateCameraTarget(focusPlayer)\n\
+    setCameraPos(targetX, targetY)\n\
+end\n\n\
+function onBeatHit(beat)\n\
+    if not CAM_ENABLED then return end\n\
+    if CAM_MODE == \"sections\" then\n\
+        focusPlayer = getMustHitSection()\n\
+    else\n\
+        local step = math.max(1, CAM_INTERVAL_BEATS)\n\
+        focusPlayer = (math.floor(beat / step) % 2) == 1\n\
+    end\n\
+    updateCameraTarget(focusPlayer)\n\
+end\n\n\
+function onUpdate(dt)\n\
+    if not CAM_ENABLED then\n\
+        setCameraPos(CAM_BASE_X, CAM_BASE_Y)\n\
+        return\n\
+    end\n\
+    local cx = getCameraX()\n\
+    local cy = getCameraY()\n\
+    local t = 1.0 - math.exp(-CAM_SMOOTH * math.max(0.0, dt))\n\
+    local nx = cx + (targetX - cx) * t\n\
+    local ny = cy + (targetY - cy) * t\n\
+    setCameraPos(nx, ny)\n\
+end\n",
+        config_block
+    )
+}
+
+/// Extrae los parámetros de cámara editados manualmente dentro de `camera_system.lua`
+/// para mantener sincronizado el rectángulo visual del escenario y el inspector.
+pub fn parse_camera_config_from_lua(source: &str, current: &StageCameraConfig) -> StageCameraConfig {
+    let mut next = current.clone();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let no_comment = trimmed.split("--").next().unwrap_or("").trim();
+        let Some((lhs, rhs)) = no_comment.split_once('=') else {
+            continue;
+        };
+        let key = lhs.trim().trim_start_matches("local").trim();
+        let val = rhs.trim();
+        match key {
+            "CAM_ENABLED" => {
+                if val.eq_ignore_ascii_case("true") {
+                    next.enabled = true;
+                } else if val.eq_ignore_ascii_case("false") {
+                    next.enabled = false;
+                }
+            }
+            "CAM_BASE_X" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.base_x = v.clamp(-1000.0, 2600.0);
+                    }
+                }
+            }
+            "CAM_BASE_Y" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.base_y = v.clamp(-1000.0, 1800.0);
+                    }
+                }
+            }
+            "CAM_BASE_ZOOM" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.base_zoom = v.clamp(0.35, 2.5);
+                    }
+                }
+            }
+            "CAM_MODE" => {
+                let clean = val.trim_matches('"').trim_matches('\'');
+                next.follow_mode = CameraFollowMode::from_str_loose(clean);
+            }
+            "CAM_INTERVAL_BEATS" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.follow_interval_beats = (v.round() as i32).clamp(1, 32) as u32;
+                    }
+                }
+            }
+            "CAM_SMOOTH" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.smooth_speed = v.clamp(1.0, 20.0);
+                    }
+                }
+            }
+            "CAM_PAN_STRENGTH" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.pan_strength = v.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    next
+}
 
 /// Modo de control táctil en móvil:
 /// - `TapArrows` (Por defecto): 100 % táctil directo tocando las 4 flechas receptoras.
@@ -138,6 +318,9 @@ pub struct ModProject {
 
 impl ModProject {
     pub fn new_demo() -> Self {
+        let stage = StageScene::default();
+        let camera_lua = render_camera_lua_script(&stage.camera, None);
+
         let default_lua = r#"-- Script Lua de ejemplo para BeatForge Studio
 function onCreate()
     log("Escena Lua iniciada!")
@@ -145,7 +328,7 @@ end
 
 function onBeatHit(beat)
     if beat % 2 == 0 then
-        setCameraZoom(1.04)
+        setCameraZoom(getCameraBaseZoom() + 0.04)
     end
 end
 "#;
@@ -172,9 +355,16 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             chart: ChartData::bundled_demo_chart(),
             chart_source_path: None,
             audio_tracks: AudioTrackSlot::default_three_slots(),
-            stage: StageScene::default(),
+            stage,
             arrow_skin: ArrowSkinSet::bundled_default(),
             scripts: vec![
+                ScriptAsset {
+                    id: CAMERA_SCRIPT_ID.to_string(),
+                    name: CAMERA_SCRIPT_NAME.to_string(),
+                    language: ScriptLanguage::Lua,
+                    source_code: camera_lua,
+                    enabled: true,
+                },
                 ScriptAsset {
                     id: "script_beat_zoom".to_string(),
                     name: "camera_bounce.lua".to_string(),
@@ -194,6 +384,27 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             control_mode: MobileControlMode::TapArrows,
             audio_offset_ms: 0.0,
             scroll_speed_override: None,
+        }
+    }
+
+    /// Garantiza que proyectos antiguos cargados desde disco cuenten con `camera_system.lua`.
+    pub fn ensure_camera_script(&mut self) {
+        let has_camera_script = self
+            .scripts
+            .iter()
+            .any(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME);
+        if !has_camera_script {
+            let source_code = render_camera_lua_script(&self.stage.camera, None);
+            self.scripts.insert(
+                0,
+                ScriptAsset {
+                    id: CAMERA_SCRIPT_ID.to_string(),
+                    name: CAMERA_SCRIPT_NAME.to_string(),
+                    language: ScriptLanguage::Lua,
+                    source_code,
+                    enabled: self.stage.camera.enabled,
+                },
+            );
         }
     }
 

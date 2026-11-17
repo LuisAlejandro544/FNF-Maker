@@ -2,7 +2,8 @@
 // Propósito: Inspector derecho de propiedades de la capa seleccionada en el escenario:
 // edición de nombre, cuadrícula 2x2 de roles, carga de imagen PNG/ASTC, selector de paso
 // (1/10/35 px), cruceta de desplazamiento, controles de escala (0.1x–5.0x con botones
-// de precisión y slider sin rebote), opacidad y switches de visibilidad/flipX.
+// de precisión y slider conectado a `StageLiveTransformState` sin lag ni rebotes),
+// opacidad y switches de visibilidad/flipX.
 
 package com.beatforge.studio.ui.screens.stage
 
@@ -65,6 +66,7 @@ private val STAGE_ROLES = listOf(
 fun StageEntityInspector(
     entity: StageEntitySnapshot,
     stepPx: Int,
+    liveTransform: StageLiveTransformState,
     onStepChange: (Int) -> Unit,
     onUpdate: (
         entityId: String,
@@ -108,21 +110,34 @@ fun StageEntityInspector(
     fun applyImmediateScale(nextScale: Float, commit: Boolean) {
         val clamped = nextScale.coerceIn(0.1f, 5.0f)
         localScale = clamped
-        onUpdate(
-            entity.id,
-            localName,
-            entity.role,
-            0f,
-            0f,
-            0f,
-            0f,
-            false,
-            clamped,
-            localOpacity,
-            entity.visible,
-            entity.flipX,
-            commit
-        )
+        if (liveTransform.entityId == entity.id) {
+            liveTransform.updateScale(clamped)
+        }
+        if (commit) {
+            onUpdate(
+                entity.id,
+                localName,
+                entity.role,
+                0f,
+                0f,
+                0f,
+                0f,
+                false,
+                clamped,
+                localOpacity,
+                entity.visible,
+                entity.flipX,
+                true
+            )
+        }
+    }
+
+    val shownX = if (liveTransform.entityId == entity.id) liveTransform.x else entity.x
+    val shownY = if (liveTransform.entityId == entity.id) liveTransform.y else entity.y
+    val shownScale = if (!isDraggingScale && liveTransform.entityId == entity.id && liveTransform.isInteracting) {
+        liveTransform.scale
+    } else {
+        localScale
     }
 
     Column(
@@ -229,7 +244,7 @@ fun StageEntityInspector(
         )
 
         Text(
-            text = "Posición (${entity.x.roundToInt()}, ${entity.y.roundToInt()}) · Paso ${stepPx}px",
+            text = "Posición (${shownX.roundToInt()}, ${shownY.roundToInt()}) · Paso ${stepPx}px",
             color = StudioColors.TextMuted,
             fontSize = 11.sp
         )
@@ -301,7 +316,7 @@ fun StageEntityInspector(
             }
         }
 
-        // Escala continua + botones de ajuste preciso sin rebote
+        // Escala continua + botones de ajuste preciso sin rebote ni lag
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -310,20 +325,22 @@ fun StageEntityInspector(
             ) {
                 Text("Escala", color = StudioColors.TextMuted, fontSize = 11.sp)
                 Text(
-                    text = "${((localScale * 100f).roundToInt() / 100f)}x",
+                    text = "${((shownScale * 100f).roundToInt() / 100f)}x",
                     color = StudioColors.AccentCyan,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
             Slider(
-                value = localScale.coerceIn(0.1f, 5.0f),
+                value = shownScale.coerceIn(0.1f, 5.0f),
                 onValueChange = { s ->
                     isDraggingScale = true
+                    liveTransform.beginInteraction(entity)
                     applyImmediateScale(s, commit = false)
                 },
                 onValueChangeFinished = {
                     isDraggingScale = false
+                    liveTransform.endInteraction()
                     applyImmediateScale(localScale, commit = true)
                 },
                 valueRange = 0.1f..5.0f,
@@ -365,10 +382,12 @@ fun StageEntityInspector(
                 onValueChange = { op ->
                     isDraggingOpacity = true
                     localOpacity = op
-                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, localScale, op, entity.visible, entity.flipX, false)
+                    liveTransform.beginInteraction(entity)
+                    liveTransform.updateOpacity(op)
                 },
                 onValueChangeFinished = {
                     isDraggingOpacity = false
+                    liveTransform.endInteraction()
                     onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, localScale, localOpacity, entity.visible, entity.flipX, true)
                 },
                 valueRange = 0f..1f,

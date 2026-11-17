@@ -96,7 +96,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val is32BitOnly = android.os.Build.SUPPORTED_64_BIT_ABIS.isEmpty()
 
             when {
-                is32BitOnly || totalGb <= 3.5 -> DeviceTier.LowRam32Bit
+                is32BitOnly || memInfo.lowMemory || totalGb <= 3.5 -> DeviceTier.LowRam32Bit
                 totalGb >= 7.5 -> DeviceTier.HighQuality
                 else -> DeviceTier.Balanced
             }
@@ -196,7 +196,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
             val arrows = loadArrowBitmapsInternal()
             val receptors = loadReceptorBitmapsInternal()
-            val entBmps = loadEntityBitmapsInternal(snap.stageEntities)
+            val entBmps = loadEntityBitmapsInternal(snap.stageEntities, _uiState.value.selectedTier)
             _uiState.update { state ->
                 state.copy(
                     initialized = true,
@@ -276,7 +276,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val nextSnap = result.snapshot ?: _uiState.value.snapshot
         val arrows = loadArrowBitmapsInternal()
         val receptors = loadReceptorBitmapsInternal()
-        val entBmps = loadEntityBitmapsInternal(nextSnap.stageEntities)
+        val entBmps = loadEntityBitmapsInternal(nextSnap.stageEntities, _uiState.value.selectedTier)
         val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
 
         _uiState.update { state ->
@@ -583,6 +583,78 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun updateStageCamera(
+        enabled: Boolean,
+        baseX: Float,
+        baseY: Float,
+        baseZoom: Float,
+        followMode: String,
+        followIntervalBeats: Int,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean = true
+    ) {
+        val clampedX = baseX.coerceIn(-1000f, 2600f)
+        val clampedY = baseY.coerceIn(-1000f, 1800f)
+        val clampedZoom = baseZoom.coerceIn(0.35f, 2.5f)
+        val clampedBeats = followIntervalBeats.coerceIn(1, 32)
+        val clampedSmooth = smoothSpeed.coerceIn(1f, 20f)
+        val clampedPan = panStrength.coerceIn(0f, 1f)
+        val normalizedMode = if (followMode == "sections") "sections" else "beats"
+
+        _uiState.update { state ->
+            state.copy(
+                snapshot = state.snapshot.copy(
+                    stageCamera = StageCameraSnapshot(
+                        enabled = enabled,
+                        baseX = clampedX,
+                        baseY = clampedY,
+                        baseZoom = clampedZoom,
+                        followMode = normalizedMode,
+                        followIntervalBeats = clampedBeats,
+                        smoothSpeed = clampedSmooth,
+                        panStrength = clampedPan
+                    )
+                )
+            )
+        }
+
+        viewModelScope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeUpdateStageCamera(
+                enabled,
+                clampedX,
+                clampedY,
+                clampedZoom,
+                normalizedMode,
+                clampedBeats,
+                clampedSmooth,
+                clampedPan,
+                commitSave
+            )
+            if (commitSave) {
+                applyActionJson(raw, silentOk = true)
+            }
+        }
+    }
+
+    fun openCameraScriptInStudio() {
+        val snap = _uiState.value.snapshot
+        val camScriptId = snap.scripts.firstOrNull {
+            it.id == "script_camera_system" || it.name == "camera_system.lua"
+        }?.id ?: snap.scripts.firstOrNull()?.id ?: ""
+        viewModelScope.launch(engineIoDispatcher) {
+            NativeEngineBridge.nativeFlushSave()
+        }
+        _uiState.update {
+            it.copy(
+                selectedScriptId = camScriptId,
+                currentScreen = StudioScreen.ScriptStudio,
+                scriptValidationMsg = null,
+                statusBanner = null
+            )
+        }
+    }
+
     fun addScript(language: String) {
         viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeAddScript(language)
@@ -636,7 +708,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     currentScreen = StudioScreen.HotCompile,
                     audioPreviewPlaying = false,
                     isBusy = true,
-                    statusBanner = null
+                    statusBanner = null,
+                    // Liberar bitmaps del editor antes de cargar los bitmaps compilados de partida
+                    entityBitmaps = emptyMap(),
+                    compiledBitmaps = emptyMap(),
+                    compiledBitmapsByIndex = emptyList()
                 )
             }
 
@@ -647,7 +723,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
             val compiledMap = loadCompiledBitmapsInternal(
                 snap.lastCompileReport?.compiledTexturePaths ?: emptyMap(),
-                snap.stageEntities
+                snap.stageEntities,
+                tier
             )
             val arrows = loadArrowBitmapsInternal()
             val receptors = loadReceptorBitmapsInternal()
@@ -728,13 +805,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeStopGameplay()
             val res = StudioJsonParser.parseActionResult(raw)
+            val nextSnap = res.snapshot ?: _uiState.value.snapshot
             withContext(Dispatchers.Main) {
                 gameplayFrameState.reset()
             }
+            // Liberar primero los bitmaps compilados de gameplay antes de recargar previews del editor
+            _uiState.update {
+                it.copy(
+                    compiledBitmaps = emptyMap(),
+                    compiledBitmapsByIndex = emptyList()
+                )
+            }
+            val restoredEditorBitmaps = loadEntityBitmapsInternal(
+                nextSnap.stageEntities,
+                _uiState.value.selectedTier
+            )
             _uiState.update {
                 it.copy(
                     currentScreen = target,
-                    snapshot = res.snapshot ?: it.snapshot
+                    snapshot = nextSnap,
+                    entityBitmaps = restoredEditorBitmaps
                 )
             }
         }
@@ -749,7 +839,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val result = StudioJsonParser.parseActionResult(rawJson)
         _uiState.update { state ->
             val nextSnap = result.snapshot ?: state.snapshot
-            val validEntity = nextSnap.stageEntities.any { it.id == state.selectedEntityId }
+            val validEntity = state.selectedEntityId == CAMERA_SELECTION_ID ||
+                nextSnap.stageEntities.any { it.id == state.selectedEntityId }
             val validScript = nextSnap.scripts.any { it.id == state.selectedScriptId }
             state.copy(
                 snapshot = nextSnap,
@@ -776,8 +867,28 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun reloadEntityBitmaps(entities: List<StageEntitySnapshot>) {
-        val map = loadEntityBitmapsInternal(entities)
+        val map = loadEntityBitmapsInternal(entities, _uiState.value.selectedTier)
         _uiState.update { it.copy(entityBitmaps = map) }
+    }
+
+    private fun editorPreviewMaxSide(tier: DeviceTier): Int {
+        return when (tier) {
+            DeviceTier.LowRam32Bit -> 1024
+            DeviceTier.Balanced -> 1536
+            DeviceTier.HighQuality -> 2048
+        }
+    }
+
+    private fun compiledGameplayMaxSide(tier: DeviceTier, ent: StageEntitySnapshot): Int {
+        val hasAtlas = ent.xmlPath != null ||
+            ent.animateJsonPath != null ||
+            ent.animationPrefixes.isNotEmpty() ||
+            (ent.previewFrame?.found == true)
+        return when (tier) {
+            DeviceTier.LowRam32Bit -> if (hasAtlas) 2560 else 1536
+            DeviceTier.Balanced -> if (hasAtlas) 4096 else 2560
+            DeviceTier.HighQuality -> 4096
+        }
     }
 
     private fun loadArrowBitmapsInternal(): Map<Int, ImageBitmap> {
@@ -806,11 +917,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         return out
     }
 
-    private fun loadEntityBitmapsInternal(entities: List<StageEntitySnapshot>): Map<String, LoadedEntityBitmap> {
+    private fun loadEntityBitmapsInternal(
+        entities: List<StageEntitySnapshot>,
+        tier: DeviceTier
+    ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
+        val cap = editorPreviewMaxSide(tier)
         for (ent in entities) {
             val path = ent.imagePath ?: continue
-            decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = 4096)?.let { loaded ->
+            decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = cap)?.let { loaded ->
                 out[ent.id] = loaded
             }
         }
@@ -819,14 +934,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun loadCompiledBitmapsInternal(
         compiledPaths: Map<String, String>,
-        entities: List<StageEntitySnapshot>
+        entities: List<StageEntitySnapshot>,
+        tier: DeviceTier
     ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
         val origPaths = entities.associate { it.id to it.imagePath }
         for (ent in entities) {
             val cPath = compiledPaths[ent.id] ?: origPaths[ent.id] ?: continue
             val oPath = origPaths[ent.id] ?: cPath
-            decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = 4096)?.let { loaded ->
+            val cap = compiledGameplayMaxSide(tier, ent)
+            decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = cap)?.let { loaded ->
                 out[ent.id] = loaded
             }
         }

@@ -810,6 +810,23 @@ impl ChartData {
         }
         active
     }
+
+    /// Devuelve si el foco principal del chart (`mustHitSection`) pertenece al Jugador en `song_pos_ms`.
+    pub fn must_hit_at_ms(&self, song_pos_ms: f64) -> bool {
+        let mut must_hit = self
+            .sections
+            .first()
+            .map(|s| s.must_hit_section)
+            .unwrap_or(false);
+        for sec in &self.sections {
+            if song_pos_ms >= sec.start_ms {
+                must_hit = sec.must_hit_section;
+            } else {
+                break;
+            }
+        }
+        must_hit
+    }
 }
 
 fn unwrap_chart_container(root: &Value) -> &Value {

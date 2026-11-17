@@ -63,7 +63,7 @@ fun HotCompileScreen(tier: DeviceTier) {
                     fontSize = 18.sp
                 )
                 Text(
-                    text = "Ajustando gráficos automáticamente para tu teléfono (${tier.label}) y cargando pistas de audio...",
+                    text = "Ajustando gráficos para tu teléfono (${tier.label}) y fusionando pistas de audio en un solo stream...",
                     color = StudioColors.TextMuted,
                     fontSize = 12.sp
                 )

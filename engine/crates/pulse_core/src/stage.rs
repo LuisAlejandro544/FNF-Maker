@@ -127,6 +127,66 @@ impl StageEntity {
     }
 }
 
+/// Modo de seguimiento automático de la cámara durante la partida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CameraFollowMode {
+    /// Alterna entre Enemigo y Jugador cada N beats configurados.
+    #[default]
+    BeatsInterval,
+    /// Sigue automáticamente `mustHitSection` definido en cada sección del `chart.json`.
+    ChartSections,
+}
+
+impl CameraFollowMode {
+    pub fn as_lua_str(self) -> &'static str {
+        match self {
+            CameraFollowMode::BeatsInterval => "beats",
+            CameraFollowMode::ChartSections => "sections",
+        }
+    }
+
+    pub fn from_str_loose(raw: &str) -> Self {
+        let low = raw.trim().to_ascii_lowercase();
+        if low.contains("section") || low == "chart" || low == "1" {
+            CameraFollowMode::ChartSections
+        } else {
+            CameraFollowMode::BeatsInterval
+        }
+    }
+}
+
+/// Configuración persistente de cámara vinculada al script `camera_system.lua`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageCameraConfig {
+    pub enabled: bool,
+    pub base_x: f32,
+    pub base_y: f32,
+    pub base_zoom: f32,
+    pub follow_mode: CameraFollowMode,
+    pub follow_interval_beats: u32,
+    pub smooth_speed: f32,
+    pub pan_strength: f32,
+}
+
+impl Default for StageCameraConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_x: 640.0,
+            base_y: 360.0,
+            base_zoom: 1.0,
+            follow_mode: CameraFollowMode::BeatsInterval,
+            follow_interval_beats: 4,
+            smooth_speed: 6.0,
+            pan_strength: 0.72,
+        }
+    }
+}
+
+fn default_camera_base_zoom() -> f32 {
+    1.0
+}
+
 /// Escena horizontal lógica (coordenadas virtuales 1280x720 independientes de la resolución).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageScene {
@@ -135,7 +195,11 @@ pub struct StageScene {
     pub camera_x: f32,
     pub camera_y: f32,
     pub camera_zoom: f32,
+    #[serde(default = "default_camera_base_zoom")]
+    pub camera_base_zoom: f32,
     pub camera_shake: f32,
+    #[serde(default)]
+    pub camera: StageCameraConfig,
     pub entities: Vec<StageEntity>,
 }
 
@@ -168,19 +232,59 @@ impl Default for StageScene {
         player.height = 260.0;
         player.z_index = 30;
 
+        let cam_cfg = StageCameraConfig::default();
+
         Self {
             virtual_width: 1280.0,
             virtual_height: 720.0,
-            camera_x: 640.0,
-            camera_y: 360.0,
-            camera_zoom: 1.0,
+            camera_x: cam_cfg.base_x,
+            camera_y: cam_cfg.base_y,
+            camera_zoom: cam_cfg.base_zoom,
+            camera_base_zoom: cam_cfg.base_zoom,
             camera_shake: 0.0,
+            camera: cam_cfg,
             entities: vec![bg, deco, opp, player],
         }
     }
 }
 
 impl StageScene {
+    /// Aplica una nueva configuración de cámara validando límites y sincronizando la vista base.
+    pub fn apply_camera_config(&mut self, mut cfg: StageCameraConfig) {
+        cfg.base_x = if cfg.base_x.is_finite() {
+            cfg.base_x.clamp(-1000.0, 2600.0)
+        } else {
+            640.0
+        };
+        cfg.base_y = if cfg.base_y.is_finite() {
+            cfg.base_y.clamp(-1000.0, 1800.0)
+        } else {
+            360.0
+        };
+        cfg.base_zoom = if cfg.base_zoom.is_finite() {
+            cfg.base_zoom.clamp(0.35, 2.5)
+        } else {
+            1.0
+        };
+        cfg.follow_interval_beats = cfg.follow_interval_beats.clamp(1, 32);
+        cfg.smooth_speed = if cfg.smooth_speed.is_finite() {
+            cfg.smooth_speed.clamp(1.0, 20.0)
+        } else {
+            6.0
+        };
+        cfg.pan_strength = if cfg.pan_strength.is_finite() {
+            cfg.pan_strength.clamp(0.0, 1.0)
+        } else {
+            0.72
+        };
+
+        self.camera_x = cfg.base_x;
+        self.camera_y = cfg.base_y;
+        self.camera_base_zoom = cfg.base_zoom;
+        self.camera_zoom = cfg.base_zoom;
+        self.camera = cfg;
+    }
+
     /// Ordena las entidades por `z_index` ascendente para dibujar correctamente qué está encima y qué debajo.
     pub fn sort_by_z_order(&mut self) {
         self.entities.sort_by_key(|e| e.z_index);

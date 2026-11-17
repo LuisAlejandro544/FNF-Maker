@@ -42,12 +42,120 @@ impl JsScriptVm {
 
             {
                 let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move |x: f32, y: f32| {
+                    if x.is_finite() && y.is_finite() {
+                        *h.camera_x.lock() = x;
+                        *h.camera_y.lock() = y;
+                        h.push_command(ScriptCommand::SetCameraPos { x, y });
+                    }
+                })
+                .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("setCameraPos", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
                 let f = Function::new(ctx.clone(), move |zoom: f32| {
-                    h.push_command(ScriptCommand::SetCameraZoom(zoom));
+                    if zoom.is_finite() {
+                        *h.camera_zoom.lock() = zoom;
+                        h.push_command(ScriptCommand::SetCameraZoom(zoom));
+                    }
                 })
                 .map_err(|e| JsVmError::Eval(e.to_string()))?;
                 globals
                     .set("setCameraZoom", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move |zoom: f32| {
+                    if zoom.is_finite() {
+                        *h.camera_base_zoom.lock() = zoom;
+                        h.push_command(ScriptCommand::SetCameraBaseZoom(zoom));
+                    }
+                })
+                .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("setCameraBaseZoom", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move || -> f32 { *h.camera_x.lock() })
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getCameraX", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move || -> f32 { *h.camera_y.lock() })
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getCameraY", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move || -> f32 { *h.camera_zoom.lock() })
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getCameraZoom", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move || -> f32 { *h.camera_base_zoom.lock() })
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getCameraBaseZoom", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move |id_or_role: String| -> Option<f32> {
+                    h.entity_positions.lock().get(&id_or_role).map(|p| p.0)
+                })
+                .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getEntityX", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move |id_or_role: String| -> Option<f32> {
+                    h.entity_positions.lock().get(&id_or_role).map(|p| p.1)
+                })
+                .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getEntityY", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move || -> bool { *h.must_hit_section.lock() })
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getMustHitSection", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move || -> f64 { *h.current_bpm.lock() })
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("getActiveBpm", f)
                     .map_err(|e| JsVmError::Eval(e.to_string()))?;
             }
 
@@ -91,6 +199,20 @@ impl JsScriptVm {
                 .map_err(|e| JsVmError::Eval(e.to_string()))?;
                 globals
                     .set("playAnim", f)
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+
+            {
+                let h = Arc::clone(&host);
+                let f = Function::new(ctx.clone(), move |entity_id: String, anim_name: String| {
+                    h.push_command(ScriptCommand::PlayEntityAnim {
+                        entity_id,
+                        anim_name,
+                    });
+                })
+                .map_err(|e| JsVmError::Eval(e.to_string()))?;
+                globals
+                    .set("playEntityAnim", f)
                     .map_err(|e| JsVmError::Eval(e.to_string()))?;
             }
 

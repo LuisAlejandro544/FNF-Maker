@@ -22,8 +22,7 @@ pub use dto::{
 };
 
 use pulse_audio::{AudioEngineHandle, DecodedTrack};
-use pulse_core::frame_memory::LruCache;
-use pulse_core::hot_compile::{CompiledBundle, DeviceResourceTier, HotCompileReport, OptimizedTexture};
+use pulse_core::hot_compile::{CompiledBundle, HotCompileReport};
 use pulse_core::project::{MAX_AUDIO_TRACKS, MobileControlMode, ModProject};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
@@ -40,7 +39,7 @@ pub struct EngineSession {
     pub decoded_tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
     pub compiled_bundle: Option<CompiledBundle>,
     pub compiled_texture_paths: HashMap<String, String>,
-    pub texture_lru_cache: LruCache<String, OptimizedTexture>,
+    pub compiled_audio_path: Option<PathBuf>,
     pub last_compile_report: Option<HotCompileReport>,
     pub gameplay: Option<GameplayRuntimeState>,
     pub dirty: bool,
@@ -62,7 +61,7 @@ impl EngineSession {
             decoded_tracks: [None, None, None],
             compiled_bundle: None,
             compiled_texture_paths: HashMap::new(),
-            texture_lru_cache: LruCache::new(DeviceResourceTier::Balanced.lru_cache_budget_bytes(), 64),
+            compiled_audio_path: None,
             last_compile_report: None,
             gameplay: None,
             dirty: false,
