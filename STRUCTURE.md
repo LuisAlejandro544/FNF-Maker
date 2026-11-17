@@ -17,7 +17,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 ├── package.json                         # Dependencias web + tsx para tests del SDK
 │
 ├── engine/                              # Motor nativo modular en Rust (Workspace Cargo, sin UI)
-│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, texture2ddecoder)
+│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, texture2ddecoder, zstd)
 │   ├── .cargo/
 │   │   └── config.toml                  # Flags de enlazador Android (alineación 16KB para Android 15+)
 │   └── crates/
@@ -39,13 +39,16 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── project.rs           # Modelo ModProject, `camera_system.lua` y `stage_events.lua` (`-- [STAGE_CUES_START/END]`)
 │       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
 │       │       ├── script_optimizer.rs  # Poda segura preservando API completa (flashes, swap, preload/retire, personaje)
-│       │       └── hot_compile.rs       # Compilación incremental (`HotCompileManifest`, FNV-1a, WebP lossless, preservación de eventos y reuso)
+│       │       ├── hot_compile.rs       # Compilación incremental (`HotCompileManifest`, FNV-1a, WebP lossless, preservación de eventos y reuso)
+│       │       ├── disk_cache.rs        # Presupuestos 65%/35% por cuota del sistema, limpieza plana heredada y desalojo LRU en disco
+│       │       └── vanilla.rs           # Contenedor portátil Vanilla (`.mod`) con Zstandard, PNG->WebP lossless, dedup y FNV-1a
 │       │
 │       ├── pulse_audio/                 # Subsistema de audio de baja latencia 100% Rust puro
 │       │   ├── Cargo.toml
 │       │   └── src/
 │       │       ├── lib.rs               # AudioEngineHandle, merge_tracks_to_wav y control del stream
 │       │       ├── decoder.rs           # Decodificación OGG/WAV/MP3 a PCM i16 compacto (50% menos RAM) y resampleo
+│       │       ├── audio_cache.rs       # Caché binario `.bfaud` (picos de onda + PCM i16) en `cacheDir/audio_cache/` con escritura atómica y LRU
 │       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`) + streaming SPSC 512 KB desde disco
 │       │       ├── mixer.rs             # Mezclador lock-free (stream único o pistas estudio) + reloj maestro + countdown BPM
 │       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI, cero C++) + fallback
@@ -63,16 +66,16 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           ├── Cargo.toml               # Crate cdylib + rlib con jni, android_logger, serde_json e image
 │           ├── build.rs                 # Script de compilación limpio (sin C++ ni GameActivity)
 │           └── src/
-│               ├── lib.rs               # Exportaciones JNI (`nativeSetAudioPreviewTransport`/`nativeReadAudioPreviewState`) y `HOT_COMPILE_PROGRESS`
+│               ├── lib.rs               # Exportaciones JNI (incl. `nativeSetCacheQuota`, `nativeExportModPackage`/`nativeImportModPackage`) y `HOT_COMPILE_PROGRESS`
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
-│                   ├── mod.rs           # Struct `EngineSession`, constructores y helpers compartidos
+│                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
 │                   ├── dto.rs           # DTOs hacia Kotlin (incluyendo métricas de caché WebP, audio y scripts pre-compilados)
-│                   ├── editor_ops.rs    # Operaciones de editor de chart (sync `stage_events.lua`), audio, escenario, scripts e íconos
-│                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP (salida lossless WebP), Sparrow XML, baking Animate y preview
-│                   ├── persistence_ops.rs # Guardado/carga de proyectos en disco y recarga de pistas PCM
+│                   ├── editor_ops.rs    # Operaciones de editor de chart (sync `stage_events.lua`), adopción de audio, escenario, scripts e íconos
+│                   ├── sprite_ops.rs    # Importación/adopción PNG/ASTC/WebP (salida lossless WebP), Sparrow XML, baking Animate y preview
+│                   ├── persistence_ops.rs # Guardado/carga, adopción `assets/`, GC de huérfanos, audio `.bfaud` y export/import Vanilla `.mod`
 │                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
-│                       ├── mod.rs         # Coordinador `start/pause/stop_gameplay`, BFGP v2 (`152B`) y tests
-│                       ├── hot_compile_ops.rs # `hot_compile_with_progress` (caché `manifest.json`, WebP lossless, WAV mix, scripts)
+│                       ├── mod.rs         # Coordinador `start/pause/stop_gameplay`, toque/LRU de caché y BFGP v2 (`152B`)
+│                       ├── hot_compile_ops.rs # `hot_compile_with_progress` en `compiled_cache/<projectId>/` con cuota y desalojo LRU multi-proyecto
 │                       ├── script_sync.rs # `tweens`, timers, `flash`, `active_player/opponent`, precarga/retiro y drenaje `ScriptCommand`
 │                       ├── simulation.rs  # Simulación por frame (`step_gameplay_internal`), lookahead 4s, flashes y notas/hold
 │                       └── packet_encoder.rs # Serialización JSON (`step_gameplay`) y binaria `BFGP` v2 (`152B` cabecera)
@@ -94,17 +97,17 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           │   ├── mipmap-mdpi..xxxhdpi/# Iconos PNG `ic_launcher`, `ic_launcher_round`, `_foreground` y `_background`
 │           │   └── values/strings.xml
 │           └── kotlin/com/beatforge/studio/
-│               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + CreateDocument (.json)
+│               ├── MainActivity.kt      # ComponentActivity + Compose root + OpenDocument + CreateDocument (.json y .mod)
 │               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
 │               ├── GameplayFrameState.kt# Decoder binario BFGP v2 (`152B` cabecera: flash, activePlayer/Opponent, flags preload/retired)
-│               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so` (incl. `nativeGetHotCompileProgress`)
-│               ├── SafFileBridge.kt     # Copia segura de URIs SAF a almacenamiento interno
-│               ├── StudioModels.kt      # Data classes Kotlin (`HotCompileProgress`, `CompileReportSnapshot`) y parsers `org.json`
+│               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so` (incl. `nativeExport/ImportModPackage`)
+│               ├── SafFileBridge.kt     # Staging temporal de URIs SAF en `cacheDir/import_staging/` (incl. exportación `.mod`) y barrido al arranque
+│               ├── StudioModels.kt      # Data classes Kotlin (`HotCompileProgress`, `CompileReportSnapshot`, `ImportKind.ModPackage`) y parsers JSON
 │               ├── StudioUiState.kt     # Estado reactivo `StudioUiState` y contenedor `LoadedEntityBitmap`
 │               ├── StudioViewModel.kt   # Coordinador principal (`StateFlow`) que delega en `viewmodel/*` sobre `Dispatchers.IO`
 │               ├── viewmodel/           # Submódulos especializados del ViewModel
 │               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow y decodificación de bitmaps/SVG
-│               │   ├── StudioEditorDelegate.kt    # Gestión de proyectos, import/export SAF y ediciones de estudio
+│               │   ├── StudioEditorDelegate.kt    # Proyectos, cuota `StorageManager` (API 26+), staging SAF, exportación/importación `.mod` y edición
 │               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (skip ocultos, precarga 4s IO, recycle diferido 3 frames, restart) y BFGP v2
 │               └── ui/
 │                   ├── theme/
@@ -118,7 +121,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   │   └── ChartStepCueDialog.kt  # Modal en columna `#` para Swaps/RAM, Flashes (inicio->fin) y cambio de Personajes
 │                   └── screens/
 │                       ├── HubScreen.kt           # Metadatos del mod, métricas y accesos directos modulares
-│                       ├── ProjectsScreen.kt      # Gestión, creación, respaldo y carga de proyectos locales
+│                       ├── ProjectsScreen.kt      # Gestión, creación, copia, borrado e importación/exportación Vanilla (`.mod`) de proyectos
 │                       ├── ChartScreen.kt         # Coordinador del editor manual de 8 carriles + eventos `#` y `stage_events.lua`
 │                       ├── chart/                 # Subcomponentes modulares del editor de chart
 │                       │   ├── ChartTimelineModels.kt # Colas sustain continuas, mapa `#`, lookup O(log N) del hilo y duración total
@@ -148,8 +151,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (incl. flashes, swaps, preload/retire, personaje)
-│       ├── engine-tools.ts              # Utilidades de validación, sustain continuo, hilo reproductor, ciclo RAM 4s y BFGP v2 (`152B`)
-│       └── engine-tools.test.ts         # 32 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, sustain, hilo, ciclo RAM 4s, staging/cuota LRU/`.bfaud`, Vanilla `.mod` y BFGP v2 (`152B`)
+│       └── engine-tools.test.ts         # 35 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

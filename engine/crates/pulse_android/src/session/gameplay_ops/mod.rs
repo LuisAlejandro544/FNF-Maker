@@ -11,8 +11,10 @@ mod packet_encoder;
 mod script_sync;
 mod simulation;
 
+use super::persistence_ops::sanitize_project_id;
 use super::{EngineSession, GameplayRuntimeState, StrumOverrideState};
 use pulse_audio::StreamingAudioSource;
+use pulse_core::disk_cache::{evict_lru_subdirs, touch_dir_last_used};
 use pulse_core::frame_memory::{FrameBumpArena, NoteSlidingWindow};
 use pulse_core::hot_compile::{
     DeviceResourceTier, analyze_reused_entity_ids, hot_compile_project_to_dir,
@@ -42,15 +44,28 @@ impl EngineSession {
             .apply_camera_config(self.project.stage.camera.clone());
         self.project.stage.camera_shake = 0.0;
 
-        let out_dir = self.cache_dir.join("compiled_cache");
-        let bundle = self.compiled_bundle.clone().unwrap_or_else(|| {
-            hot_compile_project_to_dir(
+        let out_dir = self.active_compiled_cache_dir();
+        let bundle = if let Some(b) = self.compiled_bundle.clone() {
+            if out_dir.is_dir() {
+                touch_dir_last_used(&out_dir);
+            }
+            b
+        } else {
+            let compiled = hot_compile_project_to_dir(
                 &self.project,
                 DeviceResourceTier::Balanced,
                 Some(&out_dir),
                 |_, _| {},
-            )
-        });
+            );
+            touch_dir_last_used(&out_dir);
+            let safe_active = sanitize_project_id(&self.project.id);
+            let _ = evict_lru_subdirs(
+                &self.compiled_cache_root_dir(),
+                self.cache_budget().compiled_cache_bytes,
+                &[&safe_active],
+            );
+            compiled
+        };
 
         self.project
             .chart

@@ -10,8 +10,10 @@ use crate::session::EngineSession;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static SESSION: OnceLock<Mutex<EngineSession>> = OnceLock::new();
+static INITIAL_CACHE_QUOTA_BYTES: AtomicU64 = AtomicU64::new(0);
 static HOT_COMPILE_PROGRESS: OnceLock<Mutex<HotCompileProgressState>> = OnceLock::new();
 
 #[derive(Clone, serde::Serialize)]
@@ -58,7 +60,12 @@ pub fn init_session(cache_dir: PathBuf) -> &'static Mutex<EngineSession> {
 }
 
 pub fn init_session_with_dirs(cache_dir: PathBuf, data_dir: PathBuf) -> &'static Mutex<EngineSession> {
-    SESSION.get_or_init(|| Mutex::new(EngineSession::new_with_dirs(cache_dir, data_dir)))
+    let quota = INITIAL_CACHE_QUOTA_BYTES.load(Ordering::Relaxed);
+    SESSION.get_or_init(|| {
+        Mutex::new(EngineSession::new_with_dirs_and_quota(
+            cache_dir, data_dir, quota,
+        ))
+    })
 }
 
 pub fn session() -> &'static Mutex<EngineSession> {
@@ -70,7 +77,7 @@ mod jni_exports {
     use super::*;
     use jni::JNIEnv;
     use jni::objects::{JByteArray, JByteBuffer, JClass, JDoubleArray, JString};
-    use jni::sys::{jboolean, jdouble, jfloat, jint};
+    use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
 
     fn read_str(env: &mut JNIEnv, input: &JString) -> String {
         env.get_string(input)
@@ -80,6 +87,19 @@ mod jni_exports {
 
     fn to_jstr<'local>(env: &mut JNIEnv<'local>, s: &str) -> JString<'local> {
         env.new_string(s).unwrap_or_default()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetCacheQuota(
+        _env: JNIEnv,
+        _cls: JClass,
+        quota_bytes: jlong,
+    ) {
+        let quota = quota_bytes.max(0) as u64;
+        INITIAL_CACHE_QUOTA_BYTES.store(quota, Ordering::Relaxed);
+        if let Some(sess) = SESSION.get() {
+            sess.lock().set_cache_quota_bytes(quota);
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -166,6 +186,33 @@ mod jni_exports {
     ) -> JString<'local> {
         let pid = read_str(&mut env, &project_id);
         let json = session().lock().delete_project(&pid);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeExportModPackage<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        project_id: JString<'local>,
+        out_path: JString<'local>,
+        optimize_images: jboolean,
+    ) -> JString<'local> {
+        let pid = read_str(&mut env, &project_id);
+        let out = PathBuf::from(read_str(&mut env, &out_path));
+        let json = session()
+            .lock()
+            .export_project_vanilla_mod(&pid, &out, optimize_images != 0);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportModPackage<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_project_vanilla_mod(p);
         to_jstr(&mut env, &json)
     }
 

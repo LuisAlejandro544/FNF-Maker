@@ -4,11 +4,13 @@
 //! la fusión a un único archivo WAV compilado con streaming lock-free (`streaming`)
 //! y el backend nativo AAudio en Rust puro para Android.
 
+pub mod audio_cache;
 pub mod decoder;
 pub mod mixer;
 pub mod rust_audio_backend;
 pub mod streaming;
 
+pub use audio_cache::{compute_audio_cache_key, decode_audio_file_cached};
 pub use decoder::{DecodedTrack, decode_audio_file};
 pub use mixer::{AudioMixerState, TrackRuntimeConfig};
 pub use rust_audio_backend::AudioEngineHandle;

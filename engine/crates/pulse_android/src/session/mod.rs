@@ -24,18 +24,23 @@ pub use dto::{
 };
 
 use pulse_audio::{AudioEngineHandle, DecodedTrack};
+use pulse_core::disk_cache::{
+    CacheBudgetSplit, DEFAULT_TOTAL_CACHE_QUOTA_BYTES, compute_cache_budget_split,
+    evict_lru_files, evict_lru_subdirs,
+};
 use pulse_core::hot_compile::{CompiledBundle, HotCompileReport};
 use pulse_core::project::{MAX_AUDIO_TRACKS, MobileControlMode, ModProject};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 pub struct EngineSession {
     pub cache_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub cache_quota_bytes: u64,
     pub project: ModProject,
     pub audio_engine: AudioEngineHandle,
     pub decoded_tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
@@ -51,13 +56,26 @@ pub struct EngineSession {
 impl EngineSession {
     pub fn new(cache_dir: PathBuf) -> Self {
         let data_dir = cache_dir.clone();
-        Self::new_with_dirs(cache_dir, data_dir)
+        Self::new_with_dirs_and_quota(cache_dir, data_dir, DEFAULT_TOTAL_CACHE_QUOTA_BYTES)
     }
 
     pub fn new_with_dirs(cache_dir: PathBuf, data_dir: PathBuf) -> Self {
+        Self::new_with_dirs_and_quota(cache_dir, data_dir, DEFAULT_TOTAL_CACHE_QUOTA_BYTES)
+    }
+
+    pub fn new_with_dirs_and_quota(
+        cache_dir: PathBuf,
+        data_dir: PathBuf,
+        cache_quota_bytes: u64,
+    ) -> Self {
         let mut sess = Self {
             cache_dir,
             data_dir,
+            cache_quota_bytes: if cache_quota_bytes == 0 {
+                DEFAULT_TOTAL_CACHE_QUOTA_BYTES
+            } else {
+                cache_quota_bytes
+            },
             project: ModProject::new_demo(),
             audio_engine: AudioEngineHandle::new_deferred(),
             decoded_tracks: [None, None, None],
@@ -72,6 +90,59 @@ impl EngineSession {
         sess.load_initial_project();
         sess
     }
+
+    pub fn cache_budget(&self) -> CacheBudgetSplit {
+        compute_cache_budget_split(self.cache_quota_bytes)
+    }
+
+    pub fn compiled_cache_root_dir(&self) -> PathBuf {
+        self.cache_dir.join("compiled_cache")
+    }
+
+    pub fn compiled_cache_dir_for(&self, project_id: &str) -> PathBuf {
+        self.compiled_cache_root_dir()
+            .join(persistence_ops::sanitize_project_id(project_id))
+    }
+
+    pub fn active_compiled_cache_dir(&self) -> PathBuf {
+        self.compiled_cache_dir_for(&self.project.id)
+    }
+
+    pub fn audio_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("audio_cache")
+    }
+
+    pub fn set_cache_quota_bytes(&mut self, quota_bytes: u64) {
+        self.cache_quota_bytes = if quota_bytes == 0 {
+            DEFAULT_TOTAL_CACHE_QUOTA_BYTES
+        } else {
+            quota_bytes
+        };
+        let budget = self.cache_budget();
+        let active_safe = persistence_ops::sanitize_project_id(&self.project.id);
+        let _ = evict_lru_subdirs(
+            &self.compiled_cache_root_dir(),
+            budget.compiled_cache_bytes,
+            &[&active_safe],
+        );
+        let _ = evict_lru_files(&self.audio_cache_dir(), budget.audio_cache_bytes, &[]);
+    }
+}
+
+/// Extrae el nombre legible del archivo importado quitando el prefijo temporal `<epochMs>_`
+/// agregado por el staging SAF cuando existe.
+pub(super) fn friendly_import_name(path: &Path) -> String {
+    let raw = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("import")
+        .to_string();
+    if let Some((prefix, rest)) = raw.split_once('_') {
+        if prefix.len() >= 10 && prefix.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
+            return rest.to_string();
+        }
+    }
+    raw
 }
 
 pub(super) fn role_to_key(role: EntityRole) -> &'static str {

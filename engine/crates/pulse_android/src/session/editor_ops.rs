@@ -4,9 +4,12 @@
 //! - Decodificación y configuración de hasta 3 pistas de audio en `pulse_audio`.
 //! - Gestión de entidades del escenario (`StageEntity`), scripts Lua/TS/JS y skins SVG (`resvg`).
 
-use super::{ActionResultJson, EngineSession, parse_control_mode_key, parse_lang_key, parse_role_key};
+use super::{
+    ActionResultJson, EngineSession, friendly_import_name, parse_control_mode_key,
+    parse_lang_key, parse_role_key,
+};
 use image::ImageFormat;
-use pulse_audio::decode_audio_file;
+use pulse_audio::decode_audio_file_cached;
 use pulse_core::project::{
     CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MAX_AUDIO_TRACKS, parse_camera_config_from_lua,
     render_camera_lua_script,
@@ -53,8 +56,9 @@ impl EngineSession {
                         "Chart '{}' importado ({} notas, {:.1} BPM)",
                         chart.title, chart.stats.total_notes, chart.bpm
                     );
+                    let display_name = friendly_import_name(&path);
                     self.project.chart = chart;
-                    self.project.chart_source_path = Some(path);
+                    self.project.chart_source_path = Some(PathBuf::from(display_name));
                     self.project.sync_stage_events_script();
                     self.save_active_project_now();
                     self.ok_response(msg)
@@ -140,13 +144,50 @@ impl EngineSession {
     }
 
     pub fn import_audio_track(&mut self, slot: usize, path: PathBuf) -> String {
-        if let Err(e) = self.project.assign_audio_track(slot, path.clone()) {
-            return self.err_response(e);
+        if slot >= MAX_AUDIO_TRACKS {
+            return self.err_response(format!(
+                "Máximo {} pistas permitidas; índice {} fuera de rango",
+                MAX_AUDIO_TRACKS, slot
+            ));
         }
+        if !path.is_file() {
+            return self.err_response("Archivo de audio no encontrado");
+        }
+
+        let friendly_name = friendly_import_name(&path);
+        let stem_hint = PathBuf::from(&friendly_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("track")
+            .to_string();
+
+        let adopted_path = match self.adopt_permanent_asset(
+            &path,
+            "audio",
+            &format!("slot{}_{}", slot, stem_hint),
+        ) {
+            Ok(p) => p,
+            Err(e) => return self.err_response(e),
+        };
+
         self.audio_engine.ensure_started();
-        let target_sr = self.audio_engine.mixer.sample_rate.load(Ordering::Relaxed);
-        match decode_audio_file(&path, target_sr) {
+        let target_sr = self
+            .audio_engine
+            .mixer
+            .sample_rate
+            .load(Ordering::Relaxed)
+            .max(8000);
+        let audio_cache_dir = self.audio_cache_dir();
+        let audio_quota = self.cache_budget().audio_cache_bytes;
+
+        match decode_audio_file_cached(&adopted_path, target_sr, Some(&audio_cache_dir), audio_quota)
+        {
             Ok(decoded) => {
+                let old_path = self.project.audio_tracks[slot].file_path.take();
+                self.project.audio_tracks[slot].file_path = Some(adopted_path);
+                self.project.audio_tracks[slot].file_name = Some(friendly_name);
+                self.remove_managed_asset_if_unreferenced(old_path.as_deref());
+
                 let arc_track = Arc::new(decoded);
                 self.audio_engine
                     .mixer
@@ -155,16 +196,20 @@ impl EngineSession {
                 self.save_active_project_now();
                 self.ok_response(format!("Pista {} decodificada y lista en Rust AAudio", slot + 1))
             }
-            Err(e) => self.err_response(format!("Error decodificando pista {}: {}", slot + 1, e)),
+            Err(e) => {
+                let _ = std::fs::remove_file(&adopted_path);
+                self.err_response(format!("Error decodificando pista {}: {}", slot + 1, e))
+            }
         }
     }
 
     pub fn remove_audio_track(&mut self, slot: usize) -> String {
         if slot < MAX_AUDIO_TRACKS {
-            self.project.audio_tracks[slot].file_path = None;
+            let old_path = self.project.audio_tracks[slot].file_path.take();
             self.project.audio_tracks[slot].file_name = None;
             self.decoded_tracks[slot] = None;
             self.audio_engine.mixer.set_track(slot, None);
+            self.remove_managed_asset_if_unreferenced(old_path.as_deref());
             self.save_active_project_now();
         }
         self.ok_response(format!("Pista {} liberada", slot + 1))
@@ -343,11 +388,7 @@ impl EngineSession {
     pub fn import_script(&mut self, path: PathBuf) -> String {
         match std::fs::read_to_string(&path) {
             Ok(src) => {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("custom.lua")
-                    .to_string();
+                let name = friendly_import_name(&path);
                 let lang = if name.ends_with(".ts") {
                     ScriptLanguage::TypeScript
                 } else if name.ends_with(".js") {
@@ -437,7 +478,11 @@ impl EngineSession {
                 if let Err(e) = rasterize_svg_str(&svg_text, self.project.arrow_skin.note_size_px) {
                     return self.err_response(format!("SVG inválido: {}", e));
                 }
-                self.project.arrow_skin.custom_svg_paths.insert(dir, path);
+                let display_name = friendly_import_name(&path);
+                self.project
+                    .arrow_skin
+                    .custom_svg_paths
+                    .insert(dir, PathBuf::from(display_name));
                 self.project
                     .arrow_skin
                     .custom_svg_sources
@@ -489,7 +534,8 @@ impl EngineSession {
                 if let Err(e) = pulse_core::svg_skin::rasterize_svg_rect(&svg_text, 600, 36) {
                     return self.err_response(format!("SVG de barra de vida inválido: {}", e));
                 }
-                self.project.health_bar_svg_path = Some(path);
+                let display_name = friendly_import_name(&path);
+                self.project.health_bar_svg_path = Some(PathBuf::from(display_name));
                 self.project.health_bar_svg_source = Some(svg_text);
                 self.save_active_project_now();
                 self.ok_response("Barra de vida SVG personalizada aplicada")

@@ -19,15 +19,18 @@ import {
   advanceNoteSlidingWindow,
   analyzeStageEventRamLifecycle,
   autoBindSparrowPrefixes,
+  buildBfaudCacheKey,
   buildFlashEffectEventParams,
   buildStageSwapEventParams,
   clampEntityScale,
+  classifySafImportStorage,
   compareNaturalFrameNames,
   computeBpmSyncedIdleCadence,
   computeCameraCaptureBox,
   computeChartPlayheadFollowAction,
   computeChartSustainGridCells,
   computeCountdownState,
+  computeDiskCacheBudgetSplit,
   computeReceptorLayout,
   computeSmartTextureScale,
   computeSustainTailSpan,
@@ -47,6 +50,7 @@ import {
   parseAstcHeader,
   parseCameraConfigFromLua,
   parseChartJson,
+  planMultiProjectLruEviction,
   renderCameraLuaConfigBlock,
   resolveChartPlayheadStep,
   resolveCompiledSpriteTarget,
@@ -59,6 +63,16 @@ import {
   sortProjectSummaries,
   stripTrailingFrameDigits,
   validateAudioTrackCount,
+  validateBfaudHeader,
+  VANILLA_MAGIC_BYTES,
+  VANILLA_HEADER_BYTES,
+  VANILLA_FORMAT_VERSION,
+  VANILLA_FILE_EXTENSION,
+  VANILLA_FLAG_OPTIMIZED_WEBP,
+  VANILLA_FLAG_ASSET_DEDUP,
+  classifyVanillaEntryCodec,
+  validateVanillaRelPath,
+  validateVanillaHeader,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -1180,4 +1194,120 @@ test('resolveChartPlayheadStep tracks sub-step position across BPM changes and f
   });
   assert.equal(offscreenSnap.action, 'snap_to_row');
 });
+
+test('classifySafImportStorage isolates transient imports to cacheDir staging and limits persistent binary storage', () => {
+  for (const transient of ['chart', 'sparrow_xml', 'script', 'arrow_svg', 'health_bar_svg'] as const) {
+    const res = classifySafImportStorage(transient);
+    assert.equal(res.stagingDir, 'cacheDir/import_staging');
+    assert.equal(res.policy, 'staging_then_embed');
+    assert.equal(res.persistsBinaryInFilesDir, false);
+    assert.equal(res.deleteStagedAfterImport, true);
+  }
+
+  for (const persistent of ['audio_track', 'sprite_png', 'character_icon'] as const) {
+    const res = classifySafImportStorage(persistent);
+    assert.equal(res.stagingDir, 'cacheDir/import_staging');
+    assert.equal(res.policy, 'staging_then_adopt');
+    assert.equal(res.persistsBinaryInFilesDir, true);
+    assert.equal(res.deleteStagedAfterImport, true);
+  }
+});
+
+test('computeDiskCacheBudgetSplit, planMultiProjectLruEviction and .bfaud audio cache enforce quota and protect active mod', () => {
+  const clampedLow = computeDiskCacheBudgetSplit(10 * 1024 * 1024);
+  assert.equal(clampedLow.totalBytes, 48 * 1024 * 1024);
+  const clampedHigh = computeDiskCacheBudgetSplit(1024 * 1024 * 1024);
+  assert.equal(clampedHigh.totalBytes, 384 * 1024 * 1024);
+
+  const eviction = planMultiProjectLruEviction(
+    [
+      { projectId: 'mod_a', sizeBytes: 40_000_000, lastUsedMs: 1000 },
+      { projectId: 'mod_active', sizeBytes: 45_000_000, lastUsedMs: 500 }, // más antiguo pero activo -> protegido
+      { projectId: 'mod_b', sizeBytes: 35_000_000, lastUsedMs: 3000 },
+    ],
+    85_000_000,
+    'mod_active',
+  );
+  assert.deepEqual(eviction.evictedIds, ['mod_a']);
+  assert.deepEqual(eviction.keptIds, ['mod_active', 'mod_b']);
+  assert.equal(eviction.bytesAfter, 80_000_000);
+
+  const key1 = buildBfaudCacheKey({
+    sizeBytes: 3_500_000,
+    modifiedMs: 1700000100,
+    sampleHash: 'a1b2c3d4',
+    targetSampleRate: 48000,
+  });
+  const key2 = buildBfaudCacheKey({
+    sizeBytes: 3_500_000,
+    modifiedMs: 1700000100,
+    sampleHash: 'a1b2c3d4',
+    targetSampleRate: 44100,
+  });
+  assert.notEqual(key1, key2);
+  assert.ok(key1.endsWith('_48000.bfaud'));
+
+  const header = new Uint8Array(24);
+  const view = new DataView(header.buffer);
+  header.set([0x42, 0x46, 0x41, 0x55], 0); // "BFAU"
+  view.setUint32(4, 1, true);
+  view.setUint32(8, 48000, true);
+  view.setUint32(12, 64, true);
+  view.setBigUint64(16, 4096n, true);
+  const info = validateBfaudHeader(header);
+  assert.equal(info.sampleRate, 48000);
+  assert.equal(info.peakCount, 64);
+  assert.equal(info.expectedFileBytes, 24 + 64 * 4 + 4096 * 2);
+});
+
+test('Vanilla .mod container validates VNLA header, Zstd/Raw codec selection and safe relative paths', () => {
+  assert.equal(VANILLA_FILE_EXTENSION, 'mod');
+
+  // Clasificación híbrida: texto/WAV/ASTC a Zstd; media ya comprimida a Raw
+  assert.deepEqual(classifyVanillaEntryCodec('project.json'), { codec: 'zstd', level: 12 });
+  assert.deepEqual(classifyVanillaEntryCodec('scripts/stage_events.lua'), { codec: 'zstd', level: 12 });
+  assert.deepEqual(classifyVanillaEntryCodec('assets/audio/inst.wav'), { codec: 'zstd', level: 9 });
+  assert.deepEqual(classifyVanillaEntryCodec('assets/sprites/boss.astc'), { codec: 'zstd', level: 9 });
+  assert.deepEqual(classifyVanillaEntryCodec('assets/audio/voices.ogg'), { codec: 'raw', level: 0 });
+  assert.deepEqual(classifyVanillaEntryCodec('assets/sprites/bf.webp'), { codec: 'raw', level: 0 });
+
+  // Seguridad contra path traversal
+  assert.equal(validateVanillaRelPath('assets/sprites/bf.webp'), 'assets/sprites/bf.webp');
+  assert.throws(() => validateVanillaRelPath('../escape.json'));
+  assert.throws(() => validateVanillaRelPath('/etc/passwd'));
+  assert.throws(() => validateVanillaRelPath('C:\\mods\\bad.png'));
+  assert.throws(() => validateVanillaRelPath('assets//empty.png'));
+
+  // Cabecera binaria VNLA (24 bytes LE)
+  const buf = new Uint8Array(VANILLA_HEADER_BYTES);
+  buf.set(VANILLA_MAGIC_BYTES, 0);
+  const view = new DataView(buf.buffer);
+  view.setUint16(4, VANILLA_FORMAT_VERSION, true);
+  view.setUint16(6, VANILLA_FLAG_OPTIMIZED_WEBP | VANILLA_FLAG_ASSET_DEDUP, true);
+  view.setUint32(8, 1420, true);
+  view.setUint32(12, 8192, true);
+  view.setBigUint64(16, 0x0123456789abcdefn, true);
+
+  const parsed = validateVanillaHeader(buf);
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.optimizedWebp, true);
+  assert.equal(parsed.assetDedup, true);
+  assert.equal(parsed.manifestCompressedBytes, 1420);
+  assert.equal(parsed.manifestUncompressedBytes, 8192);
+  assert.equal(parsed.manifestFnv1a64Hex, '0123456789abcdef');
+  assert.equal(parsed.dataSectionOffset, VANILLA_HEADER_BYTES + 1420);
+
+  // Rechazar magic inválido o manifiesto sobredimensionado
+  const badMagic = new Uint8Array(buf);
+  badMagic[0] = 0x50; // "PK.."
+  assert.throws(() => validateVanillaHeader(badMagic));
+  assert.throws(() => validateVanillaHeader(new Uint8Array(12)));
+
+  // Staging SAF también clasifica mod_pkg en cacheDir/import_staging con limpieza inmediata
+  const modSaf = classifySafImportStorage('mod_pkg');
+  assert.equal(modSaf.stagingDir, 'cacheDir/import_staging');
+  assert.equal(modSaf.deleteStagedAfterImport, true);
+});
+
+
 

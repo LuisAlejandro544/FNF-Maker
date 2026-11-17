@@ -2,7 +2,7 @@
 //! Propósito: Gestión de texturas `.png`/`.astc`, atlas Sparrow `.xml`, atlas JSON
 //! (TexturePacker, `spritemap1.json`, `Animation.json`) y horneado por software de rigs Adobe Animate.
 
-use super::{EngineSession, SparrowFrameJson, parse_anim_kind};
+use super::{EngineSession, SparrowFrameJson, friendly_import_name, parse_anim_kind};
 use pulse_core::astc_loader::{
     is_astc_path, load_sprite_image, read_sprite_dimensions, save_lossless_webp,
 };
@@ -50,31 +50,50 @@ impl EngineSession {
     }
 
     pub fn import_sprite_png(&mut self, entity_id: &str, path: PathBuf) -> String {
-        if !path.exists() {
+        if !path.is_file() {
             return self.err_response("Archivo de textura no encontrado");
+        }
+        if self.project.stage.find_mut(entity_id).is_none() {
+            return self.err_response("Objeto de escenario no encontrado");
         }
 
         let is_astc = is_astc_path(&path);
-        let display_img_path = if is_astc {
-            match load_sprite_image(&path) {
-                Ok(decoded) => {
-                    let dec_dir = self.project_textures_dir().join("decoded_textures");
-                    let _ = std::fs::create_dir_all(&dec_dir);
-                    let out_webp = dec_dir.join(format!("{}.webp", entity_id));
-                    if let Err(e) = save_lossless_webp(&decoded, &out_webp) {
-                        return self.err_response(format!("Error guardando caché ASTC->WebP: {}", e));
-                    }
-                    out_webp
-                }
+        let (adopted_raw_path, display_img_path, dims) = if is_astc {
+            let decoded = match load_sprite_image(&path) {
+                Ok(img) => img,
                 Err(e) => return self.err_response(format!("Error decodificando .astc: {}", e)),
+            };
+            let dims = Some((decoded.width(), decoded.height()));
+            let adopted_raw = match self.adopt_permanent_asset(&path, "sprites", entity_id) {
+                Ok(p) => p,
+                Err(e) => return self.err_response(e),
+            };
+            let dec_dir = self.project_textures_dir().join("decoded_textures");
+            let _ = std::fs::create_dir_all(&dec_dir);
+            let out_webp = dec_dir.join(format!("{}.webp", entity_id));
+            if let Err(e) = save_lossless_webp(&decoded, &out_webp) {
+                let _ = std::fs::remove_file(&adopted_raw);
+                return self.err_response(format!("Error guardando caché ASTC->WebP: {}", e));
             }
+            (adopted_raw, out_webp, dims)
         } else {
-            path.clone()
+            let dims = read_sprite_dimensions(&path);
+            if dims.is_none() {
+                return self.err_response("Archivo de imagen inválido o corrupto");
+            }
+            let adopted_img = match self.adopt_permanent_asset(&path, "sprites", entity_id) {
+                Ok(p) => p,
+                Err(e) => return self.err_response(e),
+            };
+            (adopted_img.clone(), adopted_img, dims)
         };
 
-        let dims = read_sprite_dimensions(&display_img_path).or_else(|| read_sprite_dimensions(&path));
+        let mut old_raw: Option<PathBuf> = None;
+        let mut old_img: Option<PathBuf> = None;
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
-            ent.raw_image_path = Some(path);
+            old_raw = ent.raw_image_path.take();
+            old_img = ent.image_path.take();
+            ent.raw_image_path = Some(adopted_raw_path);
             ent.image_path = Some(display_img_path);
             if let Some((w, h)) = dims {
                 if ent.atlas.is_none() && ent.role != EntityRole::Background && w > 0 && h > 0 {
@@ -85,8 +104,10 @@ impl EngineSession {
                     ent.height = (h as f32 * norm).max(64.0);
                 }
             }
-        } else {
-            return self.err_response("Objeto de escenario no encontrado");
+        }
+        self.remove_managed_asset_if_unreferenced(old_raw.as_deref());
+        if old_img.as_deref() != old_raw.as_deref() {
+            self.remove_managed_asset_if_unreferenced(old_img.as_deref());
         }
 
         match self.try_bake_animate_for_entity(entity_id) {
@@ -112,6 +133,7 @@ impl EngineSession {
             Err(e) => return self.err_response(format!("No se pudo leer el descriptor: {}", e)),
         };
 
+        let display_descriptor_path = PathBuf::from(friendly_import_name(&path));
         let is_json = path
             .extension()
             .and_then(|e| e.to_str())
@@ -125,7 +147,7 @@ impl EngineSession {
                 Ok(DetectedSpriteJson::DirectAtlas(atlas)) => {
                     let count = atlas.animations.len();
                     if let Some(ent) = self.project.stage.find_mut(entity_id) {
-                        ent.xml_path = Some(path);
+                        ent.xml_path = Some(display_descriptor_path);
                         ent.animate_spritemap = None;
                         ent.animate_doc = None;
                         ent.animate_json_path = None;
@@ -142,7 +164,7 @@ impl EngineSession {
                     let piece_count = sm.sprites.len();
                     let fallback = sm.to_fallback_sparrow();
                     if let Some(ent) = self.project.stage.find_mut(entity_id) {
-                        ent.xml_path = Some(path);
+                        ent.xml_path = Some(display_descriptor_path);
                         ent.animate_spritemap = Some(sm);
                         ent.atlas = Some(fallback);
                     } else {
@@ -166,7 +188,7 @@ impl EngineSession {
                 Ok(DetectedSpriteJson::AnimateDocument(doc)) => {
                     let anim_count = doc.detected_animations.len();
                     if let Some(ent) = self.project.stage.find_mut(entity_id) {
-                        ent.animate_json_path = Some(path);
+                        ent.animate_json_path = Some(display_descriptor_path);
                         ent.animate_doc = Some(doc);
                     } else {
                         return self.err_response("Objeto de escenario no encontrado");
@@ -194,7 +216,7 @@ impl EngineSession {
             Ok(atlas) => {
                 let count = atlas.animations.len();
                 if let Some(ent) = self.project.stage.find_mut(entity_id) {
-                    ent.xml_path = Some(path);
+                    ent.xml_path = Some(display_descriptor_path);
                     ent.animate_spritemap = None;
                     ent.animate_doc = None;
                     ent.animate_json_path = None;
@@ -284,17 +306,32 @@ impl EngineSession {
         is_losing: bool,
         path: PathBuf,
     ) -> String {
-        if !path.exists() {
+        if !path.is_file() {
             return self.err_response("Archivo de ícono no encontrado");
         }
-        let Some(ent) = self.project.stage.find_mut(entity_id) else {
+        if self.project.stage.find_mut(entity_id).is_none() {
             return self.err_response("Personaje no encontrado en el escenario");
-        };
-        if is_losing {
-            ent.icon_losing_path = Some(path);
-        } else {
-            ent.icon_normal_path = Some(path);
         }
+        if read_sprite_dimensions(&path).is_none() {
+            return self.err_response("Archivo de ícono inválido o corrupto");
+        }
+        let stem_hint = format!("{}_{}", entity_id, if is_losing { "losing" } else { "normal" });
+        let adopted_path = match self.adopt_permanent_asset(&path, "icons", &stem_hint) {
+            Ok(p) => p,
+            Err(e) => return self.err_response(e),
+        };
+
+        let mut old_icon: Option<PathBuf> = None;
+        if let Some(ent) = self.project.stage.find_mut(entity_id) {
+            if is_losing {
+                old_icon = ent.icon_losing_path.take();
+                ent.icon_losing_path = Some(adopted_path);
+            } else {
+                old_icon = ent.icon_normal_path.take();
+                ent.icon_normal_path = Some(adopted_path);
+            }
+        }
+        self.remove_managed_asset_if_unreferenced(old_icon.as_deref());
         self.save_active_project_now();
         self.ok_response(if is_losing {
             "Ícono en estado perdiendo asignado"
@@ -304,11 +341,16 @@ impl EngineSession {
     }
 
     pub fn clear_character_icons(&mut self, entity_id: &str) -> String {
-        let Some(ent) = self.project.stage.find_mut(entity_id) else {
+        let mut old_normal: Option<PathBuf> = None;
+        let mut old_losing: Option<PathBuf> = None;
+        if let Some(ent) = self.project.stage.find_mut(entity_id) {
+            old_normal = ent.icon_normal_path.take();
+            old_losing = ent.icon_losing_path.take();
+        } else {
             return self.err_response("Personaje no encontrado en el escenario");
-        };
-        ent.icon_normal_path = None;
-        ent.icon_losing_path = None;
+        }
+        self.remove_managed_asset_if_unreferenced(old_normal.as_deref());
+        self.remove_managed_asset_if_unreferenced(old_losing.as_deref());
         self.save_active_project_now();
         self.ok_response("Íconos SVG predeterminados restaurados")
     }

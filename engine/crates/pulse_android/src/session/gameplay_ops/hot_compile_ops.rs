@@ -4,7 +4,11 @@
 //! de audio a `compiled_mix.wav` para reproducción por streaming de baja memoria.
 
 use crate::session::EngineSession;
+use crate::session::persistence_ops::sanitize_project_id;
 use pulse_audio::merge_tracks_to_wav;
+use pulse_core::disk_cache::{
+    cleanup_legacy_flat_compiled_cache, evict_lru_subdirs, touch_dir_last_used,
+};
 use pulse_core::hot_compile::{
     AudioMergeFingerprint, CachedAudioEntry, DeviceResourceTier, HotCompileManifest,
     hot_compile_project_to_dir_with_manifest,
@@ -31,8 +35,11 @@ impl EngineSession {
             _ => DeviceResourceTier::Balanced,
         };
 
-        let out_dir = self.cache_dir.join("compiled_cache");
+        let cache_root = self.compiled_cache_root_dir();
+        cleanup_legacy_flat_compiled_cache(&cache_root);
+        let out_dir = self.active_compiled_cache_dir();
         let _ = std::fs::create_dir_all(&out_dir);
+        touch_dir_last_used(&out_dir);
 
         on_progress(
             0.04,
@@ -155,6 +162,14 @@ impl EngineSession {
         }
 
         let _ = manifest.save_to_dir(&out_dir);
+        touch_dir_last_used(&out_dir);
+        let safe_active = sanitize_project_id(&self.project.id);
+        let _ = evict_lru_subdirs(
+            &cache_root,
+            self.cache_budget().compiled_cache_bytes,
+            &[&safe_active],
+        );
+
         on_progress(
             0.90,
             "Manifiesto incremental guardado",

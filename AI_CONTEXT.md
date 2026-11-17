@@ -30,26 +30,31 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 | `rquickjs` | `0.14.0` | `Function::new(ctx.clone(), closure)` + `runtime.set_interrupt_handler(...)` watchdog con `features = ["rust-alloc", "macro", "bindgen"]`. |
 | `resvg` / `image` | `0.50.0` / `0.25.10` | `resvg` rasteriza SVG sobre `tiny_skia::Pixmap`; `image::codecs::webp::WebPEncoder::new_lossless` comprime sprites `.webp` VP8L lossless en Rust puro sin `libwebp-sys`. |
 | `texture2ddecoder` | `0.1.2` | Licencia `MIT OR Apache-2.0`. Decodifica texturas `.astc` (bloques 4×4..12×12) por software en Rust puro en `pulse_core/src/astc_loader.rs` guardando salida en WebP sin pérdida. |
+| `zstd` | `0.13.3` | Licencias permisivas `MIT` (`zstd`) / `BSD-3-Clause` (`libzstd` C). Compresión y descompresión por streaming en bloques 64 KB para el contenedor portátil **Vanilla** (`.mod`) en `pulse_core/src/vanilla.rs`. |
 | `cargo-ndk` | `v4.x` | El nivel de API se pasa con `--platform 26` (NO `-p 26`, porque `-p` en v4 es `--package`). |
 
 ---
 
 ## 3. Flujos Internos Clave del Motor
 
-### A. Importación y Exportación desde Android (SAF + Coroutines + JNI)
-1. En una pantalla Compose (`ChartScreen`, `AudioScreen`, `SpriteLabScreen`, `StageEditorScreen`, `ScriptStudioScreen` o `ArrowSkinDialog`), el usuario pulsa importar (o exportar `.json` en `ChartScreen`).
+### A. Importación y Exportación Limpia desde Android (Staging en `cacheDir` + Adopción + Coroutines + JNI)
+1. En una pantalla Compose (`ChartScreen`, `AudioScreen`, `SpriteLabScreen`, `StageEditorScreen`, `ScriptStudioScreen`, `ArrowSkinDialog` o `CharacterIconsDialog`), el usuario pulsa importar (o exportar `.json` en `ChartScreen`).
 2. `StudioViewModel.requestImport(kind)` abre `ActivityResultContracts.OpenDocument` (o `CreateDocument("application/json")` para exportar el `chart.json` completo) registrado en `MainActivity.kt`.
-3. Al recibir el `Uri`, `StudioViewModel.onUriPicked` / `exportChartToUri` ejecuta una corrutina en **`Dispatchers.IO`** para no bloquear el hilo principal.
-4. `SafFileBridge.copyUriToInternalCache` resuelve el nombre real (`OpenableColumns.DISPLAY_NAME`), sanea caracteres especiales y copia el stream a `filesDir/mod_imports/`.
-5. Luego invoca el método JNI correspondiente en `NativeEngineBridge` (`nativeImportChart`, `nativeExportChartJson`, `nativeUpdateChartDetails`, `nativeSetSectionBpm`, `nativeAddChartEvent`, `nativeRemoveChartEvent`, `nativeImportAudioTrack`, `nativeImportSpriteSheetPng`, `nativeImportSparrowXml`, `nativeImportScript`, `nativeImportArrowSvg`).
-6. Rust procesa/decodifica el archivo y devuelve un `ActionResultJson<ProjectSnapshotJson>`, y `StudioViewModel` recarga en `Dispatchers.IO` los bitmaps de entidades (tanto en `SpritePng` como en `SparrowXml`, necesario cuando Adobe Animate genera una hoja horneada).
+3. Al recibir el `Uri`, `StudioEditorDelegate.importUri` / `exportChartToUri` ejecuta una corrutina en **`Dispatchers.IO`** para no bloquear el hilo principal.
+4. `SafFileBridge.copyUriToStagingCache` resuelve el nombre real (`OpenableColumns.DISPLAY_NAME`), sanea caracteres especiales y copia temporalmente el stream a `cacheDir/import_staging/`. Al iniciar la app, `sweepStaleStagingFiles` limpia cualquier resto de importaciones interrumpidas.
+5. Luego invoca el método JNI correspondiente en `NativeEngineBridge` (`nativeImportChart`, `nativeImportAudioTrack`, `nativeImportSpriteSheetPng`, `nativeImportSparrowXml`, `nativeImportScript`, `nativeImportArrowSvg`, etc.) y borra inmediatamente el archivo temporal dentro de un bloque **`try / finally`** (`SafFileBridge.deleteStagedFile`).
+6. Dentro de Rust:
+   - **Importaciones transitorias** (`chart.json`, Sparrow `.xml`/Animate `.json`, scripts `.lua/.ts/.js`, flechas y barra de vida `.svg`): se parsean/validan en memoria, quedan embebidas dentro de `project.json` y solo conservan su nombre amigable (`friendly_import_name`) para UI, sin duplicarse en `Datos del usuario`.
+   - **Assets binarios permanentes** (`AudioTrack`, `SpritePng`, `CharacterIcon`): se validan primero y luego se adoptan de forma atómica en `filesDir/projects/<projectId>/assets/{audio,sprites,icons}/`, eliminando de inmediato archivos reemplazados si ya no están referenciados.
+   - `prune_unreferenced_user_storage()` limpia archivos huérfanos heredados en `filesDir/mod_imports/`, así como texturas decodificadas y assets en desuso al abrir, cargar inicialmente o eliminar un proyecto.
 
-### B. Reloj Maestro de Audio, PCM `i16` Compacto, Fusión en Caliente y Streaming SPSC
+### B. Reloj Maestro de Audio, PCM `i16` Compacto, Caché `.bfaud`, Fusión en Caliente y Streaming SPSC
 - En el editor (`AudioScreen`), `DecodedTrack` almacena muestras en **`Vec<i16>` estéreo** (50 % menos RAM que `f32`) y `AudioMixer` mantiene hasta 3 pistas en `slots[0..3]` para previsualización interactiva de ganancia/silencio.
-- Durante **`Hot Compile`**, `merge_tracks_to_wav()` (`pulse_audio/src/streaming.rs`) mezcla las 1–3 pistas activas no silenciadas (aplicando ganancia + limitador suave `tanh`) de forma atómica a `<cacheDir>/compiled_cache/compiled_mix.wav`.
+- **Caché de Audio Decodificado y Picos de Onda (`.bfaud`)**: `pulse_audio/src/audio_cache.rs` (`decode_audio_file_cached`) guarda `waveform_peaks` y muestras `i16` estéreo ya resampleadas en `cacheDir/audio_cache/<clave>.bfaud` con escritura atómica (`.tmp` -> `.bfaud`) y validación estricta de cabecera mágica `BFAU`. La clave combina tamaño en bytes, `mtime`, muestra hash FNV-1a (inicio + fin) y `target_sample_rate`. Al reabrir proyectos evita re-decodificar MP3/OGG/WAV y aplica desalojo LRU dentro del 35 % de la cuota asignada.
+- Durante **`Hot Compile`**, `merge_tracks_to_wav()` (`pulse_audio/src/streaming.rs`) mezcla las 1–3 pistas activas no silenciadas (aplicando ganancia + limitador suave `tanh`) de forma atómica a `<cacheDir>/compiled_cache/<projectId>/compiled_mix.wav`.
 - Al iniciar `start_gameplay()`:
   1. Abre `StreamingAudioSource` sobre `compiled_mix.wav` con un hilo lector en segundo plano (`pulse_audio_streamer`) que llena un **buffer circular SPSC lock-free de ~512 KB** (`STREAM_RING_FRAMES = 131_072` frames estéreo `i16`).
-  2. Libera inmediatamente `decoded_tracks` y `mixer.clear_tracks()` en Rust para recuperar decenas/cientos de MB de RAM antes de jugar (al salir con `stop_gameplay()`, recarga las pistas del editor en `Dispatchers.IO`).
+  2. Libera inmediatamente `decoded_tracks` y `mixer.clear_tracks()` en Rust para recuperar decenas/cientos de MB de RAM antes de jugar (al salir con `stop_gameplay()`, recarga las pistas del editor en `Dispatchers.IO` aprovechando el caché `.bfaud`).
   3. `AudioMixer::start_countdown(bpm)` calcula `beat_frames = (sample_rate * 60.0 / bpm)` y fija `countdown_remaining_frames = beat_frames * 4` (`AtomicU64`).
 - El callback en tiempo real (`render_audio_frames`, invocado por AAudio en Android 8.0+ o `FallbackClockThread` en emuladores/hardware sin baja latencia) lee del `stream_source` usando `seek_lock.try_read()` (cero bloqueo en el hilo de audio) y sintetiza sin mutex la cuenta regresiva (`"3"`, `"2"`, `"1"`, `"¡YA!"`) hasta `0.0 ms`.
 
@@ -63,13 +68,14 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 - **Previsualización 1:1 Sin Borrosidad en `SpriteLabScreen`**: Para evitar que un spritesheet gigante (ej. `4096×4096`) escalado hacia abajo en `entityBitmaps` haga que el frame individual en `SpriteLabScreen` se vea pixelado o borroso, `StudioViewModel.decodeSparrowRegionBitmap()` decodifica **únicamente el rectángulo del frame activo** en resolución 1:1 mediante `BitmapRegionDecoder` sobre `Dispatchers.IO`, respaldado por un `LruCache<String, ImageBitmap>` acotado a **20 MB** y dibujado con `FilterQuality.High` (sin riesgo de OOM en 32 bits / 2–3 GB de RAM).
 - **Íconos de Personajes y Barra de Vida `.svg` (`CharacterIconsDialog.kt`)**: Desde `SpriteLab` (`"Íconos / Vida"`), el usuario puede importar/limpiar íconos de estado **Normal** y **Perdiendo** para Rival y Jugador (si se importa una tira horizontal estilo FNF de 2 cuadros con proporción `w >= h * 1.65`, `StudioViewModel.loadEntityIconsInternal()` recorta automáticamente mitad izquierda = Normal y mitad derecha = Perdiendo) y reemplazar la barra de vida `.svg` rasterizada con `resvg`.
 
-### D. Compilación en Caliente Incremental (`Hot Compile`), WebP Lossless y Ciclo Inteligente de RAM
+### D. Compilación en Caliente Incremental (`Hot Compile`), Caché Multi-Proyecto LRU y Ciclo Inteligente de RAM
+- Antes de inicializar Rust, `StudioEditorDelegate.initializeEngine()` consulta `StorageManager.getCacheQuotaBytes(uuid)` (nativo en Android 8.0+ / `minSdk = 26`) y envía la cuota vía `NativeEngineBridge.nativeSetCacheQuota(quotaBytes)`. Rust (`disk_cache.rs`) acota esa cuota al rango **`[48 MiB, 384 MiB]`** (respaldo `160 MiB`) y la reparte en **65 % `compiled_cache`** y **35 % `audio_cache`**.
 - Disparada por `StudioViewModel.startCompileAndPlay()` en `Dispatchers.IO`, detectando automáticamente la RAM total, `memInfo.lowMemory` y el ABI (`armeabi-v7a` 32 bits vs `arm64-v8a` 64 bits) para elegir `tierCode` e invocando `NativeEngineBridge.nativeHotCompile(tierCode)` mientras una corrutina paralela consulta `nativeGetHotCompileProgress()` cada `65 ms` sobre `HOT_COMPILE_PROGRESS` y alimenta `HotCompileScreen.kt` (`0%–100%`, fase y detalle):
-  1. **Caché Incremental por Huella (`<cacheDir>/compiled_cache/manifest.json`)**: `HotCompileManifest` guarda `AssetFileFingerprint`, `TextureFingerprint`, `AudioMergeFingerprint` y `CachedScriptEntry`.
+  1. **Caché Multi-Proyecto con Cuota Automática y LRU (`<cacheDir>/compiled_cache/<projectId>/manifest.json`)**: Cada proyecto conserva su propia carpeta aislada con archivo marcador `.last_used`. Al abrir o compilar se limpia la caché plana heredada (`cleanup_legacy_flat_compiled_cache`) y `evict_lru_subdirs` elimina automáticamente las carpetas de proyectos más antiguas cuando el total supera el 65 % del presupuesto (protegiendo siempre al proyecto activo). `HotCompileManifest` guarda `AssetFileFingerprint`, `TextureFingerprint`, `AudioMergeFingerprint` y `CachedScriptEntry`.
   2. **Poda inteligente sin perder futuros swaps**: `hot_compile.rs` preserva entidades inicialmente ocultas (`!visible` u `opacity <= 0.005`) si aparecen referenciadas por scripts o en `chart.events`, además de detectar vía `analyze_reused_entity_ids()` qué sprites ocultos reaparecen más adelante en el timeline.
   3. **Sprites WebP Lossless en disco sin decodificar ocultos al inicio**: `hot_compile_project_to_dir_with_manifest` compila todas las texturas activas y futuras a `.webp` VP8L en disco, pero `StudioGameplayCoordinator.loadInitialCompiledBitmapsOnIo()` **omite decodificar en RAM** las entidades que inician ocultas (`!visible || opacity <= 0.005f`).
   4. **Precarga anticipada (`PRELOAD_LOOKAHEAD_MS = 4000.0`) y Reciclaje diferido a 3 frames**: Durante gameplay, `simulation.rs` marca el bit 6 de `e_flags` (`preload_requested`) 4 segundos antes de un swap/aparición y `StudioGameplayCoordinator` decodifica el `.webp` en `Dispatchers.IO` a 60 FPS sin tirones. Cuando un sprite se retira con `dispose=1` / `retireEntity` (bit 7 de `e_flags`), Kotlin lo elimina de `compiledBitmaps` y ejecuta `.asAndroidBitmap().recycle()` tras una **cola diferida de 3 frames** para evitar leer texturas recicladas en el `Canvas` activo. Si el usuario pulsa **Reiniciar** en Pausa, `restartGameplay()` re-decodifica en `Dispatchers.IO` los `.webp` inicialmente visibles antes de llamar a `nativeStartGameplay()`.
-  5. **Exclusión mutua y Fusión de Audio**: `StudioViewModel` vacía `entityBitmaps` antes de cargar `compiledBitmaps`, y `merge_tracks_to_wav()` reutiliza `compiled_mix.wav` por huella liberando pistas PCM de la RAM.
+  5. **Exclusión mutua y Fusión de Audio**: `StudioViewModel` vacía `entityBitmaps` antes de cargar `compiledBitmaps`, y `merge_tracks_to_wav()` reutiliza `compiled_mix.wav` dentro de `compiled_cache/<projectId>/` por huella liberando pistas PCM de la RAM.
 
 ### E. Scripting Unificado (`Lua 5.4` + `TS` + `JS`), `stage_events.lua`, `camera_system.lua` y Watchdog
 - Los scripts `.ts` pasan por `oxc_allocator` -> `oxc_parser` -> `oxc_semantic` -> `oxc_transformer` -> `oxc_codegen` durante `Hot Compile`, guardando `.js` y `.luac` en `compiled_cache/scripts/`.
@@ -103,6 +109,19 @@ Este archivo concentra el contexto técnico profundo necesario para entender có
 - `ChartPlayheadState.kt` aísla el estado `@Stable` a 60 Hz (`posMs`, `durationMs`, `followThread`, `activeTarget`); `ChartScreen.kt` sondea `nativeReadAudioPreviewState` cada `16 ms` vía `Dispatchers.IO`, controla Pausar/Reanudar conservando `frame_cursor` (`seekMs < 0` en `nativeSetAudioPreviewTransport`), rebobinado y auto-scroll condicional (`Seguir` / `Libre` con `scrollBy`).
 - `ChartTimelineGrid.kt` elimina huecos entre filas para dibujar haces verticales continuos de sustain con núcleo luminoso interno, barra de transporte/scrubber superior y el overlay `Canvas` `ChartPlayheadThreadOverlay` sin recomponer las filas del `LazyColumn`.
 - Cada celda `#` en la columna izquierda abre `ChartStepCueDialog.kt` (3 pestañas: `Visibilidad / Swap` + reciclaje RAM, `Flash` inicio->fin con color/opacidad/capa y `Personajes` + precarga manual), o al mantener pulsado fija el hilo en ese paso exacto, actualizando `chart.events` y `stage_events.lua` al instante.
+
+### I. Contenedor Portátil Vanilla (`.mod`) con Zstandard (`pulse_core/src/vanilla.rs`)
+- **Estructura binaria `VNLA` v1 (streaming de baja RAM para 32 y 64 bits)**:
+  1. **Cabecera fija de 24 bytes Little-Endian**: magic `b"VNLA"`, `version = 1` (`u16`), `flags` (`u16`: bit 0 = WebP lossless activo, bit 1 = deduplicación aplicada), `manifest_compressed_bytes` (`u32`), `manifest_uncompressed_bytes` (`u32`) y `manifest_fnv1a64` (`u64`).
+  2. **Manifiesto `VanillaManifest` comprimido en Zstd nivel 12**: contiene metadatos rápidos del mod + tabla `entries` (`rel_path`, `codec`, `offset`, `source_bytes`, `uncompressed_bytes`, `compressed_bytes`, `fnv1a64`), permitiendo inspección rápida con `inspect_vanilla_mod` sin extraer los blobs.
+  3. **Cuerpo de datos por streaming (chunks de 64 KB vía `.mod.blobs.tmp` -> `.mod.tmp` -> `rename` atómico)** usando selección adaptativa de códec (`classify_vanilla_entry_codec`):
+     - `.json`, `.xml`, `.svg`, `.lua`, `.ts`, `.js`: **Zstd nivel 12** (compresión máxima de texto estructurado y `project.json` compacto).
+     - `.wav`, `.astc`, `.bmp`: **Zstd nivel 9** (ahorro muy alto en audio PCM sin comprimir y texturas ASTC).
+     - `.ogg`, `.mp3`, `.webp`, `.jpg`, `.png` (no convertidos): **Raw** (`store` sin recomprimir para evitar gasto de CPU o archivos más grandes).
+- **Optimización y seguridad automática**:
+  - Convierte sprites `.png`/`.bmp` a **WebP sin pérdida (VP8L)** cuando el WebP resultante pesa estrictamente menos (`webp.len() + 64 < orig_bytes`).
+  - Deduplica assets repetidos (`canonical_key`), omite `decoded_textures/<id>.webp` cuando la fuente original es `.astc` (y reconstruye `textures/decoded_textures/<id>.webp` automáticamente al importar), y rechaza cualquier ruta insegura (`..`, `\`, `:`, prefijo `/`) además de verificar cada `fnv1a64` al extraer hacia una carpeta temporal antes de instalar atómicamente en `filesDir/projects/<newId>/`.
+- **Integración Android SAF (`ProjectsScreen`)**: `MainActivity` registra `CreateDocument("application/octet-stream")` para `Exportar .mod` y `OpenDocument("*/*")` (`ImportKind.ModPackage`) para `Importar .mod`; `StudioEditorDelegate` trabaja sobre `Dispatchers.IO` usando `cacheDir/import_staging/` y limpiando los archivos temporales en `finally`.
 
 ---
 

@@ -25,6 +25,9 @@ object NativeEngineBridge {
     }
 
     @JvmStatic
+    external fun nativeSetCacheQuota(quotaBytes: Long)
+
+    @JvmStatic
     external fun nativeInit(cacheDir: String, dataDir: String): String
 
     @JvmStatic
@@ -44,6 +47,16 @@ object NativeEngineBridge {
 
     @JvmStatic
     external fun nativeDeleteProject(projectId: String): String
+
+    @JvmStatic
+    external fun nativeExportModPackage(
+        projectId: String,
+        outPath: String,
+        optimizeImages: Boolean
+    ): String
+
+    @JvmStatic
+    external fun nativeImportModPackage(path: String): String
 
     @JvmStatic
     external fun nativeGetSnapshot(): String

@@ -59,6 +59,7 @@ sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
         arrayOf("image/png", "image/*", "*/*")
     )
     data object HealthBarSvg : ImportKind("health_bar_svg", arrayOf("image/svg+xml", "*/*"))
+    data object ModPackage : ImportKind("mod_pkg", arrayOf("*/*"))
 }
 
 data class ChartEventSnapshot(

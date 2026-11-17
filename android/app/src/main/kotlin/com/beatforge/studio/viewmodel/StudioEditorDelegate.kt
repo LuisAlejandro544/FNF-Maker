@@ -7,6 +7,7 @@ package com.beatforge.studio.viewmodel
 
 import android.app.Application
 import android.net.Uri
+import android.os.storage.StorageManager
 import com.beatforge.studio.AudioPreviewTransportState
 import com.beatforge.studio.CAMERA_SELECTION_ID
 import com.beatforge.studio.GameplayFrameState
@@ -40,6 +41,8 @@ internal class StudioEditorDelegate(
     fun initializeEngine() {
         scope.launch(engineIoDispatcher) {
             NativeEngineBridge.ensureLoaded()
+            SafFileBridge.sweepStaleStagingFiles(app, maxAgeMs = 0L)
+            NativeEngineBridge.nativeSetCacheQuota(resolveRecommendedCacheQuotaBytes())
             val cacheDir = app.cacheDir.absolutePath
             val dataDir = app.filesDir.absolutePath
             val rawSnapshot = NativeEngineBridge.nativeInit(cacheDir, dataDir)
@@ -99,40 +102,112 @@ internal class StudioEditorDelegate(
         }
     }
 
+    fun exportModPackageToUri(projectId: String, uri: Uri) {
+        scope.launch(engineIoDispatcher) {
+            setBusy(true)
+            val stagedOut = SafFileBridge.createExportStagingFile(app, "vanilla_export.mod")
+            val stagedBase = stagedOut.nameWithoutExtension
+            try {
+                val rawJson = NativeEngineBridge.nativeExportModPackage(
+                    projectId = projectId,
+                    outPath = stagedOut.absolutePath,
+                    optimizeImages = true
+                )
+                val res = StudioJsonParser.parseActionResult(rawJson)
+                if (!res.ok || !stagedOut.isFile) {
+                    postBanner(
+                        res.message.ifBlank { "No se pudo empaquetar el mod en Vanilla .mod" },
+                        isError = true
+                    )
+                } else {
+                    val os = app.contentResolver.openOutputStream(uri)
+                    if (os == null) {
+                        postBanner("No se pudo abrir el destino para guardar el archivo .mod", isError = true)
+                    } else {
+                        os.use { output ->
+                            stagedOut.inputStream().use { input ->
+                                input.copyTo(output, bufferSize = 64 * 1024)
+                            }
+                            output.flush()
+                        }
+                        postBanner(res.message, isError = false)
+                    }
+                }
+            } catch (e: Exception) {
+                postBanner("Error exportando Vanilla .mod: ${e.message}", isError = true)
+            } finally {
+                SafFileBridge.deleteStagedFile(app, stagedOut.absolutePath)
+                stagedOut.parent?.let { dir ->
+                    SafFileBridge.deleteStagedFile(app, "$dir/$stagedBase.mod.blobs.tmp")
+                    SafFileBridge.deleteStagedFile(app, "$dir/$stagedBase.mod.tmp")
+                }
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun resolveRecommendedCacheQuotaBytes(): Long {
+        // minSdk = 26 (Android 8.0+): StorageManager.getCacheQuotaBytes asigna cuota automática por sistema.
+        return try {
+            val sm = app.getSystemService(StorageManager::class.java)
+            if (sm != null) {
+                val uuid = sm.getUuidForPath(app.cacheDir)
+                val quota = sm.getCacheQuotaBytes(uuid)
+                if (quota > 0L) return quota
+            }
+            (app.cacheDir.usableSpace * 0.12).toLong().coerceAtLeast(48L * 1024L * 1024L)
+        } catch (_: Exception) {
+            (app.cacheDir.usableSpace * 0.12).toLong().coerceAtLeast(48L * 1024L * 1024L)
+        }
+    }
+
     fun importUri(kind: ImportKind, uri: Uri) {
         scope.launch(engineIoDispatcher) {
             setBusy(true)
-            val localPath = SafFileBridge.copyUriToInternalCache(app, uri, kind.tag)
+            val localPath = SafFileBridge.copyUriToStagingCache(app, uri, kind.tag)
             if (localPath == null) {
                 postBanner("No se pudo copiar el archivo seleccionado", isError = true)
                 setBusy(false)
                 return@launch
             }
 
-            val rawJson = when (kind) {
-                is ImportKind.Chart -> NativeEngineBridge.nativeImportChart(localPath)
-                is ImportKind.AudioTrack -> NativeEngineBridge.nativeImportAudioTrack(kind.slot, localPath)
-                is ImportKind.SpritePng -> NativeEngineBridge.nativeImportSpriteSheetPng(kind.entityId, localPath)
-                is ImportKind.SparrowXml -> NativeEngineBridge.nativeImportSparrowXml(kind.entityId, localPath)
-                is ImportKind.Script -> NativeEngineBridge.nativeImportScript(localPath)
-                is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
-                is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
-                is ImportKind.HealthBarSvg -> NativeEngineBridge.nativeImportHealthBarSvg(localPath)
-            }
+            try {
+                if (kind is ImportKind.ModPackage) {
+                    if (uiState.value.audioPreviewPlaying) {
+                        NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
+                    }
+                    val rawJson = NativeEngineBridge.nativeImportModPackage(localPath)
+                    applyProjectSwitchResult(rawJson, navigateToHub = true)
+                } else {
+                    val rawJson = when (kind) {
+                        is ImportKind.Chart -> NativeEngineBridge.nativeImportChart(localPath)
+                        is ImportKind.AudioTrack -> NativeEngineBridge.nativeImportAudioTrack(kind.slot, localPath)
+                        is ImportKind.SpritePng -> NativeEngineBridge.nativeImportSpriteSheetPng(kind.entityId, localPath)
+                        is ImportKind.SparrowXml -> NativeEngineBridge.nativeImportSparrowXml(kind.entityId, localPath)
+                        is ImportKind.Script -> NativeEngineBridge.nativeImportScript(localPath)
+                        is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
+                        is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
+                        is ImportKind.HealthBarSvg -> NativeEngineBridge.nativeImportHealthBarSvg(localPath)
+                        is ImportKind.ModPackage -> error("handled above")
+                    }
 
-            applyActionJson(rawJson)
-            when (kind) {
-                is ImportKind.ArrowSvg -> reloadArrowBitmaps()
-                is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
-                is ImportKind.CharacterIcon -> reloadCustomIcons(uiState.value.snapshot.stageEntities)
-                is ImportKind.SpritePng, is ImportKind.SparrowXml -> {
-                    bitmapLoader.evictRegionCache()
-                    reloadEntityBitmaps(uiState.value.snapshot.stageEntities)
+                    applyActionJson(rawJson)
+                    when (kind) {
+                        is ImportKind.ArrowSvg -> reloadArrowBitmaps()
+                        is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
+                        is ImportKind.CharacterIcon -> reloadCustomIcons(uiState.value.snapshot.stageEntities)
+                        is ImportKind.SpritePng, is ImportKind.SparrowXml -> {
+                            bitmapLoader.evictRegionCache()
+                            reloadEntityBitmaps(uiState.value.snapshot.stageEntities)
+                        }
+                        else -> Unit
+                    }
+                    refreshProjectsInternal()
                 }
-                else -> Unit
+            } finally {
+                SafFileBridge.deleteStagedFile(app, localPath)
+                setBusy(false)
             }
-            refreshProjectsInternal()
-            setBusy(false)
         }
     }
 

@@ -2396,3 +2396,294 @@ export function computeChartPlayheadFollowAction(params: {
   }
   return { action: 'none', deltaY: 0 };
 }
+
+export type SafImportKindKey =
+  | 'chart'
+  | 'audio_track'
+  | 'sprite_png'
+  | 'sparrow_xml'
+  | 'script'
+  | 'arrow_svg'
+  | 'character_icon'
+  | 'health_bar_svg'
+  | 'mod_pkg';
+
+export type SafStoragePolicy = 'staging_then_embed' | 'staging_then_adopt';
+
+/**
+ * Clasifica qué importaciones SAF viven únicamente en `cacheDir/import_staging/` antes de
+ * incrustarse en `project.json` vs qué assets binarios se adoptan en `filesDir/projects/<id>/assets/`.
+ */
+export function classifySafImportStorage(kind: SafImportKindKey): {
+  stagingDir: 'cacheDir/import_staging';
+  policy: SafStoragePolicy;
+  persistsBinaryInFilesDir: boolean;
+  deleteStagedAfterImport: boolean;
+} {
+  const isPermanentBinary =
+    kind === 'audio_track' ||
+    kind === 'sprite_png' ||
+    kind === 'character_icon' ||
+    kind === 'mod_pkg';
+  return {
+    stagingDir: 'cacheDir/import_staging',
+    policy: isPermanentBinary ? 'staging_then_adopt' : 'staging_then_embed',
+    persistsBinaryInFilesDir: isPermanentBinary,
+    deleteStagedAfterImport: true,
+  };
+}
+
+export interface DiskCacheBudgetSplit {
+  totalBytes: number;
+  compiledCacheBytes: number;
+  audioCacheBytes: number;
+}
+
+/**
+ * Calcula la cuota de caché acotada entre 48 MiB y 384 MiB (predeterminado 160 MiB)
+ * repartida 65% a caché multi-proyecto compilado y 35% a caché de audio decodificado `.bfaud`.
+ */
+export function computeDiskCacheBudgetSplit(reportedQuotaBytes: number): DiskCacheBudgetSplit {
+  const MIN = 48 * 1024 * 1024;
+  const MAX = 384 * 1024 * 1024;
+  const DEFAULT = 160 * 1024 * 1024;
+  const base = !Number.isFinite(reportedQuotaBytes) || reportedQuotaBytes <= 0 ? DEFAULT : reportedQuotaBytes;
+  const totalBytes = Math.min(MAX, Math.max(MIN, Math.floor(base)));
+  const compiledCacheBytes = Math.max(32 * 1024 * 1024, Math.floor((totalBytes * 65) / 100));
+  const audioCacheBytes = Math.max(16 * 1024 * 1024, totalBytes - compiledCacheBytes);
+  return { totalBytes, compiledCacheBytes, audioCacheBytes };
+}
+
+export interface DiskCacheProjectEntry {
+  projectId: string;
+  sizeBytes: number;
+  lastUsedMs: number;
+}
+
+/**
+ * Planifica qué directorios `compiled_cache/<projectId>/` expulsar en orden LRU
+ * para respetar la cuota automática sin borrar nunca el proyecto activo.
+ */
+export function planMultiProjectLruEviction(
+  entries: DiskCacheProjectEntry[],
+  maxBytes: number,
+  activeProjectId: string,
+): { evictedIds: string[]; keptIds: string[]; bytesAfter: number } {
+  let total = entries.reduce((acc, e) => acc + Math.max(0, e.sizeBytes), 0);
+  if (total <= maxBytes) {
+    return {
+      evictedIds: [],
+      keptIds: entries.map((e) => e.projectId),
+      bytesAfter: total,
+    };
+  }
+
+  const ordered = [...entries].sort(
+    (a, b) => a.lastUsedMs - b.lastUsedMs || a.projectId.localeCompare(b.projectId),
+  );
+  const evictedSet = new Set<string>();
+  for (const item of ordered) {
+    if (total <= maxBytes) break;
+    if (item.projectId === activeProjectId) continue;
+    evictedSet.add(item.projectId);
+    total -= Math.max(0, item.sizeBytes);
+  }
+
+  return {
+    evictedIds: Array.from(evictedSet),
+    keptIds: entries.filter((e) => !evictedSet.has(e.projectId)).map((e) => e.projectId),
+    bytesAfter: Math.max(0, total),
+  };
+}
+
+/**
+ * Genera la clave determinista para caché binaria `.bfaud` en `cacheDir/audio_cache/`.
+ */
+export function buildBfaudCacheKey(params: {
+  sizeBytes: number;
+  modifiedMs: number;
+  sampleHash: string;
+  targetSampleRate: number;
+}): string {
+  const sig = `${params.sizeBytes}:${params.modifiedMs}:${params.sampleHash}:${params.targetSampleRate}`;
+  return `trk_${fnv1a64Hex(sig)}_${params.targetSampleRate}.bfaud`;
+}
+
+export interface BfaudHeaderInfo {
+  version: number;
+  sampleRate: number;
+  peakCount: number;
+  sampleCount: number;
+  expectedFileBytes: number;
+}
+
+/**
+ * Valida la cabecera de 24 bytes de un artefacto binario `.bfaud` (`pulse_audio::audio_cache`).
+ */
+export function validateBfaudHeader(bytes: Uint8Array): BfaudHeaderInfo {
+  if (bytes.length < 24) {
+    throw new Error('Archivo .bfaud truncado (< 24 bytes)');
+  }
+  if (bytes[0] !== 0x42 || bytes[1] !== 0x46 || bytes[2] !== 0x41 || bytes[3] !== 0x55) {
+    throw new Error('Magic .bfaud inválido (esperado BFAU)');
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint32(4, true);
+  const sampleRate = view.getUint32(8, true);
+  const peakCount = view.getUint32(12, true);
+  const sampleCountBig = view.getBigUint64(16, true);
+  const sampleCount = Number(sampleCountBig);
+
+  if (version !== 1 || sampleRate < 8000 || peakCount > 4096 || sampleCountBig % 2n !== 0n) {
+    throw new Error('Cabecera .bfaud fuera de rango');
+  }
+  const expectedFileBytes = 24 + peakCount * 4 + sampleCount * 2;
+  return {
+    version,
+    sampleRate,
+    peakCount,
+    sampleCount,
+    expectedFileBytes,
+  };
+}
+
+export const VANILLA_MAGIC_BYTES = [0x56, 0x4e, 0x4c, 0x41] as const; // "VNLA"
+export const VANILLA_HEADER_BYTES = 24;
+export const VANILLA_FORMAT_VERSION = 1;
+export const VANILLA_FILE_EXTENSION = 'mod';
+export const VANILLA_FLAG_OPTIMIZED_WEBP = 1 << 0;
+export const VANILLA_FLAG_ASSET_DEDUP = 1 << 1;
+export const MAX_VANILLA_MANIFEST_BYTES = 16 * 1024 * 1024;
+
+export type VanillaEntryCodec = 'raw' | 'zstd';
+
+export interface VanillaHeaderInfo {
+  version: number;
+  flags: number;
+  optimizedWebp: boolean;
+  assetDedup: boolean;
+  manifestCompressedBytes: number;
+  manifestUncompressedBytes: number;
+  manifestFnv1a64Hex: string;
+  dataSectionOffset: number;
+}
+
+/**
+ * Espejo exacto de `pulse_core::vanilla::classify_vanilla_entry_codec`:
+ * - JSON / XML / SVG / scripts Lua, TS, JS: Zstd nivel 12
+ * - Audio WAV y texturas ASTC / BMP: Zstd nivel 9
+ * - Audio/imagen ya comprimidos (OGG, MP3, WebP, JPG, PNG): Raw sin gasto extra
+ */
+export function classifyVanillaEntryCodec(relPath: string): {
+  codec: VanillaEntryCodec;
+  level: number;
+} {
+  const dot = relPath.lastIndexOf('.');
+  const ext = dot >= 0 ? relPath.slice(dot + 1).toLowerCase() : '';
+  switch (ext) {
+    case 'json':
+    case 'xml':
+    case 'svg':
+    case 'lua':
+    case 'ts':
+    case 'js':
+    case 'txt':
+    case 'md':
+      return { codec: 'zstd', level: 12 };
+    case 'wav':
+    case 'astc':
+    case 'bmp':
+    case 'tga':
+    case 'raw':
+    case 'pcm':
+      return { codec: 'zstd', level: 9 };
+    case 'ogg':
+    case 'oga':
+    case 'mp3':
+    case 'flac':
+    case 'm4a':
+    case 'aac':
+    case 'webp':
+    case 'jpg':
+    case 'jpeg':
+    case 'png':
+      return { codec: 'raw', level: 0 };
+    default:
+      return { codec: 'zstd', level: 6 };
+  }
+}
+
+/**
+ * Valida estrictamente una ruta relativa dentro de un contenedor Vanilla `.mod` contra path traversal.
+ */
+export function validateVanillaRelPath(relPath: string): string {
+  if (!relPath || relPath.trim().length === 0) {
+    throw new Error('Ruta vacía dentro del contenedor Vanilla');
+  }
+  if (
+    relPath.includes('\0') ||
+    relPath.includes('\\') ||
+    relPath.includes(':') ||
+    relPath.startsWith('/')
+  ) {
+    throw new Error(`Ruta insegura en Vanilla: '${relPath}'`);
+  }
+  const segments = relPath.split('/');
+  if (segments.length === 0) {
+    throw new Error('Ruta sin componentes válidos en Vanilla');
+  }
+  for (const seg of segments) {
+    if (!seg || seg === '.' || seg === '..') {
+      throw new Error(`Segmento inválido en ruta Vanilla: '${relPath}'`);
+    }
+  }
+  return relPath;
+}
+
+/**
+ * Valida la cabecera binaria de 24 bytes del contenedor portátil Vanilla (`.mod` con Zstd).
+ */
+export function validateVanillaHeader(bytes: Uint8Array): VanillaHeaderInfo {
+  if (bytes.length < VANILLA_HEADER_BYTES) {
+    throw new Error('Archivo .mod Vanilla inválido o truncado (< 24 bytes)');
+  }
+  if (
+    bytes[0] !== VANILLA_MAGIC_BYTES[0] ||
+    bytes[1] !== VANILLA_MAGIC_BYTES[1] ||
+    bytes[2] !== VANILLA_MAGIC_BYTES[2] ||
+    bytes[3] !== VANILLA_MAGIC_BYTES[3]
+  ) {
+    throw new Error('Formato no compatible: falta firma mágica Vanilla (VNLA)');
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint16(4, true);
+  if (version !== VANILLA_FORMAT_VERSION) {
+    throw new Error(`Versión de contenedor Vanilla no soportada: v${version}`);
+  }
+  const flags = view.getUint16(6, true);
+  const manifestCompressedBytes = view.getUint32(8, true);
+  const manifestUncompressedBytes = view.getUint32(12, true);
+  const manifestFnv1a64 = view.getBigUint64(16, true);
+
+  if (
+    manifestCompressedBytes === 0 ||
+    manifestCompressedBytes > MAX_VANILLA_MANIFEST_BYTES ||
+    manifestUncompressedBytes === 0 ||
+    manifestUncompressedBytes > MAX_VANILLA_MANIFEST_BYTES
+  ) {
+    throw new Error('Tamaño de manifiesto Vanilla fuera de límites seguros');
+  }
+
+  return {
+    version,
+    flags,
+    optimizedWebp: (flags & VANILLA_FLAG_OPTIMIZED_WEBP) !== 0,
+    assetDedup: (flags & VANILLA_FLAG_ASSET_DEDUP) !== 0,
+    manifestCompressedBytes,
+    manifestUncompressedBytes,
+    manifestFnv1a64Hex: manifestFnv1a64.toString(16).padStart(16, '0'),
+    dataSectionOffset: VANILLA_HEADER_BYTES + manifestCompressedBytes,
+  };
+}
+
+

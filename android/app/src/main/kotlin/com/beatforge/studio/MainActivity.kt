@@ -84,6 +84,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val createModDocumentLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri: Uri? ->
+            if (uri != null) {
+                studioViewModel.onExportModUriPicked(uri)
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
             launchCrashScreen(
@@ -117,6 +124,9 @@ class MainActivity : ComponentActivity() {
         }
         studioViewModel.registerExportChartLauncher { suggestedName ->
             createChartDocumentLauncher.launch(suggestedName)
+        }
+        studioViewModel.registerExportModLauncher { suggestedName ->
+            createModDocumentLauncher.launch(suggestedName)
         }
 
         setContent {
@@ -232,7 +242,9 @@ private fun BeatForgeRootContent(
                         projects = state.projects,
                         activeProjectName = state.snapshot.name,
                         onCreateProject = { name, author -> viewModel.createProject(name, author) },
+                        onImportModPackage = { viewModel.requestImport(ImportKind.ModPackage) },
                         onOpenProject = { id -> viewModel.openProject(id) },
+                        onExportProject = { id, name -> viewModel.requestExportModPackage(id, name) },
                         onDuplicateProject = { id -> viewModel.duplicateProject(id) },
                         onDeleteProject = { id -> viewModel.deleteProject(id) }
                     )

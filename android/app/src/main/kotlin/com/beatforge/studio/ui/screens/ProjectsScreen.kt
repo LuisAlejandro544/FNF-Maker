@@ -1,7 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/ProjectsScreen.kt
 // Propósito: Menú dedicado de proyectos guardados en almacenamiento interno (`filesDir`).
 // Permite ver los mods recientes con su fecha de última modificación, crear un proyecto
-// en blanco, abrir cualquier mod guardado, duplicarlo o eliminarlo con confirmación.
+// en blanco, importar o exportar paquetes portátiles Vanilla (`.mod` + Zstd), abrir
+// cualquier mod guardado, duplicarlo o eliminarlo con confirmación.
 
 package com.beatforge.studio.ui.screens
 
@@ -26,8 +27,10 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -62,7 +65,9 @@ fun ProjectsScreen(
     projects: List<ProjectSummary>,
     activeProjectName: String,
     onCreateProject: (name: String, author: String) -> Unit,
+    onImportModPackage: () -> Unit,
     onOpenProject: (projectId: String) -> Unit,
+    onExportProject: (projectId: String, projectName: String) -> Unit,
     onDuplicateProject: (projectId: String) -> Unit,
     onDeleteProject: (projectId: String) -> Unit
 ) {
@@ -122,18 +127,46 @@ fun ProjectsScreen(
 
                 Spacer(Modifier.width(10.dp))
 
-                Button(
-                    onClick = { createDialogOpen = true },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.AccentCyan,
-                        contentColor = Color(0xFF1F0C00)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Nuevo Proyecto", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    OutlinedButton(
+                        onClick = onImportModPackage,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, StudioColors.AccentEmerald.copy(alpha = 0.7f)),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.UploadFile,
+                            contentDescription = null,
+                            tint = StudioColors.AccentEmerald,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            "Importar .mod",
+                            color = StudioColors.TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    Button(
+                        onClick = { createDialogOpen = true },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.AccentCyan,
+                            contentColor = Color(0xFF1F0C00)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Nuevo Proyecto", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, softWrap = false)
+                    }
                 }
             }
         }
@@ -168,6 +201,7 @@ fun ProjectsScreen(
                                 },
                                 canDelete = projects.size > 1,
                                 onOpen = { onOpenProject(proj.id) },
+                                onExportMod = { onExportProject(proj.id, proj.name) },
                                 onDuplicate = { onDuplicateProject(proj.id) },
                                 onRequestDelete = { deleteCandidate = proj },
                                 modifier = Modifier.weight(1f)
@@ -238,6 +272,7 @@ private fun ProjectCard(
     formattedDate: String,
     canDelete: Boolean,
     onOpen: () -> Unit,
+    onExportMod: () -> Unit,
     onDuplicate: () -> Unit,
     onRequestDelete: () -> Unit,
     modifier: Modifier = Modifier
@@ -336,55 +371,80 @@ private fun ProjectCard(
                         fontSize = 11.sp
                     )
                 }
+                Text(
+                    text = "Contenedor Vanilla (.mod)",
+                    color = StudioColors.TextMuted,
+                    fontSize = 10.sp
+                )
+            }
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (!project.isActive) {
-                        Button(
-                            onClick = onOpen,
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = StudioColors.AccentEmerald,
-                                contentColor = Color(0xFF042117)
-                            ),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier.height(30.dp)
-                        ) {
-                            Text("Abrir", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = onDuplicate,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (!project.isActive) {
+                    Button(
+                        onClick = onOpen,
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, StudioColors.BorderSubtle),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.AccentEmerald,
+                            contentColor = Color(0xFF042117)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.height(30.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ContentCopy,
-                            contentDescription = "Duplicar",
-                            tint = StudioColors.TextPrimary,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("Duplicar", color = StudioColors.TextPrimary, fontSize = 11.sp)
+                        Text("Abrir", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
+                }
 
-                    IconButton(
-                        onClick = onRequestDelete,
-                        enabled = canDelete,
-                        modifier = Modifier.size(30.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.DeleteOutline,
-                            contentDescription = "Eliminar",
-                            tint = if (canDelete) StudioColors.AccentCoral else StudioColors.BorderSubtle,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
+                OutlinedButton(
+                    onClick = onExportMod,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.65f)),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Download,
+                        contentDescription = "Exportar .mod",
+                        tint = StudioColors.AccentCyan,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Exportar .mod", color = StudioColors.TextPrimary, fontSize = 11.sp, maxLines = 1, softWrap = false)
+                }
+
+                OutlinedButton(
+                    onClick = onDuplicate,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, StudioColors.BorderSubtle),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.ContentCopy,
+                        contentDescription = "Duplicar",
+                        tint = StudioColors.TextPrimary,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Duplicar", color = StudioColors.TextPrimary, fontSize = 11.sp, maxLines = 1, softWrap = false)
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                IconButton(
+                    onClick = onRequestDelete,
+                    enabled = canDelete,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteOutline,
+                        contentDescription = "Eliminar",
+                        tint = if (canDelete) StudioColors.AccentCoral else StudioColors.BorderSubtle,
+                        modifier = Modifier.size(17.dp)
+                    )
                 }
             }
         }

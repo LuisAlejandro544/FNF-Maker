@@ -52,8 +52,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     )
 
     private var pendingImportKind: ImportKind? = null
+    private var pendingExportModProjectId: String? = null
     private var launchPickerCallback: ((Array<String>) -> Unit)? = null
     private var launchExportChartCallback: ((String) -> Unit)? = null
+    private var launchExportModCallback: ((String) -> Unit)? = null
 
     init {
         _uiState.update { it.copy(selectedTier = bitmapLoader.detectOptimalDeviceTier(application)) }
@@ -77,6 +79,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         launchExportChartCallback = launcher
     }
 
+    fun registerExportModLauncher(launcher: (String) -> Unit) {
+        launchExportModCallback = launcher
+    }
+
     fun requestImport(kind: ImportKind) {
         pendingImportKind = kind
         launchPickerCallback?.invoke(kind.mimeTypes)
@@ -91,7 +97,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         launchExportChartCallback?.invoke("$safeTitle.json")
     }
 
+    fun requestExportModPackage(projectId: String, projectName: String) {
+        pendingExportModProjectId = projectId
+        val safeName = projectName
+            .lowercase()
+            .replace(Regex("[^a-z0-9_-]+"), "_")
+            .trim('_')
+            .ifBlank { "beatforge_mod" }
+        launchExportModCallback?.invoke("$safeName.mod")
+    }
+
     fun exportChartToUri(uri: Uri) = editorDelegate.exportChartToUri(uri)
+
+    fun onExportModUriPicked(uri: Uri) {
+        val projectId = pendingExportModProjectId ?: return
+        pendingExportModProjectId = null
+        editorDelegate.exportModPackageToUri(projectId, uri)
+    }
 
     fun onUriPicked(uri: Uri) {
         val kind = pendingImportKind ?: return
