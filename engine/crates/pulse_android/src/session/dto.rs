@@ -138,6 +138,7 @@ pub struct StageEntitySnapshotJson {
     pub raw_image_path: Option<String>,
     pub xml_path: Option<String>,
     pub animate_json_path: Option<String>,
+    pub character_config_path: Option<String>,
     pub icon_normal_path: Option<String>,
     pub icon_losing_path: Option<String>,
     pub x: f32,
@@ -151,6 +152,7 @@ pub struct StageEntitySnapshotJson {
     pub visible: bool,
     pub animation_prefixes: Vec<String>,
     pub anim_bindings: HashMap<String, String>,
+    pub anim_offsets: HashMap<String, [f32; 2]>,
     pub preview_frame: Option<SparrowFrameJson>,
 }
 
@@ -473,6 +475,10 @@ impl EngineSession {
                         bindings.insert(anim_kind_key(*kind).to_string(), pref.clone());
                     }
                 }
+                let mut anim_offsets = HashMap::new();
+                for (kind, off) in &ent.anim_offsets {
+                    anim_offsets.insert(anim_kind_key(*kind).to_string(), *off);
+                }
                 let preview_frame = ent
                     .atlas
                     .as_ref()
@@ -515,6 +521,10 @@ impl EngineSession {
                         .animate_json_path
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
+                    character_config_path: ent
+                        .character_config_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
                     icon_normal_path: ent
                         .icon_normal_path
                         .as_ref()
@@ -534,6 +544,7 @@ impl EngineSession {
                     visible: ent.visible,
                     animation_prefixes: prefixes,
                     anim_bindings: bindings,
+                    anim_offsets,
                     preview_frame,
                 }
             })

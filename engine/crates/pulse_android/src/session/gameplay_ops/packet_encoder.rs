@@ -39,7 +39,7 @@ fn truncate_utf8_for_u16(s: &str) -> &[u8] {
 fn compute_entity_frame_render<'a>(
     ent: &'a StageEntity,
     beat_pulse: f32,
-) -> (f32, f32, Option<&'a SparrowFrame>) {
+) -> (f32, f32, f32, Option<&'a SparrowFrame>) {
     let is_char = matches!(ent.role, EntityRole::Player | EntityRole::Opponent);
     let clamp_idle = ent.active_anim == CharacterAnimKind::Idle && is_char;
     let frame = ent
@@ -53,7 +53,7 @@ fn compute_entity_frame_render<'a>(
         .unwrap_or(0);
     let use_static_bpm_bounce =
         is_char && ent.active_anim == CharacterAnimKind::Idle && idle_frames <= 1;
-    let render_y = if use_static_bpm_bounce {
+    let base_y = if use_static_bpm_bounce {
         ent.y - beat_pulse * 6.0
     } else {
         ent.y
@@ -63,7 +63,23 @@ fn compute_entity_frame_render<'a>(
     } else {
         ent.scale
     };
-    (render_y, render_scale, frame)
+    let [off_x, off_y] = ent
+        .anim_offsets
+        .get(&ent.active_anim)
+        .copied()
+        .unwrap_or([0.0, 0.0]);
+    let offset_fit = if let Some(f) = frame {
+        let vis_w = if f.rotated { f.height } else { f.width }.max(1);
+        let vis_h = if f.rotated { f.width } else { f.height }.max(1);
+        let log_w = f.frame_width.max(vis_w).max(1) as f32;
+        let log_h = f.frame_height.max(vis_h).max(1) as f32;
+        ((ent.width * render_scale) / log_w).min((ent.height * render_scale) / log_h)
+    } else {
+        0.5 * render_scale
+    };
+    let render_x = ent.x + off_x * offset_fit;
+    let render_y = base_y + off_y * offset_fit;
+    (render_x, render_y, render_scale, frame)
 }
 
 struct BinWriter<'a> {
@@ -240,7 +256,8 @@ impl EngineSession {
                 .get(&ent.id)
                 .cloned()
                 .or_else(|| ent.image_path.as_ref().map(|p| p.to_string_lossy().into_owned()));
-            let (render_y, render_scale, frame_obj) = compute_entity_frame_render(ent, beat_pulse);
+            let (render_x, render_y, render_scale, frame_obj) =
+                compute_entity_frame_render(ent, beat_pulse);
 
             let frame = frame_obj.map(|f| SparrowFrameJson {
                 found: true,
@@ -259,7 +276,7 @@ impl EngineSession {
                 id: ent.id.clone(),
                 display_name: ent.display_name.clone(),
                 role: role_to_key(ent.role).to_string(),
-                x: ent.x,
+                x: render_x,
                 y: render_y,
                 width: ent.width,
                 height: ent.height,
@@ -594,7 +611,8 @@ impl EngineSession {
         w.write_u16(dynamic_count as u16);
 
         for ent in session.bundle.active_entities.iter().take(entity_count) {
-            let (render_y, render_scale, frame) = compute_entity_frame_render(ent, beat_pulse);
+            let (render_x, render_y, render_scale, frame) =
+                compute_entity_frame_render(ent, beat_pulse);
 
             let mut e_flags: u32 = (role_to_code(ent.role) & 0x3) << 4;
             if ent.visible {
@@ -616,7 +634,7 @@ impl EngineSession {
                 e_flags |= 1 << 7;
             }
 
-            w.write_f32(ent.x);
+            w.write_f32(render_x);
             w.write_f32(render_y);
             w.write_f32(ent.width);
             w.write_f32(ent.height);

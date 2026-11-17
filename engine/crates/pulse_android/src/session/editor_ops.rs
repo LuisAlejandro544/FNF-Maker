@@ -10,14 +10,15 @@ use super::{
 };
 use image::ImageFormat;
 use pulse_audio::decode_audio_file_cached;
+use pulse_core::mod_descriptors::{normalize_stage_world_pos, parse_stage_descriptor_str};
 use pulse_core::project::{
     CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MAX_AUDIO_TRACKS, parse_camera_config_from_lua,
     render_camera_lua_script,
 };
 use pulse_core::svg_skin::{ArrowSkinSet, rasterize_svg_str};
 use pulse_core::{
-    CameraFollowMode, ChartData, NoteDirection, ScriptAsset, ScriptLanguage, StageCameraConfig,
-    StageEntity,
+    CameraFollowMode, ChartData, EntityRole, NoteDirection, ScriptAsset, ScriptLanguage,
+    StageCameraConfig, StageEntity,
 };
 use pulse_scripting::validate_script_syntax;
 use std::io::Cursor;
@@ -354,6 +355,195 @@ impl EngineSession {
         } else {
             "{\"ok\":true,\"message\":\"Cámara actualizada\",\"data\":null}".to_string()
         }
+    }
+
+    /// Importa un archivo de escenario (`stages/*.json` o `stages/*.xml`) para ubicar
+    /// automáticamente al Player, Enemigo, Cabina/Decoración, zoom inicial y props declarados.
+    pub fn import_stage_config(&mut self, path: PathBuf) -> String {
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                return self.err_response(format!("No se pudo leer el archivo de escenario: {}", e));
+            }
+        };
+
+        let desc = match parse_stage_descriptor_str(&raw) {
+            Ok(d) => d,
+            Err(e) => return self.err_response(e),
+        };
+
+        let mut cam_cfg = self.project.stage.camera.clone();
+        if let Some(zoom) = desc.default_zoom {
+            cam_cfg.base_zoom = zoom.clamp(0.35, 2.5);
+        }
+        if let Some([cx, cy]) = desc.camera_start {
+            if cx.is_finite() && cy.is_finite() {
+                cam_cfg.base_x = cx.clamp(-1000.0, 2600.0);
+                cam_cfg.base_y = cy.clamp(-1000.0, 1800.0);
+            }
+        }
+        self.project.stage.apply_camera_config(cam_cfg);
+        self.project.ensure_camera_script();
+        let applied_cfg = self.project.stage.camera.clone();
+        if let Some(cam_script) = self
+            .project
+            .scripts
+            .iter_mut()
+            .find(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME)
+        {
+            cam_script.enabled = applied_cfg.enabled;
+            cam_script.source_code =
+                render_camera_lua_script(&applied_cfg, Some(&cam_script.source_code));
+            cam_script.precompiled_bytecode = None;
+        }
+
+        let mut updated_slots = 0usize;
+        let player_world = desc
+            .player_pos
+            .map(|p| normalize_stage_world_pos(p, EntityRole::Player, desc.is_bottom_center_coords));
+        let opp_world = desc.opponent_pos.map(|p| {
+            normalize_stage_world_pos(p, EntityRole::Opponent, desc.is_bottom_center_coords)
+        });
+        let gf_world = desc.gf_pos.map(|p| {
+            normalize_stage_world_pos(p, EntityRole::Decoration, desc.is_bottom_center_coords)
+        });
+
+        let mut applied_gf = false;
+        for ent in &mut self.project.stage.entities {
+            match ent.role {
+                EntityRole::Player => {
+                    if let Some([wx, wy]) = player_world {
+                        ent.x = wx;
+                        ent.y = wy;
+                        if let Some(pending) = &ent.pending_character_desc {
+                            if let Some(cpos) = pending.position {
+                                if pending.is_relative_position {
+                                    ent.x = (ent.x + cpos[0] * 0.55).clamp(-1000.0, 2600.0);
+                                    ent.y = (ent.y + cpos[1] * 0.25).clamp(-1000.0, 1800.0);
+                                }
+                            }
+                        }
+                        updated_slots += 1;
+                    }
+                    if let Some(z) = desc.player_z {
+                        ent.z_index = z;
+                    }
+                    if let Some(cam_off) = desc.player_cam_offset {
+                        ent.camera_offset = cam_off;
+                    }
+                }
+                EntityRole::Opponent => {
+                    if let Some([wx, wy]) = opp_world {
+                        ent.x = wx;
+                        ent.y = wy;
+                        if let Some(pending) = &ent.pending_character_desc {
+                            if let Some(cpos) = pending.position {
+                                if pending.is_relative_position {
+                                    ent.x = (ent.x + cpos[0] * 0.55).clamp(-1000.0, 2600.0);
+                                    ent.y = (ent.y + cpos[1] * 0.25).clamp(-1000.0, 1800.0);
+                                }
+                            }
+                        }
+                        updated_slots += 1;
+                    }
+                    if let Some(z) = desc.opponent_z {
+                        ent.z_index = z;
+                    }
+                    if let Some(cam_off) = desc.opponent_cam_offset {
+                        ent.camera_offset = cam_off;
+                    }
+                }
+                EntityRole::Decoration if !applied_gf => {
+                    let is_gf_slot = ent.id == "stage_speakers"
+                        || ent.display_name.to_ascii_lowercase().contains("cabina")
+                        || ent.display_name.to_ascii_lowercase().contains("gf")
+                        || ent.display_name.to_ascii_lowercase().contains("girlfriend");
+                    if is_gf_slot {
+                        applied_gf = true;
+                        if desc.hide_gf {
+                            ent.visible = false;
+                        } else if let Some([wx, wy]) = gf_world {
+                            ent.x = wx;
+                            ent.y = wy;
+                            ent.visible = true;
+                            updated_slots += 1;
+                        }
+                        if let Some(z) = desc.gf_z {
+                            ent.z_index = z;
+                        }
+                        if let Some(cam_off) = desc.gf_cam_offset {
+                            ent.camera_offset = cam_off;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut added_props = 0usize;
+        for (i, prop) in desc.props.iter().enumerate() {
+            let role = if i == 0 && prop.scroll_factor <= 0.95 {
+                EntityRole::Background
+            } else {
+                EntityRole::Decoration
+            };
+            let [wx, wy] = normalize_stage_world_pos(
+                prop.position,
+                role,
+                desc.is_bottom_center_coords,
+            );
+            let slug: String = prop
+                .name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let prop_id = if slug.trim_matches('_').is_empty() {
+                format!("stage_prop_{}", i + 1)
+            } else {
+                format!("stage_prop_{}", slug.trim_matches('_'))
+            };
+
+            if let Some(existing) = self
+                .project
+                .stage
+                .entities
+                .iter_mut()
+                .find(|e| e.id == prop_id || e.display_name.eq_ignore_ascii_case(&prop.name))
+            {
+                existing.x = wx;
+                existing.y = wy;
+                existing.set_scale(prop.scale);
+                existing.scroll_factor = prop.scroll_factor;
+                existing.z_index = prop.z_index;
+                existing.flip_x = prop.flip_x;
+                existing.set_opacity(prop.alpha);
+            } else {
+                let mut ent = StageEntity::new(prop_id, prop.name.clone(), role);
+                ent.x = wx;
+                ent.y = wy;
+                ent.set_scale(prop.scale);
+                ent.scroll_factor = prop.scroll_factor;
+                ent.z_index = prop.z_index;
+                ent.flip_x = prop.flip_x;
+                ent.set_opacity(prop.alpha);
+                self.project.stage.entities.push(ent);
+                added_props += 1;
+            }
+        }
+
+        self.project.stage.sort_by_z_order();
+        self.save_active_project_now();
+
+        self.ok_response(format!(
+            "{} aplicado: zoom {:.2}x, {} posiciones actualizadas, {} props creados",
+            desc.format_label, applied_cfg.base_zoom, updated_slots, added_props
+        ))
     }
 
     pub fn add_script(&mut self, lang_key: &str) -> String {

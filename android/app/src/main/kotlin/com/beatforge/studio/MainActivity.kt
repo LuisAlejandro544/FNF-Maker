@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.beatforge.studio.ui.components.StudioNavRail
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
 import com.beatforge.studio.ui.popups.CharacterIconsDialog
+import com.beatforge.studio.ui.popups.ModFilesGuideDialog
 import com.beatforge.studio.ui.screens.AudioScreen
 import com.beatforge.studio.ui.screens.ChartScreen
 import com.beatforge.studio.ui.screens.GameplayScreen
@@ -296,8 +297,12 @@ private fun BeatForgeRootContent(
                         onSelectEntity = { viewModel.selectEntity(it) },
                         onRequestImport = { viewModel.requestImport(it) },
                         onOpenIconsDialog = { viewModel.setCharacterIconsDialogOpen(true) },
+                        onOpenFilesGuide = { viewModel.setModFilesGuideDialogOpen(true) },
                         onSetBinding = { entityId, kind, prefix ->
                             viewModel.setSparrowBinding(entityId, kind, prefix)
+                        },
+                        onSetAnimOffset = { entityId, kind, ox, oy ->
+                            viewModel.setEntityAnimOffset(entityId, kind, ox, oy)
                         },
                         onQuerySparrowFrame = { entityId, kind, elapsed ->
                             viewModel.querySparrowFrame(entityId, kind, elapsed)
@@ -325,7 +330,9 @@ private fun BeatForgeRootContent(
                         onUpdateCamera = { enabled, bx, by, bz, mode, beats, smooth, pan, commit ->
                             viewModel.updateStageCamera(enabled, bx, by, bz, mode, beats, smooth, pan, commit)
                         },
-                        onOpenCameraScript = { viewModel.openCameraScriptInStudio() }
+                        onOpenCameraScript = { viewModel.openCameraScriptInStudio() },
+                        onImportStageConfig = { viewModel.requestImport(ImportKind.StageConfig) },
+                        onOpenFilesGuide = { viewModel.setModFilesGuideDialogOpen(true) }
                     )
 
                     StudioScreen.ScriptStudio -> ScriptStudioScreen(
@@ -445,6 +452,12 @@ private fun BeatForgeRootContent(
             onClearEntityIcons = { entId -> viewModel.clearCharacterIcons(entId) },
             onRestoreDefaultHealthBar = { viewModel.restoreDefaultHealthBarSvg() },
             onDismiss = { viewModel.setCharacterIconsDialogOpen(false) }
+        )
+    }
+
+    if (state.modFilesGuideDialogOpen) {
+        ModFilesGuideDialog(
+            onDismiss = { viewModel.setModFilesGuideDialogOpen(false) }
         )
     }
 }

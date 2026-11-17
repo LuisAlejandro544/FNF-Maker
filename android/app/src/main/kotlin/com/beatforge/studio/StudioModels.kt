@@ -52,6 +52,8 @@ sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
     data class AudioTrack(val slot: Int) : ImportKind("audio_$slot", arrayOf("audio/*", "application/ogg", "*/*"))
     data class SpritePng(val entityId: String) : ImportKind("sprite_png", arrayOf("image/png", "image/*", "application/octet-stream", "*/*"))
     data class SparrowXml(val entityId: String) : ImportKind("sparrow_xml", arrayOf("text/xml", "application/xml", "application/json", "text/plain", "*/*"))
+    data class CharacterConfig(val entityId: String) : ImportKind("char_cfg", arrayOf("application/json", "text/xml", "application/xml", "text/plain", "*/*"))
+    data object StageConfig : ImportKind("stage_cfg", arrayOf("application/json", "text/xml", "application/xml", "text/plain", "*/*"))
     data object Script : ImportKind("script", arrayOf("text/plain", "application/javascript", "*/*"))
     data class ArrowSvg(val direction: Int) : ImportKind("arrow_$direction", arrayOf("image/svg+xml", "*/*"))
     data class CharacterIcon(val entityId: String, val isLosing: Boolean) : ImportKind(
@@ -122,6 +124,7 @@ data class StageEntitySnapshot(
     val rawImagePath: String? = null,
     val xmlPath: String? = null,
     val animateJsonPath: String? = null,
+    val characterConfigPath: String? = null,
     val iconNormalPath: String? = null,
     val iconLosingPath: String? = null,
     val x: Float = 0f,
@@ -135,6 +138,7 @@ data class StageEntitySnapshot(
     val visible: Boolean = true,
     val animationPrefixes: List<String> = emptyList(),
     val animBindings: Map<String, String> = emptyMap(),
+    val animOffsets: Map<String, Pair<Float, Float>> = emptyMap(),
     val previewFrame: SparrowFrameInfo? = null
 )
 
@@ -525,6 +529,7 @@ object StudioJsonParser {
                         rawImagePath = optNullableString(e, "rawImagePath"),
                         xmlPath = optNullableString(e, "xmlPath"),
                         animateJsonPath = optNullableString(e, "animateJsonPath"),
+                        characterConfigPath = optNullableString(e, "characterConfigPath"),
                         iconNormalPath = optNullableString(e, "iconNormalPath"),
                         iconLosingPath = optNullableString(e, "iconLosingPath"),
                         x = e.optDouble("x", 0.0).toFloat(),
@@ -538,6 +543,7 @@ object StudioJsonParser {
                         visible = e.optBoolean("visible", true),
                         animationPrefixes = stringList(e.optJSONArray("animationPrefixes")),
                         animBindings = stringMap(e.optJSONObject("animBindings")),
+                        animOffsets = offsetMap(e.optJSONObject("animOffsets")),
                         previewFrame = e.optJSONObject("previewFrame")?.let { parseSparrowFrameObject(it) }
                     )
                 )
@@ -819,6 +825,22 @@ object StudioJsonParser {
         while (keys.hasNext()) {
             val k = keys.next()
             out[k] = obj.optString(k, "")
+        }
+        return out
+    }
+
+    private fun offsetMap(obj: JSONObject?): Map<String, Pair<Float, Float>> {
+        if (obj == null) return emptyMap()
+        val out = linkedMapOf<String, Pair<Float, Float>>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val arr = obj.optJSONArray(k) ?: continue
+            if (arr.length() >= 2) {
+                val ox = arr.optDouble(0, 0.0).toFloat()
+                val oy = arr.optDouble(1, 0.0).toFloat()
+                out[k] = ox to oy
+            }
         }
         return out
     }

@@ -1,8 +1,7 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/SpriteLabScreen.kt
-// Propósito: Laboratorio de Sprites, Texturas `.astc` y Atlas `.xml` / `.json`.
-// Permite seleccionar una entidad del escenario, vincularle su textura (`.png` o `.astc`)
-// y su descriptor (`.xml` Sparrow, TexturePacker `.json`, `spritemap1.json` y `Animation.json`),
-// reasignar animaciones y previsualizar cada cuadro recortado en vivo a 24 FPS en Compose Canvas.
+// Propósito: Laboratorio de Sprites, Texturas `.astc`, Atlas `.xml`/`.json` y Descriptores
+// de Personaje (`.json`/`.xml`). Permite vincular textura, atlas, archivo de posición/offsets
+// del personaje, calibrar manualmente `Offset X/Y` por pose y previsualizar en vivo a 24 FPS.
 
 package com.beatforge.studio.ui.screens
 
@@ -30,8 +29,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Face
+import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -91,7 +92,9 @@ fun SpriteLabScreen(
     onSelectEntity: (String) -> Unit,
     onRequestImport: (ImportKind) -> Unit,
     onOpenIconsDialog: () -> Unit,
+    onOpenFilesGuide: () -> Unit,
     onSetBinding: (entityId: String, animKind: String, prefix: String) -> Unit,
+    onSetAnimOffset: (entityId: String, animKind: String, offsetX: Float, offsetY: Float) -> Unit,
     onQuerySparrowFrame: suspend (entityId: String, animKind: String, elapsedSec: Float) -> SparrowFrameInfo,
     onDecodeRegionFrame: suspend (imagePath: String?, frame: SparrowFrameInfo) -> ImageBitmap?
 ) {
@@ -152,12 +155,39 @@ fun SpriteLabScreen(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "Sprites · PNG/ASTC + XML/JSON",
-                    color = StudioColors.TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Sprites · PNG/ASTC + XML/JSON",
+                        color = StudioColors.TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    OutlinedButton(
+                        onClick = onOpenFilesGuide,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.HelpOutline,
+                            contentDescription = null,
+                            tint = StudioColors.AccentCyan,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "¿Dónde van?",
+                            color = StudioColors.AccentCyan,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
 
                 Row(
                     modifier = Modifier
@@ -179,43 +209,61 @@ fun SpriteLabScreen(
                 }
 
                 if (entity != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Button(
-                            onClick = { onRequestImport(ImportKind.SpritePng(entity.id)) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = StudioColors.AccentCyan,
-                                contentColor = Color(0xFF041C24)
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Rounded.Image, null, modifier = Modifier.size(15.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("PNG / ASTC", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(
+                                onClick = { onRequestImport(ImportKind.SpritePng(entity.id)) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StudioColors.AccentCyan,
+                                    contentColor = Color(0xFF041C24)
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Image, null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("PNG / ASTC", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            }
+
+                            Button(
+                                onClick = { onRequestImport(ImportKind.SparrowXml(entity.id)) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StudioColors.AccentIndigo,
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Code, null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("XML / JSON", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            }
                         }
 
-                        Button(
-                            onClick = { onRequestImport(ImportKind.SparrowXml(entity.id)) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = StudioColors.AccentIndigo,
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Rounded.Code, null, modifier = Modifier.size(15.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("XML / JSON", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(
+                                onClick = { onRequestImport(ImportKind.CharacterConfig(entity.id)) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StudioColors.AccentEmerald,
+                                    contentColor = Color(0xFF042217)
+                                ),
+                                modifier = Modifier.weight(1.15f)
+                            ) {
+                                Icon(Icons.Rounded.Place, null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Posición (.json/.xml)", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            }
 
-                        OutlinedButton(
-                            onClick = onOpenIconsDialog,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            modifier = Modifier.weight(0.95f)
-                        ) {
-                            Icon(Icons.Rounded.Face, null, tint = StudioColors.AccentAmber, modifier = Modifier.size(15.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Íconos / Vida", fontSize = 10.sp, color = StudioColors.AccentAmber, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            OutlinedButton(
+                                onClick = onOpenIconsDialog,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier.weight(0.85f)
+                            ) {
+                                Icon(Icons.Rounded.Face, null, tint = StudioColors.AccentAmber, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Íconos / Vida", fontSize = 10.5.sp, color = StudioColors.AccentAmber, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            }
                         }
                     }
 
@@ -243,6 +291,15 @@ fun SpriteLabScreen(
                                 color = if (entity.xmlPath != null) StudioColors.AccentCyan else StudioColors.TextMuted,
                                 fontSize = 11.sp
                             )
+                            Text(
+                                text = if (entity.characterConfigPath != null) {
+                                    "Posición/Offsets: ${entity.characterConfigPath.substringAfterLast('/')} · Pos (${entity.x.roundToInt()}, ${entity.y.roundToInt()})"
+                                } else {
+                                    "Posición/Offsets (.json/.xml): Opcional · Pos actual (${entity.x.roundToInt()}, ${entity.y.roundToInt()})"
+                                },
+                                color = if (entity.characterConfigPath != null) StudioColors.AccentEmerald else StudioColors.TextMuted,
+                                fontSize = 11.sp
+                            )
                             if (entity.animateJsonPath != null || xmlIsJson) {
                                 Text(
                                     text = if (entity.animateJsonPath != null) {
@@ -255,9 +312,10 @@ fun SpriteLabScreen(
                                 )
                             }
                             Text(
-                                text = "¿Dónde poner tus archivos para armar el sprite?\n" +
-                                    "• Botón PNG / ASTC: sube la imagen (.png, .webp o .astc).\n" +
-                                    "• Botón XML / JSON: sube 1 archivo (.xml Sparrow o .json TexturePacker/Aseprite) o 2 archivos .json (spritemap1.json + Animation.json en cualquier orden).",
+                                text = "Guía rápida de archivos:\n" +
+                                    "• PNG / ASTC: hoja de imagen (en mods: images/characters/).\n" +
+                                    "• XML / JSON: recorte de frames Sparrow/Atlas (en images/characters/).\n" +
+                                    "• Posición (.json/.xml): ubicación en escena y offsets (en characters/ o mods/characters/).",
                                 color = StudioColors.TextMuted,
                                 fontSize = 10.sp,
                                 lineHeight = 14.sp
@@ -397,6 +455,10 @@ fun SpriteLabScreen(
 
                 val loaded = entity?.let { entityBitmaps[it.id] }
                 val sharpFrame = regionBitmap
+                val activeOffset = entity?.animOffsets?.get(activeAnimKind) ?: (0f to 0f)
+                val offX = activeOffset.first
+                val offY = activeOffset.second
+
                 Canvas(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -417,8 +479,8 @@ fun SpriteLabScreen(
 
                         val visDrawW = visW * fit
                         val visDrawH = visH * fit
-                        val visLeft = boxLeft + (-currentFrame.frameX * fit)
-                        val visTop = boxTop + (-currentFrame.frameY * fit)
+                        val visLeft = boxLeft + ((-currentFrame.frameX + offX) * fit)
+                        val visTop = boxTop + ((-currentFrame.frameY + offY) * fit)
                         val centerX = visLeft + visDrawW / 2f
                         val centerY = visTop + visDrawH / 2f
 
@@ -467,8 +529,8 @@ fun SpriteLabScreen(
                         val fit = min((size.width * 0.85f) / srcW, (size.height * 0.85f) / srcH)
                         val dstW = (srcW * fit).roundToInt().coerceAtLeast(1)
                         val dstH = (srcH * fit).roundToInt().coerceAtLeast(1)
-                        val dstX = ((size.width - dstW) / 2f).roundToInt()
-                        val dstY = ((size.height - dstH) / 2f).roundToInt()
+                        val dstX = ((size.width - dstW) / 2f + offX * fit).roundToInt()
+                        val dstY = ((size.height - dstH) / 2f + offY * fit).roundToInt()
                         drawImage(
                             image = bmp,
                             srcOffset = IntOffset(0, 0),
@@ -477,6 +539,70 @@ fun SpriteLabScreen(
                             dstSize = IntSize(dstW, dstH),
                             filterQuality = FilterQuality.High
                         )
+                    }
+                }
+
+                if (entity != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = StudioColors.BgCard,
+                        border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Offset Pose (${activeAnimKind}): X=${offX.roundToInt()}  Y=${offY.roundToInt()}",
+                                    color = StudioColors.TextPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 11.sp
+                                )
+                                OutlinedButton(
+                                    onClick = { onSetAnimOffset(entity.id, activeAnimKind, 0f, 0f) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("Centrar 0", fontSize = 10.sp)
+                                }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("X:", color = StudioColors.AccentCyan, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                listOf(-5f, -1f, 1f, 5f).forEach { step ->
+                                    OutlinedButton(
+                                        onClick = { onSetAnimOffset(entity.id, activeAnimKind, offX + step, offY) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(24.dp)
+                                    ) {
+                                        Text(if (step > 0f) "+${step.toInt()}" else "${step.toInt()}", fontSize = 10.sp)
+                                    }
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Text("Y:", color = StudioColors.AccentAmber, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                listOf(-5f, -1f, 1f, 5f).forEach { step ->
+                                    OutlinedButton(
+                                        onClick = { onSetAnimOffset(entity.id, activeAnimKind, offX, offY + step) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(24.dp)
+                                    ) {
+                                        Text(if (step > 0f) "+${step.toInt()}" else "${step.toInt()}", fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 

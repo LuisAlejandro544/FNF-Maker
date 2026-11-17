@@ -10,6 +10,7 @@
 //! - `project`: Estructura completa de un proyecto mod (incluyendo límite de 1 a 3 pistas de audio).
 //! - `hot_compile`: Compilador en caliente paralelo con descarte de objetos invisibles, análisis inteligente de bucles en scripts y escalado adaptativo sin pérdida visible.
 //! - `frame_memory`: Arena temporal por frame (`FrameBumpArena`), ventana deslizante de notas (`NoteSlidingWindow`) y caché LRU (`LruCache`).
+//! - `mod_descriptors`: Lectura de descriptores `.json` y `.xml` de mods (`characters/*`, `stages/*`) con posición en escenario, cámara y offsets por animación.
 //! - `script_optimizer`: Analizador inteligente de bucles pesados/infinitos en Lua, JS y TypeScript.
 //! - `vanilla`: Empaquetador e importador de contenedores Vanilla (`.mod`) apoyado en Zstandard (`zstd`), optimización WebP sin pérdida y verificación FNV-1a.
 
@@ -19,6 +20,7 @@ pub mod chart;
 pub mod disk_cache;
 pub mod frame_memory;
 pub mod hot_compile;
+pub mod mod_descriptors;
 pub mod project;
 pub mod script_optimizer;
 pub mod sparrow;
@@ -45,6 +47,12 @@ pub use hot_compile::{
     HotCompileManifest, HotCompileReport, SCRIPT_OPTIMIZER_CACHE_VERSION, TextureFingerprint,
     fnv1a_64_bytes, fnv1a_64_str, hot_compile_project, hot_compile_project_to_dir,
     hot_compile_project_to_dir_with_manifest,
+};
+pub use mod_descriptors::{
+    CharacterAnimDescriptor, CharacterDescriptor, DetectedModDescriptor, StageDescriptor,
+    StagePropDescriptor, apply_character_position, default_role_anchor, map_anim_name_to_kind,
+    normalize_stage_world_pos, parse_character_descriptor_str, parse_mod_descriptor_str,
+    parse_stage_descriptor_str,
 };
 pub use project::{
     AudioTrackSlot, CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MobileControlMode, ModProject,

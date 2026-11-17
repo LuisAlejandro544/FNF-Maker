@@ -73,6 +73,11 @@ import {
   classifyVanillaEntryCodec,
   validateVanillaRelPath,
   validateVanillaHeader,
+  mapAnimNameToKind,
+  defaultRoleAnchor,
+  normalizeStageWorldPos,
+  applyCharacterPosition,
+  parseModDescriptor,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -1308,6 +1313,140 @@ test('Vanilla .mod container validates VNLA header, Zstd/Raw codec selection and
   assert.equal(modSaf.stagingDir, 'cacheDir/import_staging');
   assert.equal(modSaf.deleteStagedAfterImport, true);
 });
+
+test('parseModDescriptor parses Psych and V-Slice character JSON with exact offset signs and relative placement', () => {
+  const psychChar = JSON.stringify({
+    animations: [
+      { anim: 'idle', name: 'Hero Idle', fps: 24, loop: false, offsets: [0, 0] },
+      { anim: 'singLEFT', name: 'Hero Left', fps: 24, loop: false, offsets: [12, -8] },
+      { anim: 'singUPmiss', name: 'Hero MissUp', fps: 24, loop: false, offsets: [-20, 30] },
+    ],
+    flip_x: true,
+    scale: 1.15,
+    position: [40, 200],
+    camera_position: [15, -40],
+  });
+
+  const parsedPsych = parseModDescriptor(psychChar);
+  assert.equal(parsedPsych.kind, 'character');
+  assert.equal(parsedPsych.isRelativePosition, true);
+  assert.deepEqual(parsedPsych.position, [40, 200]);
+  assert.deepEqual(parsedPsych.cameraPosition, [15, -40]);
+  assert.equal(parsedPsych.scale, 1.15);
+  assert.equal(parsedPsych.flipX, true);
+  assert.equal(parsedPsych.animations.length, 3);
+  assert.equal(parsedPsych.animations[1].animKey, 'left');
+  assert.equal(parsedPsych.animations[1].prefix, 'Hero Left');
+  // Psych resta offsets -> en BeatForge (+X/+Y) se niegan
+  assert.deepEqual(parsedPsych.animations[1].offset, [-12, 8]);
+  assert.equal(parsedPsych.animations[2].animKey, 'missUp');
+  assert.deepEqual(parsedPsych.animations[2].offset, [20, -30]);
+
+  const relApplied = applyCharacterPosition(defaultRoleAnchor('player'), [40, 200], true, 'player');
+  assert.deepEqual(relApplied, [980 + 40 * 0.55, 430 + 200 * 0.25]);
+
+  // V-Slice conserva offsets con signo positivo y coordenadas absolutas
+  const vsliceChar = JSON.stringify({
+    assetPath: 'characters/hero',
+    startingAnimation: 'idle',
+    animations: [
+      { name: 'idle', prefix: 'HeroIdle', fps: 24, looped: true, offsets: [5, 10] },
+      { name: 'singDOWN', prefix: 'HeroDown', fps: 24, looped: false, offsets: [-6, 14] },
+    ],
+    offsets: [920, 440],
+  });
+  const parsedVslice = parseModDescriptor(vsliceChar);
+  assert.equal(parsedVslice.kind, 'character');
+  assert.equal(parsedVslice.isRelativePosition, false);
+  assert.deepEqual(parsedVslice.animations[1].animKey, 'down');
+  assert.deepEqual(parsedVslice.animations[1].offset, [-6, 14]);
+});
+
+test('parseModDescriptor parses Codename <character> and <stage> XML descriptors accurately', () => {
+  const charXml = `
+  <character x="20" y="100" camx="10" camy="-25" flipX="false" scale="0.95">
+    <anim name="idle" anim="Rival idle" fps="24" loop="true" x="0" y="0"/>
+    <anim name="singRIGHT" anim="Rival right" fps="24" loop="false" x="-14" y="22"/>
+  </character>`;
+  const parsedChar = parseModDescriptor(charXml);
+  assert.equal(parsedChar.kind, 'character');
+  assert.deepEqual(parsedChar.position, [20, 100]);
+  assert.deepEqual(parsedChar.cameraPosition, [10, -25]);
+  assert.equal(parsedChar.scale, 0.95);
+  assert.equal(parsedChar.flipX, false);
+  assert.equal(parsedChar.animations[0].animKey, 'idle');
+  assert.equal(parsedChar.animations[0].looped, true);
+  assert.equal(parsedChar.animations[1].animKey, 'right');
+  assert.deepEqual(parsedChar.animations[1].offset, [14, -22]);
+
+  const stageXml = `
+  <stage zoom="0.92" startCamPosX="650" startCamPosY="340">
+    <sprite name="sky" sprite="stages/sky" x="0" y="0" scale="1.2" scrollx="0.5" scrolly="0.5"/>
+    <dad x="120" y="180" camxoffset="40" camyoffset="-20"/>
+    <girlfriend x="480" y="140"/>
+    <boyfriend x="820" y="200" camxoffset="-30" camyoffset="-15"/>
+  </stage>`;
+  const parsedStage = parseModDescriptor(stageXml);
+  assert.equal(parsedStage.kind, 'stage');
+  assert.ok(Math.abs((parsedStage.defaultZoom ?? 0) - 0.92) < 0.001);
+  assert.deepEqual(parsedStage.cameraStart, [650, 340]);
+  assert.deepEqual(parsedStage.playerPos, [820, 200]);
+  assert.deepEqual(parsedStage.opponentPos, [120, 180]);
+  assert.deepEqual(parsedStage.gfPos, [480, 140]);
+  assert.equal(parsedStage.props.length, 1);
+  assert.equal(parsedStage.props[0].name, 'sky');
+  assert.equal(parsedStage.props[0].scrollFactor, 0.5);
+});
+
+test('parseModDescriptor parses Psych/V-Slice stage JSON and normalizes world coordinates to 1280x720', () => {
+  const psychStage = JSON.stringify({
+    defaultZoom: 0.9,
+    boyfriend: [820, 220],
+    girlfriend: [450, 140],
+    opponent: [110, 220],
+    hide_girlfriend: true,
+  });
+  const st1 = parseModDescriptor(psychStage);
+  assert.equal(st1.kind, 'stage');
+  assert.equal(st1.isBottomCenterCoords, false);
+  assert.equal(st1.hideGf, true);
+  assert.deepEqual(normalizeStageWorldPos(st1.playerPos!, 'player', st1.isBottomCenterCoords), [960, 400]);
+
+  const vsliceStage = JSON.stringify({
+    cameraZoom: 1.1,
+    props: [
+      {
+        name: 'stageBack',
+        assetPath: 'stages/main/back',
+        position: [0, 0],
+        scale: [1.0, 1.0],
+        scroll: [0.9, 0.9],
+        zIndex: 10,
+      },
+    ],
+    characters: {
+      bf: { zIndex: 300, position: [990, 880], cameraOffsets: [-100, -100] },
+      dad: { zIndex: 200, position: [335, 880], cameraOffsets: [150, -100] },
+    },
+  });
+  const st2 = parseModDescriptor(vsliceStage);
+  assert.equal(st2.kind, 'stage');
+  assert.equal(st2.isBottomCenterCoords, true);
+  assert.equal(st2.playerZ, 300);
+  assert.equal(st2.props.length, 1);
+  const bfWorld = normalizeStageWorldPos(st2.playerPos!, 'player', st2.isBottomCenterCoords);
+  assert.equal(bfWorld[0], 990);
+  assert.ok(Math.abs(bfWorld[1] - 880 * 0.56) < 0.01);
+});
+
+test('parseModDescriptor rejects empty or unrecognized mod descriptor payloads cleanly', () => {
+  assert.equal(mapAnimNameToKind('singLEFT-alt'), 'left');
+  assert.equal(mapAnimNameToKind('singRIGHTmiss'), 'missRight');
+  assert.throws(() => parseModDescriptor('   '));
+  assert.throws(() => parseModDescriptor('<TextureAtlas imagePath="sheet.png"></TextureAtlas>'));
+  assert.throws(() => parseModDescriptor(JSON.stringify({ unrelated: true })));
+});
+
 
 
 

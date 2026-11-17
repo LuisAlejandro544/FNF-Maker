@@ -28,6 +28,7 @@ data class StudioUiState(
     val selectedScriptId: String = "",
     val arrowSkinDialogOpen: Boolean = false,
     val characterIconsDialogOpen: Boolean = false,
+    val modFilesGuideDialogOpen: Boolean = false,
     val audioPreviewPlaying: Boolean = false,
     val selectedTier: DeviceTier = DeviceTier.Balanced,
     val hotCompileProgress: HotCompileProgress = HotCompileProgress(),

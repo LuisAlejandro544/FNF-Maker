@@ -17,16 +17,18 @@ BeatForge Studio (`com.beatforge.studio`) es un **motor de creación de mods de 
    - Motor de audio 100% en Rust (`libaaudio.so` vía `libc::dlopen`, cero dependencias de C++ ni `libc++_shared.so`, nativo desde Android 8.0+ `minSdk = 26` con reloj de respaldo defensivo para emuladores).
    - Al entrar a jugar o reiniciar, ejecuta una **cuenta regresiva sincronizada al BPM real de la canción** (`"3"`, `"2"`, `"1"`, `"¡YA!"`) con voces/tonos sintetizados lock-free en `pulse_audio` y animación visual sincronizada en `GameplayScreen` antes de arrancar en `0.0 ms`.
    - Soporta mods con **1 archivo** (mix completo), **2 archivos** (Instrumental + Voces) o **3 archivos** (Instrumental + Voces Jugador + Voces Oponente) en **OGG** (`lewton`), **WAV** (`hound`) y **MP3** (`rmp3`), almacenados en **PCM `i16` compacto** en el editor (50 % menos RAM), respaldados por un **caché binario `.bfaud` (`cacheDir/audio_cache/`) de audio decodificado y picos de onda** para reabrir proyectos al instante sin re-decodificar, y fusionados en caliente en un único stream de disco (~512 KB de buffer circular) al jugar.
-3. **Ensamblador Automático de Spritesheets (`.png`, `.astc`, `.webp`, `.xml`, `.json`), Vista 1:1 y Animaciones Miss**:
-   - Decodificación nativa de texturas comprimidas **`.astc`** en Rust puro (`texture2ddecoder`, sin GLES obligatorio en el editor) junto a `.png`/`.jpg`/`.webp`, almacenando las hojas decodificadas o horneadas en **WebP sin pérdida (lossless VP8L)** de máxima compresión.
-   - Soporte de atlas **`.xml` Sparrow** y formatos **`.json`** de mods optimizados: **TexturePacker / Aseprite** (Hash/Array), **`spritemap1.json`** y **`Animation.json`** (Adobe Animate Texture Atlas), horneando automáticamente las poses a spritesheet RGBA WebP sin pérdida y detectando `Idle`, `Left`, `Down`, `Up`, `Right` y las 4 poses de fallo (**`Miss Left`**, **`Miss Down`**, **`Miss Up`**, **`Miss Right`**) con soporte de frames rotados 90°.
-   - **Previsualización 1:1 sin borrosidad**: `SpriteLabScreen` decodifica el recorte exacto del frame activo mediante `BitmapRegionDecoder` con caché `LruCache` acotada a 20 MB en `Dispatchers.IO` (`FilterQuality.High`), evitando imágenes borrosas sin saturar la RAM en dispositivos de 32 bits.
-   - **Popup Modal `Íconos / Vida` (`CharacterIconsDialog`)**: Permite cargar o limpiar íconos de Rival y Jugador (estados **Normal** y **Perdiendo**, con recorte automático si subes una tira horizontal de 2 frames) y personalizar el archivo **`.svg`** de la barra de vida.
-4. **Editor Visual de Escenario Horizontal (`1280×720`) y Sistema de Cámara en Lua**:
-   - Mueve tus assets con **cruceta direccional** (pasos configurables de 1px, 10px, 35px) o arrastrando directamente sobre el lienzo 16:9 con etiquetas pre-medidas, *culling* fuera de vista y transformaciones en vivo (`StageLiveTransformState`) sin recomponer ni disparar JNI en cada píxel del arrastre.
-   - Panel de capas virtualizado (`LazyColumn`) para escalar decenas de objetos sin lag de interfaz, con ajustes de escala, opacidad, volteo horizontal (`Flip X`), rol en cuadrícula 2×2 (`Fondo`, `Oponente`, `Jugador`, `Decoración`) y **orden de capa Z**.
-   - **Sistema de Cámara (`Cámara (.lua)` ↔ `camera_system.lua`)**: Selecciona la capa de cámara en `Escena` para mover su centro, agrandar o achicar el marco de captura (zoom base `0.35x–2.50x`), configurar seguimiento automático entre **Enemigo y Jugador** (cada N beats o siguiendo `mustHitSection` de `chart.json`) y abrir/editar su script real `camera_system.lua` en Lua 5.4.
-   - **Idle Sincronizado al BPM**: Las poses de reposo (`Idle`) del Jugador y Rival se disparan alineadas al reloj de beats/BPM activo de `chart.json` (respetando `changeBPM`), con cadencia automática cada 1 o 2 beats y pulso rítmico sutil para personajes PNG estáticos.
+    - **Ensamblador Automático de Spritesheets (`.png`, `.astc`, `.webp`, `.xml`, `.json`), Posición/Offsets y Vista 1:1**:
+    - Decodificación nativa de texturas comprimidas **`.astc`** en Rust puro (`texture2ddecoder`, sin GLES obligatorio en el editor) junto a `.png`/`.jpg`/`.webp`, almacenando las hojas decodificadas o horneadas en **WebP sin pérdida (lossless VP8L)** de máxima compresión.
+    - Soporte de atlas **`.xml` Sparrow** y formatos **`.json`** de mods optimizados: **TexturePacker / Aseprite** (Hash/Array), **`spritemap1.json`** y **`Animation.json`** (Adobe Animate Texture Atlas), horneando automáticamente las poses a spritesheet RGBA WebP sin pérdida y detectando `Idle`, `Left`, `Down`, `Up`, `Right` y las 4 poses de fallo (**`Miss Left`**, **`Miss Down`**, **`Miss Up`**, **`Miss Right`**) con soporte de frames rotados 90°.
+    - **Descriptores de Posición y Offsets de Personaje (`Posición (.json/.xml)`)**: Importa archivos de configuración de personaje (`.json` estilo Psych/V-Slice o `.xml` `<character>` estilo Codename) antes o después del atlas para aplicar automáticamente `position`, `scale`, `flip_x`, `camera_position`, FPS, bucle, prefijos de animación y los **`offsets [x, y]` exactos por cada pose**. Además, `SpriteLabScreen` incluye controles en vivo **`Offset Pose X / Y`** (`-5 / -1 / Centrar 0 / +1 / +5`) reflejados al instante tanto en la vista previa a 24 FPS como en Gameplay.
+    - **Previsualización 1:1 sin borrosidad**: `SpriteLabScreen` decodifica el recorte exacto del frame activo mediante `BitmapRegionDecoder` con caché `LruCache` acotada a 20 MB en `Dispatchers.IO` (`FilterQuality.High`), evitando imágenes borrosas sin saturar la RAM en dispositivos de 32 bits.
+    - **Popup Modal `Íconos / Vida` (`CharacterIconsDialog`) y Guía `¿Dónde van?` (`ModFilesGuideDialog`)**: Permite cargar o limpiar íconos de Rival y Jugador (estados **Normal** y **Perdiendo**, con recorte automático si subes una tira horizontal de 2 frames), personalizar la barra `.svg` y consultar desde Sprites o Escena dónde conseguir e importar cada archivo de un mod.
+4. **Editor Visual de Escenario Horizontal (`1280×720`), Importación `Escena .json/.xml` y Sistema de Cámara en Lua**:
+    - Mueve tus assets con **cruceta direccional** (pasos configurables de 1px, 10px, 35px) o arrastrando directamente sobre el lienzo 16:9 con etiquetas pre-medidas, *culling* fuera de vista y transformaciones en vivo (`StageLiveTransformState`) sin recomponer ni disparar JNI en cada píxel del arrastre.
+    - **Importar `Escena .json/.xml`**: Carga descriptores de escenario (`stages/*.json` o `<stage>.xml`) para ubicar automáticamente Player, Enemigo y Decoración/Cabina, aplicar el zoom inicial de cámara (`camera_system.lua`), respetar `hide_girlfriend` y registrar props de fondo ordenados por capa Z.
+    - Panel de capas virtualizado (`LazyColumn`) para escalar decenas de objetos sin lag de interfaz, con ajustes de escala, opacidad, volteo horizontal (`Flip X`), rol en cuadrícula 2×2 (`Fondo`, `Oponente`, `Jugador`, `Decoración`) y **orden de capa Z**.
+    - **Sistema de Cámara (`Cámara (.lua)` ↔ `camera_system.lua`)**: Selecciona la capa de cámara en `Escena` para mover su centro, agrandar o achicar el marco de captura (zoom base `0.35x–2.50x`), configurar seguimiento automático entre **Enemigo y Jugador** (cada N beats o siguiendo `mustHitSection` de `chart.json`) y abrir/editar su script real `camera_system.lua` en Lua 5.4.
+    - **Idle Sincronizado al BPM**: Las poses de reposo (`Idle`) del Jugador y Rival se disparan alineadas al reloj de beats/BPM activo de `chart.json` (respetando `changeBPM`), con cadencia automática cada 1 o 2 beats y pulso rítmico sutil para personajes PNG estáticos.
 5. **Compilación en Caliente Incremental (`Hot Compile`) en WebP Lossless y Ciclo Inteligente de RAM**:
    - Detecta automáticamente la RAM disponible (`ActivityManager.MemoryInfo`, incluyendo `lowMemory`), la cuota real del sistema (`StorageManager.getCacheQuotaBytes`) y arquitectura (32/64 bits) de tu teléfono y muestra una pantalla de carga con **progreso real y porcentaje (`0%–100%`)** por fases mientras **Rust** (`rayon`):
      - **Caché multi-proyecto con cuota automática (LRU en disco, `compiled_cache/<projectId>/manifest.json`)**: Cada proyecto conserva su propia compilación incremental (hash FNV-1a/tamaño/`mtime`, gama `tier`, geometría, audio y scripts) sin sobrescribir la de otros mods, y un desalojo LRU elimina automáticamente las cachés más antiguas al superar la cuota (protegiendo el mod activo).
@@ -64,6 +66,23 @@ El proyecto está pensado para compilarse directamente en la nube desde tu telé
 5. Al terminar, descarga el artefacto correspondiente a tu dispositivo:
    - `BeatForgeStudio-64bit-arm64-v8a-Debug` (teléfonos modernos de 64 bits)
    - `BeatForgeStudio-32bit-armeabi-v7a-Debug` (teléfonos de 32 bits)
+
+---
+
+## Guía Rápida: ¿Dónde Va Cada Archivo y Dónde Se Consigue en un Mod?
+
+También puedes abrir esta misma guía dentro de la app tocando **`¿Dónde van?`** en **Sprites** o **`?`** en **Escena** (`ModFilesGuideDialog`):
+
+| Archivo del Mod | Dónde se importa en BeatForge Studio | Dónde suele estar en la carpeta de un mod |
+| :--- | :--- | :--- |
+| **Hoja de Sprites** (`.png` / `.webp` / `.astc`) | **Sprites** → `PNG / ASTC` (o **Escena** → `Subir PNG/.astc`) | `images/characters/` o `mods/images/characters/` (fondos/props en `images/backgrounds/` o `stages/<nombre>/`) |
+| **Recorte de Animaciones** (`.xml` Sparrow / `.json` Atlas) | **Sprites** → `XML / JSON` | En la misma carpeta que la imagen: `images/characters/<personaje>.xml` o `spritemap1.json` + `Animation.json` |
+| **Posición del Personaje y Offsets** (`.json` / `<character>.xml`) | **Sprites** → `Posición (.json/.xml)` | `characters/`, `mods/characters/` o `assets/data/characters/` |
+| **Posición Global del Escenario** (`.json` / `<stage>.xml`) | **Escena** → `Escena .json/.xml` | `stages/`, `mods/stages/` o `assets/data/stages/` |
+| **Íconos y Barra de Vida** (`.png` / `.svg`) | **Sprites** → `Íconos / Vida` | `images/icons/` (`icon-<personaje>.png`) |
+| **Pistas de Audio** (`.ogg` / `.wav` / `.mp3`, máx. 3) | **Audio** → Pistas `1`, `2` y `3` | `songs/<cancion>/` o `mods/songs/<cancion>/` (`Inst.ogg`, `Voices.ogg`, `Voices-Player.ogg`, `Voices-Opponent.ogg`) |
+| **Chart de Notas y Eventos** (`.json`) | **Chart** → `Importar` | `data/<cancion>/` o `mods/data/<cancion>/` (`<cancion>-hard.json`, `<cancion>.json`) |
+| **Scripts Modchart** (`.lua` / `.ts` / `.js`) | **Scripts** → `Importar` | `scripts/`, `mods/scripts/`, `data/<cancion>/script.lua` o `custom_events/` |
 
 ---
 

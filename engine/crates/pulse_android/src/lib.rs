@@ -608,6 +608,47 @@ mod jni_exports {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportCharacterConfig<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_character_config(&eid, p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetEntityAnimOffset<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        entity_id: JString<'local>,
+        anim_kind: JString<'local>,
+        offset_x: jfloat,
+        offset_y: jfloat,
+    ) -> JString<'local> {
+        let eid = read_str(&mut env, &entity_id);
+        let kind = read_str(&mut env, &anim_kind);
+        let json = session()
+            .lock()
+            .set_entity_anim_offset(&eid, &kind, offset_x, offset_y);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportStageConfig<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let p = PathBuf::from(read_str(&mut env, &path));
+        let json = session().lock().import_stage_config(p);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddStageEntity<'local>(
         mut env: JNIEnv<'local>,
         _cls: JClass<'local>,

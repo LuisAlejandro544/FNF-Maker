@@ -28,9 +28,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.FlipToBack
 import androidx.compose.material.icons.rounded.FlipToFront
+import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -39,6 +41,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -67,6 +70,8 @@ fun StageLayersPanel(
     onSelectCamera: () -> Unit,
     onToggleCameraEnabled: () -> Unit,
     onAddEntity: (name: String, role: String) -> Unit,
+    onImportStageConfig: () -> Unit,
+    onOpenFilesGuide: () -> Unit,
     onToggleVisibility: (StageEntitySnapshot) -> Unit,
     onReorderEntity: (entityId: String, action: String) -> Unit,
     modifier: Modifier = Modifier
@@ -114,6 +119,48 @@ fun StageLayersPanel(
                     Icon(Icons.Rounded.Add, null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Objeto", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = onImportStageConfig,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(26.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.UploadFile,
+                        contentDescription = null,
+                        tint = StudioColors.AccentEmerald,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        text = "Escena .json/.xml",
+                        color = StudioColors.AccentEmerald,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(
+                    onClick = onOpenFilesGuide,
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.HelpOutline,
+                        contentDescription = "¿Dónde van los archivos?",
+                        tint = StudioColors.AccentCyan,
+                        modifier = Modifier.size(15.dp)
+                    )
                 }
             }
 

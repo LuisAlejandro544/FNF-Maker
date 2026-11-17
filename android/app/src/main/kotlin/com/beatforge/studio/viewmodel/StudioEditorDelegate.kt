@@ -184,6 +184,8 @@ internal class StudioEditorDelegate(
                         is ImportKind.AudioTrack -> NativeEngineBridge.nativeImportAudioTrack(kind.slot, localPath)
                         is ImportKind.SpritePng -> NativeEngineBridge.nativeImportSpriteSheetPng(kind.entityId, localPath)
                         is ImportKind.SparrowXml -> NativeEngineBridge.nativeImportSparrowXml(kind.entityId, localPath)
+                        is ImportKind.CharacterConfig -> NativeEngineBridge.nativeImportCharacterConfig(kind.entityId, localPath)
+                        is ImportKind.StageConfig -> NativeEngineBridge.nativeImportStageConfig(localPath)
                         is ImportKind.Script -> NativeEngineBridge.nativeImportScript(localPath)
                         is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
                         is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
@@ -196,7 +198,7 @@ internal class StudioEditorDelegate(
                         is ImportKind.ArrowSvg -> reloadArrowBitmaps()
                         is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
                         is ImportKind.CharacterIcon -> reloadCustomIcons(uiState.value.snapshot.stageEntities)
-                        is ImportKind.SpritePng, is ImportKind.SparrowXml -> {
+                        is ImportKind.SpritePng, is ImportKind.SparrowXml, is ImportKind.CharacterConfig, is ImportKind.StageConfig -> {
                             bitmapLoader.evictRegionCache()
                             reloadEntityBitmaps(uiState.value.snapshot.stageEntities)
                         }
@@ -466,6 +468,29 @@ internal class StudioEditorDelegate(
     fun setSparrowBinding(entityId: String, animKind: String, prefix: String) {
         scope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeSetSparrowBinding(entityId, animKind, prefix))
+        }
+    }
+
+    fun setEntityAnimOffset(entityId: String, animKind: String, offsetX: Float, offsetY: Float) {
+        val ox = offsetX.coerceIn(-500f, 500f)
+        val oy = offsetY.coerceIn(-500f, 500f)
+        uiState.update { state ->
+            val updated = state.snapshot.stageEntities.map { ent ->
+                if (ent.id == entityId) {
+                    val nextMap = ent.animOffsets.toMutableMap()
+                    nextMap[animKind] = ox to oy
+                    ent.copy(animOffsets = nextMap)
+                } else {
+                    ent
+                }
+            }
+            state.copy(snapshot = state.snapshot.copy(stageEntities = updated))
+        }
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(
+                NativeEngineBridge.nativeSetEntityAnimOffset(entityId, animKind, ox, oy),
+                silentOk = true
+            )
         }
     }
 

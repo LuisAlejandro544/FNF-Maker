@@ -34,7 +34,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   ├── direct_formats.rs# Parsers directos `spritemap1.json` y TexturePacker Hash/Array
 │       │       │   ├── animate_model.rs # Árbol de líneas de tiempo, capas, fotogramas y símbolos de `Animation.json`
 │       │       │   └── animate_baker.rs # Rasterización por pose a atlas 4096×4096 empaquetado por estantes + tests
-│       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Oponente/Decoración) y Z-order
+│       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Oponente/Decoración), anim_offsets y Z-order
+│       │       ├── mod_descriptors.rs   # Parsers `.json`/`.xml` de personaje (`characters/*`) y escenario (`stages/*`: Psych/V-Slice/Codename)
 │       │       ├── svg_skin.rs          # Flechas, barra de vida, íconos, ratings (`SICK!`/`GOOD!`/`BAD`/`MISS`) y Note Splash SVG vía resvg
 │       │       ├── project.rs           # Modelo ModProject, `camera_system.lua` y `stage_events.lua` (`-- [STAGE_CUES_START/END]`)
 │       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
@@ -66,19 +67,19 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           ├── Cargo.toml               # Crate cdylib + rlib con jni, android_logger, serde_json e image
 │           ├── build.rs                 # Script de compilación limpio (sin C++ ni GameActivity)
 │           └── src/
-│               ├── lib.rs               # Exportaciones JNI (incl. `nativeSetCacheQuota`, `nativeExportModPackage`/`nativeImportModPackage`) y `HOT_COMPILE_PROGRESS`
+│               ├── lib.rs               # Exportaciones JNI (`nativeSetCacheQuota`, `nativeImportCharacterConfig`, `nativeSetEntityAnimOffset`, `nativeImportStageConfig`, `.mod`) y `HOT_COMPILE_PROGRESS`
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
-│                   ├── dto.rs           # DTOs hacia Kotlin (incluyendo métricas de caché WebP, audio y scripts pre-compilados)
-│                   ├── editor_ops.rs    # Operaciones de editor de chart (sync `stage_events.lua`), adopción de audio, escenario, scripts e íconos
-│                   ├── sprite_ops.rs    # Importación/adopción PNG/ASTC/WebP (salida lossless WebP), Sparrow XML, baking Animate y preview
+│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `character_config_path`, `anim_offsets` y métricas de caché)
+│                   ├── editor_ops.rs    # Operaciones de editor (`import_stage_config`, `stage_events.lua`), audio, escenario, scripts e íconos
+│                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP, Sparrow XML, Animate, `import_character_config` y `set_entity_anim_offset`
 │                   ├── persistence_ops.rs # Guardado/carga, adopción `assets/`, GC de huérfanos, audio `.bfaud` y export/import Vanilla `.mod`
 │                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
 │                       ├── mod.rs         # Coordinador `start/pause/stop_gameplay`, toque/LRU de caché y BFGP v2 (`152B`)
 │                       ├── hot_compile_ops.rs # `hot_compile_with_progress` en `compiled_cache/<projectId>/` con cuota y desalojo LRU multi-proyecto
 │                       ├── script_sync.rs # `tweens`, timers, `flash`, `active_player/opponent`, precarga/retiro y drenaje `ScriptCommand`
 │                       ├── simulation.rs  # Simulación por frame (`step_gameplay_internal`), lookahead 4s, flashes y notas/hold
-│                       └── packet_encoder.rs # Serialización JSON (`step_gameplay`) y binaria `BFGP` v2 (`152B` cabecera)
+│                       └── packet_encoder.rs # Serialización JSON (`step_gameplay`) y binaria `BFGP` v2 (`152B` cabecera) con `anim_offsets` por pose
 │
 ├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
@@ -118,7 +119,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   │   ├── ArrowSkinDialog.kt     # Modal para personalizar o restaurar flechas .svg (resvg)
 │                   │   ├── CharacterIconsDialog.kt# Modal para íconos normal/perdiendo (auto-split 2-frame) y barra de vida .svg
 │                   │   ├── ChartJsonDetailsDialog.kt # Modal para editar metadatos `chart.json`, `changeBPM` y eventos
-│                   │   └── ChartStepCueDialog.kt  # Modal en columna `#` para Swaps/RAM, Flashes (inicio->fin) y cambio de Personajes
+│                   │   ├── ChartStepCueDialog.kt  # Modal en columna `#` para Swaps/RAM, Flashes (inicio->fin) y cambio de Personajes
+│                   │   └── ModFilesGuideDialog.kt # Modal guía: qué archivo va en cada pestaña y en qué carpeta de mod suele estar
 │                   └── screens/
 │                       ├── HubScreen.kt           # Metadatos del mod, métricas y accesos directos modulares
 │                       ├── ProjectsScreen.kt      # Gestión, creación, copia, borrado e importación/exportación Vanilla (`.mod`) de proyectos
@@ -129,11 +131,11 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   ├── ChartToolsPanel.kt     # Panel izquierdo: importar/exportar, BPM, sustain, transporte hilo/Seguir y `stage_events.lua`
 │                       │   └── ChartTimelineGrid.kt   # Rejilla DAW continua + barra de transporte/scrubber y overlay 60 FPS del hilo reproductor
 │                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda en vivo
-│                       ├── SpriteLabScreen.kt     # Importador PNG/ASTC + XML/JSON, slots Miss, visor 1:1 nítido 24 FPS y botón Íconos/Vida
-│                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas (60 FPS)
+│                       ├── SpriteLabScreen.kt     # PNG/ASTC + XML/JSON, `Posición (.json/.xml)`, `Offset Pose X/Y`, `¿Dónde van?`, visor 1:1 y `Íconos / Vida`
+│                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas (60 FPS) + `Escena .json/.xml`
 │                       ├── stage/                 # Subcomponentes modulares del editor de escenario
 │                       │   ├── StageLiveTransformState.kt # Estado en vivo 60Hz aislado para entidades y marco de cámara
-│                       │   ├── StageLayersPanel.kt    # Panel izquierdo con capa `Cámara (.lua)` y lista virtualizada `LazyColumn`
+│                       │   ├── StageLayersPanel.kt    # Panel izquierdo con capa `Cámara (.lua)`, `Escena .json/.xml`, ayuda `?` y `LazyColumn`
 │                       │   ├── StageCanvasPreview.kt  # Lienzo 16:9 con marco de captura de cámara, culling y arrastre táctil
 │                       │   ├── StageCameraInspector.kt# Inspector de Cámara (beats/secciones, captura/zoom, cruceta y enlace .lua)
 │                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders y flipX
@@ -151,8 +153,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (incl. flashes, swaps, preload/retire, personaje)
-│       ├── engine-tools.ts              # Validación, sustain, hilo, ciclo RAM 4s, staging/cuota LRU/`.bfaud`, Vanilla `.mod` y BFGP v2 (`152B`)
-│       └── engine-tools.test.ts         # 35 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, sustain, hilo, ciclo RAM 4s, staging/cuota LRU/`.bfaud`, Vanilla `.mod`, descriptores `.json/.xml` y BFGP v2 (`152B`)
+│       └── engine-tools.test.ts         # 39 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

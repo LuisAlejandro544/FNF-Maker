@@ -72,7 +72,9 @@ fun StageEditorScreen(
         panStrength: Float,
         commitSave: Boolean
     ) -> Unit,
-    onOpenCameraScript: () -> Unit
+    onOpenCameraScript: () -> Unit,
+    onImportStageConfig: () -> Unit,
+    onOpenFilesGuide: () -> Unit
 ) {
     val entities = snapshot.stageEntities
     val stageCamera = snapshot.stageCamera
@@ -140,6 +142,8 @@ fun StageEditorScreen(
                 )
             },
             onAddEntity = onAddEntity,
+            onImportStageConfig = onImportStageConfig,
+            onOpenFilesGuide = onOpenFilesGuide,
             onToggleVisibility = { ent ->
                 onUpdateEntity(
                     ent.id,

@@ -163,6 +163,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(characterIconsDialogOpen = open) }
     }
 
+    fun setModFilesGuideDialogOpen(open: Boolean) {
+        _uiState.update { it.copy(modFilesGuideDialogOpen = open) }
+    }
+
     fun clearCharacterIcons(entityId: String) = editorDelegate.clearCharacterIcons(entityId)
 
     fun restoreDefaultHealthBarSvg() = editorDelegate.restoreDefaultHealthBarSvg()
@@ -236,6 +240,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setSparrowBinding(entityId: String, animKind: String, prefix: String) =
         editorDelegate.setSparrowBinding(entityId, animKind, prefix)
+
+    fun setEntityAnimOffset(entityId: String, animKind: String, offsetX: Float, offsetY: Float) =
+        editorDelegate.setEntityAnimOffset(entityId, animKind, offsetX, offsetY)
 
     suspend fun querySparrowFrame(entityId: String, animKind: String, elapsedSec: Float): SparrowFrameInfo =
         editorDelegate.querySparrowFrame(entityId, animKind, elapsedSec)

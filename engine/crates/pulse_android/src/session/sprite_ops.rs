@@ -1,12 +1,16 @@
 //! Archivo: engine/crates/pulse_android/src/session/sprite_ops.rs
 //! Propósito: Gestión de texturas `.png`/`.astc`, atlas Sparrow `.xml`, atlas JSON
-//! (TexturePacker, `spritemap1.json`, `Animation.json`) y horneado por software de rigs Adobe Animate.
+//! (TexturePacker, `spritemap1.json`, `Animation.json`), descriptores de personaje (`.json`/`.xml`),
+//! offsets por animación y horneado por software de rigs Adobe Animate.
 
 use super::{EngineSession, SparrowFrameJson, friendly_import_name, parse_anim_kind};
 use pulse_core::astc_loader::{
     is_astc_path, load_sprite_image, read_sprite_dimensions, save_lossless_webp,
 };
 use pulse_core::atlas_json::{DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
+use pulse_core::mod_descriptors::{
+    DetectedModDescriptor, parse_character_descriptor_str, parse_mod_descriptor_str,
+};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, SparrowAtlas};
 use std::path::PathBuf;
@@ -41,6 +45,9 @@ impl EngineSession {
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
             ent.image_path = Some(baked_path);
             ent.atlas = Some(baked_atlas);
+            if let Some(pending) = ent.pending_character_desc.clone() {
+                ent.apply_character_descriptor(&pending, false);
+            }
         }
 
         Ok(Some(format!(
@@ -152,6 +159,9 @@ impl EngineSession {
                         ent.animate_doc = None;
                         ent.animate_json_path = None;
                         ent.atlas = Some(atlas);
+                        if let Some(pending) = ent.pending_character_desc.clone() {
+                            ent.apply_character_descriptor(&pending, false);
+                        }
                         self.save_active_project_now();
                         return self.ok_response(format!(
                             "Atlas JSON cargado automáticamente: {} animaciones",
@@ -208,7 +218,17 @@ impl EngineSession {
                         Err(e) => self.err_response(e),
                     };
                 }
-                Err(e) => return self.err_response(e),
+                Err(atlas_err) => match parse_mod_descriptor_str(&raw) {
+                    Ok(DetectedModDescriptor::Character(_)) => {
+                        return self.import_character_config(entity_id, path);
+                    }
+                    Ok(DetectedModDescriptor::Stage(_)) => {
+                        return self.err_response(
+                            "Este JSON describe un escenario completo. Impórtalo en la pestaña Escena -> Escena .json/.xml.",
+                        );
+                    }
+                    Err(_) => return self.err_response(atlas_err),
+                },
             }
         }
 
@@ -221,6 +241,9 @@ impl EngineSession {
                     ent.animate_doc = None;
                     ent.animate_json_path = None;
                     ent.atlas = Some(atlas);
+                    if let Some(pending) = ent.pending_character_desc.clone() {
+                        ent.apply_character_descriptor(&pending, false);
+                    }
                     self.save_active_project_now();
                     self.ok_response(format!(
                         "XML Sparrow ensamblado automáticamente: {} animaciones",
@@ -230,8 +253,73 @@ impl EngineSession {
                     self.err_response("Objeto de escenario no encontrado")
                 }
             }
-            Err(e) => self.err_response(format!("Error XML Sparrow: {}", e)),
+            Err(sparrow_err) => match parse_mod_descriptor_str(&raw) {
+                Ok(DetectedModDescriptor::Character(_)) => {
+                    self.import_character_config(entity_id, path)
+                }
+                Ok(DetectedModDescriptor::Stage(_)) => self.err_response(
+                    "Este XML describe un escenario (<stage>). Impórtalo en la pestaña Escena -> Escena .json/.xml.",
+                ),
+                Err(_) => self.err_response(format!("Error XML Sparrow: {}", sparrow_err)),
+            },
         }
+    }
+
+    pub fn import_character_config(&mut self, entity_id: &str, path: PathBuf) -> String {
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                return self.err_response(format!(
+                    "No se pudo leer el descriptor de personaje: {}",
+                    e
+                ));
+            }
+        };
+
+        let desc = match parse_character_descriptor_str(&raw) {
+            Ok(d) => d,
+            Err(e) => return self.err_response(e),
+        };
+
+        let display_path = PathBuf::from(friendly_import_name(&path));
+        let Some(ent) = self.project.stage.find_mut(entity_id) else {
+            return self.err_response("Objeto de escenario no encontrado");
+        };
+
+        ent.character_config_path = Some(display_path);
+        let (mapped_anims, applied_offsets) = ent.apply_character_descriptor(&desc, true);
+        let final_x = ent.x;
+        let final_y = ent.y;
+        let format_label = desc.format_label;
+
+        self.save_active_project_now();
+        self.ok_response(format!(
+            "{} aplicado: pos ({:.0}, {:.0}), {} anims enlazadas, {} offsets",
+            format_label, final_x, final_y, mapped_anims, applied_offsets
+        ))
+    }
+
+    pub fn set_entity_anim_offset(
+        &mut self,
+        entity_id: &str,
+        kind_key: &str,
+        offset_x: f32,
+        offset_y: f32,
+    ) -> String {
+        let Some(kind) = parse_anim_kind(kind_key) else {
+            return self.err_response("Tipo de animación desconocido");
+        };
+        let Some(ent) = self.project.stage.find_mut(entity_id) else {
+            return self.err_response("Objeto de escenario no encontrado");
+        };
+        ent.set_anim_offset(kind, offset_x, offset_y);
+        self.save_active_project_now();
+        self.ok_response(format!(
+            "Offset {} ajustado a ({:.0}, {:.0})",
+            kind.label_es(),
+            offset_x,
+            offset_y
+        ))
     }
 
     pub fn set_sparrow_binding(&mut self, entity_id: &str, kind_key: &str, prefix: &str) -> String {

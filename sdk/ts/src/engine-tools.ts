@@ -2686,4 +2686,547 @@ export function validateVanillaHeader(bytes: Uint8Array): VanillaHeaderInfo {
   };
 }
 
+export type CharacterAnimKind =
+  | 'idle'
+  | 'left'
+  | 'down'
+  | 'up'
+  | 'right'
+  | 'missLeft'
+  | 'missDown'
+  | 'missUp'
+  | 'missRight';
+
+export interface ModCharacterAnimDescriptor {
+  animKey: CharacterAnimKind | null;
+  animNameRaw: string;
+  prefix: string;
+  fps: number;
+  looped: boolean;
+  offset: [number, number];
+  flipX: boolean | null;
+}
+
+export interface ModCharacterDescriptor {
+  kind: 'character';
+  formatLabel: string;
+  position: [number, number] | null;
+  isRelativePosition: boolean;
+  cameraPosition: [number, number] | null;
+  scale: number | null;
+  flipX: boolean | null;
+  animations: ModCharacterAnimDescriptor[];
+}
+
+export interface ModStagePropDescriptor {
+  name: string;
+  assetHint: string;
+  position: [number, number];
+  scale: number;
+  scrollFactor: number;
+  zIndex: number;
+  flipX: boolean;
+  alpha: number;
+}
+
+export interface ModStageDescriptor {
+  kind: 'stage';
+  formatLabel: string;
+  defaultZoom: number | null;
+  cameraStart: [number, number] | null;
+  playerPos: [number, number] | null;
+  opponentPos: [number, number] | null;
+  gfPos: [number, number] | null;
+  isBottomCenterCoords: boolean;
+  hideGf: boolean;
+  playerCamOffset: [number, number] | null;
+  opponentCamOffset: [number, number] | null;
+  gfCamOffset: [number, number] | null;
+  playerZ: number | null;
+  opponentZ: number | null;
+  gfZ: number | null;
+  props: ModStagePropDescriptor[];
+}
+
+export type DetectedModDescriptor = ModCharacterDescriptor | ModStageDescriptor;
+
+/**
+ * Mapea nombres estándar de animaciones (`idle`, `singLEFT`, `singUPmiss`, etc.)
+ * hacia las claves de animación de BeatForge Studio.
+ */
+export function mapAnimNameToKind(raw: string): CharacterAnimKind | null {
+  const clean = raw.trim().toLowerCase().replace(/[\s\-_]/g, '');
+  if (!clean) return null;
+
+  if (clean.includes('miss') || clean.includes('fallo')) {
+    if (clean.includes('left') || clean.includes('izq')) return 'missLeft';
+    if (clean.includes('down') || clean.includes('abajo')) return 'missDown';
+    if (clean.includes('up') || clean.includes('arriba')) return 'missUp';
+    if (clean.includes('right') || clean.includes('der')) return 'missRight';
+    return null;
+  }
+
+  if (
+    clean === 'idle' ||
+    clean === 'dance' ||
+    clean === 'danceleft' ||
+    clean === 'danceright' ||
+    clean === 'reposo' ||
+    clean.startsWith('idlealt')
+  ) {
+    return 'idle';
+  }
+  if (clean === 'singleft' || clean === 'left' || clean === 'izquierda' || clean.startsWith('singleft')) {
+    return 'left';
+  }
+  if (clean === 'singdown' || clean === 'down' || clean === 'abajo' || clean.startsWith('singdown')) {
+    return 'down';
+  }
+  if (clean === 'singup' || clean === 'up' || clean === 'arriba' || clean.startsWith('singup')) {
+    return 'up';
+  }
+  if (clean === 'singright' || clean === 'right' || clean === 'derecha' || clean.startsWith('singright')) {
+    return 'right';
+  }
+  return null;
+}
+
+/**
+ * Devuelve la posición base predeterminada de BeatForge (`1280x720`) para cada rol.
+ */
+export function defaultRoleAnchor(role: EntityRole): [number, number] {
+  switch (role) {
+    case 'background':
+      return [640, 360];
+    case 'decoration':
+      return [640, 430];
+    case 'opponent':
+      return [300, 420];
+    case 'player':
+      return [980, 430];
+  }
+}
+
+function clampFinite(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Convierte coordenadas de un `stage.json` / `stage.xml` hacia el lienzo virtual `1280x720`.
+ */
+export function normalizeStageWorldPos(
+  rawPos: [number, number],
+  role: EntityRole,
+  isBottomCenterCoords: boolean,
+): [number, number] {
+  const [rx, ry] = rawPos;
+  if (isBottomCenterCoords) {
+    return [clampFinite(rx, -400, 1700), clampFinite(ry * 0.56, 120, 680)];
+  }
+  const halfW = role === 'background' ? 640 : role === 'decoration' ? 120 : 140;
+  const halfH = role === 'background' ? 360 : role === 'decoration' ? 110 : 180;
+  return [
+    clampFinite(rx + halfW, -600, 2000),
+    clampFinite(ry + halfH, -400, 1200),
+  ];
+}
+
+/**
+ * Calcula la posición final de una entidad al aplicar `position` de un descriptor de personaje.
+ */
+export function applyCharacterPosition(
+  currentPos: [number, number],
+  charPos: [number, number],
+  isRelative: boolean,
+  role: EntityRole,
+): [number, number] {
+  const [px, py] = charPos;
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return currentPos;
+  if (!isRelative || (Math.abs(px) > 460 && py > 40)) {
+    return [clampFinite(px, -1000, 2600), clampFinite(py, -1000, 1800)];
+  }
+  const anchor = defaultRoleAnchor(role);
+  return [
+    clampFinite(anchor[0] + px * 0.55, -1000, 2600),
+    clampFinite(anchor[1] + py * 0.25, -1000, 1800),
+  ];
+}
+
+function parseDescriptorVec2(val: unknown): [number, number] | null {
+  if (!Array.isArray(val) || val.length < 2) return null;
+  const x = asFiniteNumber(val[0]);
+  const y = asFiniteNumber(val[1]);
+  if (x === null || y === null) return null;
+  return [x, y];
+}
+
+function parseXmlTagAttributes(attrChunk: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrRegex = /([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRegex.exec(attrChunk)) !== null) {
+    attrs[match[1]] = (match[2] ?? match[3] ?? '').trim();
+  }
+  return attrs;
+}
+
+function parseXmlBool(raw: string | undefined): boolean | null {
+  if (!raw) return null;
+  const low = raw.trim().toLowerCase();
+  if (low === 'true' || low === '1' || low === 'yes') return true;
+  if (low === 'false' || low === '0' || low === 'no') return false;
+  return null;
+}
+
+function parseCharacterJsonDescriptor(obj: Record<string, unknown>): ModCharacterDescriptor {
+  const animsRaw = Array.isArray(obj.animations) ? obj.animations : [];
+  const firstAnim =
+    animsRaw.length > 0 && animsRaw[0] && typeof animsRaw[0] === 'object'
+      ? (animsRaw[0] as Record<string, unknown>)
+      : null;
+  const isVslice =
+    'assetPath' in obj ||
+    'startingAnimation' in obj ||
+    (firstAnim !== null && ('prefix' in firstAnim || 'looped' in firstAnim));
+
+  const position = parseDescriptorVec2(obj.position) ?? parseDescriptorVec2(obj.offsets);
+  const cameraPosition = parseDescriptorVec2(obj.camera_position);
+  const rawScale = asFiniteNumber(obj.scale);
+  const scale = rawScale !== null ? clampFinite(rawScale, 0.05, 6.0) : null;
+  const flipX =
+    typeof obj.flip_x === 'boolean'
+      ? obj.flip_x
+      : typeof obj.flipX === 'boolean'
+        ? obj.flipX
+        : null;
+
+  const animations: ModCharacterAnimDescriptor[] = [];
+  for (const item of animsRaw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const aobj = item as Record<string, unknown>;
+    const animNameRaw =
+      typeof (aobj.anim ?? aobj.name) === 'string' ? String(aobj.anim ?? aobj.name).trim() : '';
+    const prefix =
+      typeof aobj.prefix === 'string'
+        ? aobj.prefix.trim()
+        : 'anim' in aobj && typeof aobj.name === 'string'
+          ? aobj.name.trim()
+          : animNameRaw;
+    if (!animNameRaw && !prefix) continue;
+
+    const fps = clampFinite(asFiniteNumber(aobj.fps) ?? 24, 1, 120);
+    const looped =
+      typeof aobj.loop === 'boolean'
+        ? aobj.loop
+        : typeof aobj.looped === 'boolean'
+          ? aobj.looped
+          : animNameRaw.toLowerCase().includes('idle');
+    const rawOff = parseDescriptorVec2(aobj.offsets) ?? [0, 0];
+    const offset: [number, number] = isVslice ? rawOff : [-rawOff[0], -rawOff[1]];
+    const animFlip = typeof aobj.flipX === 'boolean' ? aobj.flipX : null;
+
+    animations.push({
+      animKey: mapAnimNameToKind(animNameRaw),
+      animNameRaw,
+      prefix,
+      fps,
+      looped,
+      offset,
+      flipX: animFlip,
+    });
+  }
+
+  if (animations.length === 0 && position === null && scale === null && flipX === null) {
+    throw new Error('El JSON de personaje no contiene animaciones ni posición');
+  }
+
+  return {
+    kind: 'character',
+    formatLabel: isVslice ? 'Personaje JSON (V-Slice)' : 'Personaje JSON (Psych)',
+    position,
+    isRelativePosition: !isVslice,
+    cameraPosition,
+    scale,
+    flipX,
+    animations,
+  };
+}
+
+function parseStageJsonDescriptor(obj: Record<string, unknown>): ModStageDescriptor {
+  const chars =
+    obj.characters && typeof obj.characters === 'object' && !Array.isArray(obj.characters)
+      ? (obj.characters as Record<string, unknown>)
+      : null;
+  const rawZoom = asFiniteNumber(obj.defaultZoom ?? obj.cameraZoom);
+  const defaultZoom = rawZoom !== null ? clampFinite(rawZoom, 0.35, 2.5) : null;
+  const hideGf = typeof obj.hide_girlfriend === 'boolean' ? obj.hide_girlfriend : false;
+
+  let playerPos = parseDescriptorVec2(obj.boyfriend);
+  let opponentPos = parseDescriptorVec2(obj.opponent);
+  let gfPos = parseDescriptorVec2(obj.girlfriend);
+  let playerCamOffset = parseDescriptorVec2(obj.camera_boyfriend);
+  let opponentCamOffset = parseDescriptorVec2(obj.camera_opponent);
+  let gfCamOffset = parseDescriptorVec2(obj.camera_girlfriend);
+  let playerZ: number | null = null;
+  let opponentZ: number | null = null;
+  let gfZ: number | null = null;
+
+  if (chars) {
+    const bf = (chars.bf ?? chars.boyfriend) as Record<string, unknown> | undefined;
+    if (bf && typeof bf === 'object') {
+      playerPos = parseDescriptorVec2(bf.position) ?? playerPos;
+      playerCamOffset = parseDescriptorVec2(bf.cameraOffsets) ?? playerCamOffset;
+      const z = asFiniteNumber(bf.zIndex);
+      if (z !== null) playerZ = Math.round(z);
+    }
+    const dad = (chars.dad ?? chars.opponent) as Record<string, unknown> | undefined;
+    if (dad && typeof dad === 'object') {
+      opponentPos = parseDescriptorVec2(dad.position) ?? opponentPos;
+      opponentCamOffset = parseDescriptorVec2(dad.cameraOffsets) ?? opponentCamOffset;
+      const z = asFiniteNumber(dad.zIndex);
+      if (z !== null) opponentZ = Math.round(z);
+    }
+    const gf = (chars.gf ?? chars.girlfriend) as Record<string, unknown> | undefined;
+    if (gf && typeof gf === 'object') {
+      gfPos = parseDescriptorVec2(gf.position) ?? gfPos;
+      gfCamOffset = parseDescriptorVec2(gf.cameraOffsets) ?? gfCamOffset;
+      const z = asFiniteNumber(gf.zIndex);
+      if (z !== null) gfZ = Math.round(z);
+    }
+  }
+
+  const props: ModStagePropDescriptor[] = [];
+  const rawProps = Array.isArray(obj.props) ? obj.props : [];
+  rawProps.forEach((item, idx) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+    const pobj = item as Record<string, unknown>;
+    const name =
+      typeof pobj.name === 'string' && pobj.name.trim().length > 0 ? pobj.name.trim() : 'prop';
+    const assetHint = typeof pobj.assetPath === 'string' ? pobj.assetPath.trim() : '';
+    const position = parseDescriptorVec2(pobj.position) ?? [640, 360];
+    const scaleVec = parseDescriptorVec2(pobj.scale);
+    const scale = scaleVec
+      ? clampFinite((scaleVec[0] + scaleVec[1]) * 0.5, 0.05, 6.0)
+      : clampFinite(asFiniteNumber(pobj.scale) ?? 1.0, 0.05, 6.0);
+    const scrollVec = parseDescriptorVec2(pobj.scroll);
+    const scrollFactor = scrollVec ? clampFinite((scrollVec[0] + scrollVec[1]) * 0.5, 0, 2.0) : 1.0;
+    const zIndex = Math.round(asFiniteNumber(pobj.zIndex) ?? idx * 5);
+    const flipX = typeof pobj.flipX === 'boolean' ? pobj.flipX : false;
+    const alpha = clampFinite(asFiniteNumber(pobj.alpha) ?? 1.0, 0, 1.0);
+    props.push({ name, assetHint, position, scale, scrollFactor, zIndex, flipX, alpha });
+  });
+
+  return {
+    kind: 'stage',
+    formatLabel: chars !== null ? 'Escenario JSON (V-Slice)' : 'Escenario JSON (Psych)',
+    defaultZoom,
+    cameraStart: null,
+    playerPos,
+    opponentPos,
+    gfPos,
+    isBottomCenterCoords: chars !== null,
+    hideGf,
+    playerCamOffset,
+    opponentCamOffset,
+    gfCamOffset,
+    playerZ,
+    opponentZ,
+    gfZ,
+    props,
+  };
+}
+
+function parseCharacterXmlDescriptor(xml: string): ModCharacterDescriptor {
+  const rootMatch = xml.match(/<character\b([^>]*)>([\s\S]*?)<\/character>|<character\b([^>]*)\/\s*>/i);
+  if (!rootMatch) {
+    throw new Error('XML <character> mal formado');
+  }
+  const attrs = parseXmlTagAttributes(rootMatch[1] ?? rootMatch[3] ?? '');
+  const body = rootMatch[2] ?? '';
+  const x = asFiniteNumber(attrs.x);
+  const y = asFiniteNumber(attrs.y);
+  const position: [number, number] | null =
+    x !== null || y !== null ? [x ?? 0, y ?? 0] : null;
+  const cx = asFiniteNumber(attrs.camx);
+  const cy = asFiniteNumber(attrs.camy);
+  const cameraPosition: [number, number] | null =
+    cx !== null || cy !== null ? [cx ?? 0, cy ?? 0] : null;
+  const rawScale = asFiniteNumber(attrs.scale);
+  const scale = rawScale !== null ? clampFinite(rawScale, 0.05, 6.0) : null;
+  const flipX = parseXmlBool(attrs.flipX ?? attrs.flip_x);
+
+  const animations: ModCharacterAnimDescriptor[] = [];
+  const animRegex = /<anim\b([^>]*)\/?\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = animRegex.exec(body)) !== null) {
+    const a = parseXmlTagAttributes(m[1]);
+    const animNameRaw = a.name ?? '';
+    const prefix = a.anim ?? a.prefix ?? animNameRaw;
+    if (!animNameRaw && !prefix) continue;
+    const fps = clampFinite(asFiniteNumber(a.fps) ?? 24, 1, 120);
+    const looped = parseXmlBool(a.loop) ?? animNameRaw.toLowerCase().includes('idle');
+    const ox = asFiniteNumber(a.x) ?? 0;
+    const oy = asFiniteNumber(a.y) ?? 0;
+    animations.push({
+      animKey: mapAnimNameToKind(animNameRaw),
+      animNameRaw,
+      prefix,
+      fps,
+      looped,
+      offset: [-ox, -oy],
+      flipX: parseXmlBool(a.flipX),
+    });
+  }
+
+  if (animations.length === 0 && position === null && scale === null && flipX === null) {
+    throw new Error('El XML <character> no contiene animaciones ni atributos de posición');
+  }
+
+  return {
+    kind: 'character',
+    formatLabel: 'Personaje XML (Codename)',
+    position,
+    isRelativePosition: true,
+    cameraPosition,
+    scale,
+    flipX,
+    animations,
+  };
+}
+
+function parseStageXmlDescriptor(xml: string): ModStageDescriptor {
+  const rootMatch = xml.match(/<stage\b([^>]*)>([\s\S]*?)<\/stage>|<stage\b([^>]*)\/\s*>/i);
+  if (!rootMatch) {
+    throw new Error('XML <stage> mal formado');
+  }
+  const attrs = parseXmlTagAttributes(rootMatch[1] ?? rootMatch[3] ?? '');
+  const body = rootMatch[2] ?? '';
+  const rawZoom = asFiniteNumber(attrs.zoom);
+  const defaultZoom = rawZoom !== null ? clampFinite(rawZoom, 0.35, 2.5) : null;
+  const startX = asFiniteNumber(attrs.startCamPosX);
+  const startY = asFiniteNumber(attrs.startCamPosY);
+  const cameraStart: [number, number] | null =
+    startX !== null && startY !== null ? [startX, startY] : null;
+
+  let playerPos: [number, number] | null = null;
+  let opponentPos: [number, number] | null = null;
+  let gfPos: [number, number] | null = null;
+  let playerCamOffset: [number, number] | null = null;
+  let opponentCamOffset: [number, number] | null = null;
+  let gfCamOffset: [number, number] | null = null;
+  const props: ModStagePropDescriptor[] = [];
+
+  const elemRegex = /<([A-Za-z_][\w:-]*)\b([^>]*)\/?\s*>/g;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+  while ((m = elemRegex.exec(body)) !== null) {
+    const tag = m[1].toLowerCase();
+    const a = parseXmlTagAttributes(m[2]);
+    const x = asFiniteNumber(a.x);
+    const y = asFiniteNumber(a.y);
+    const pos: [number, number] | null = x !== null || y !== null ? [x ?? 0, y ?? 0] : null;
+    const cx = asFiniteNumber(a.camxoffset);
+    const cy = asFiniteNumber(a.camyoffset);
+    const camOff: [number, number] | null = cx !== null && cy !== null ? [cx, cy] : null;
+
+    if (tag === 'boyfriend' || tag === 'bf' || tag === 'player') {
+      playerPos = pos ?? playerPos;
+      playerCamOffset = camOff ?? playerCamOffset;
+    } else if (tag === 'dad' || tag === 'opponent') {
+      opponentPos = pos ?? opponentPos;
+      opponentCamOffset = camOff ?? opponentCamOffset;
+    } else if (tag === 'girlfriend' || tag === 'gf') {
+      gfPos = pos ?? gfPos;
+      gfCamOffset = camOff ?? gfCamOffset;
+    } else if (tag === 'sprite' || tag === 'solid' || tag === 'box') {
+      const sx = asFiniteNumber(a.scrollx) ?? 1.0;
+      const sy = asFiniteNumber(a.scrolly) ?? 1.0;
+      props.push({
+        name: a.name && a.name.length > 0 ? a.name : 'prop',
+        assetHint: a.sprite ?? '',
+        position: pos ?? [640, 360],
+        scale: clampFinite(asFiniteNumber(a.scale) ?? 1.0, 0.05, 6.0),
+        scrollFactor: clampFinite((sx + sy) * 0.5, 0, 2.0),
+        zIndex: idx * 5,
+        flipX: parseXmlBool(a.flipX) ?? false,
+        alpha: clampFinite(asFiniteNumber(a.alpha) ?? 1.0, 0, 1.0),
+      });
+    }
+    idx += 1;
+  }
+
+  return {
+    kind: 'stage',
+    formatLabel: 'Escenario XML (Codename)',
+    defaultZoom,
+    cameraStart,
+    playerPos,
+    opponentPos,
+    gfPos,
+    isBottomCenterCoords: false,
+    hideGf: false,
+    playerCamOffset,
+    opponentCamOffset,
+    gfCamOffset,
+    playerZ: null,
+    opponentZ: null,
+    gfZ: null,
+    props,
+  };
+}
+
+/**
+ * Autodetecta e interpreta un archivo `.json` o `.xml` de configuración de personaje o escenario
+ * (`characters/*.json|xml`, `stages/*.json|xml`), espejo de `pulse_core::mod_descriptors`.
+ */
+export function parseModDescriptor(raw: string): DetectedModDescriptor {
+  const trimmed = raw.replace(/^\uFEFF/, '').trim();
+  if (!trimmed) {
+    throw new Error('El archivo de configuración está vacío');
+  }
+  if (trimmed.startsWith('{')) {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('El JSON debe tener un objeto raíz');
+    }
+    const obj = parsed as Record<string, unknown>;
+    const looksStage =
+      'boyfriend' in obj ||
+      'opponent' in obj ||
+      'girlfriend' in obj ||
+      'characters' in obj ||
+      Array.isArray(obj.props) ||
+      'defaultZoom' in obj ||
+      'cameraZoom' in obj;
+    if (looksStage) {
+      return parseStageJsonDescriptor(obj);
+    }
+    const looksChar =
+      Array.isArray(obj.animations) ||
+      'camera_position' in obj ||
+      'healthicon' in obj ||
+      'sing_duration' in obj ||
+      ('position' in obj && 'image' in obj) ||
+      'startingAnimation' in obj;
+    if (looksChar) {
+      return parseCharacterJsonDescriptor(obj);
+    }
+    throw new Error(
+      'El JSON no coincide con un descriptor de personaje (animations/position) ni de escenario (boyfriend/opponent/characters/props)',
+    );
+  }
+  if (trimmed.startsWith('<')) {
+    if (/<character\b/i.test(trimmed)) {
+      return parseCharacterXmlDescriptor(trimmed);
+    }
+    if (/<stage\b/i.test(trimmed)) {
+      return parseStageXmlDescriptor(trimmed);
+    }
+    throw new Error('Etiqueta raíz XML no es <character> ni <stage>');
+  }
+  throw new Error('Formato no reconocido (se esperaba JSON o XML de personaje/escenario)');
+}
+
+
 

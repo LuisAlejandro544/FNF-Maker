@@ -166,6 +166,20 @@ object NativeEngineBridge {
     ): String
 
     @JvmStatic
+    external fun nativeImportCharacterConfig(entityId: String, path: String): String
+
+    @JvmStatic
+    external fun nativeSetEntityAnimOffset(
+        entityId: String,
+        animKind: String,
+        offsetX: Float,
+        offsetY: Float
+    ): String
+
+    @JvmStatic
+    external fun nativeImportStageConfig(path: String): String
+
+    @JvmStatic
     external fun nativeAddStageEntity(name: String, role: String): String
 
     @JvmStatic
