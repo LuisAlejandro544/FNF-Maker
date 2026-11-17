@@ -80,6 +80,14 @@ import {
   normalizeStageWorldPos,
   applyCharacterPosition,
   parseModDescriptor,
+  parseSpecialNoteType,
+  noteSpecialTypeToCode,
+  noteSpecialCodeToType,
+  isHazardXNote,
+  normalizeRenderBackendKind,
+  matchArrowSparrowSubTexture,
+  decodeBfgpExtensionFlags,
+  decodeBfgpNoteKindCode,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -1522,6 +1530,56 @@ test('UI Blackout helpers support intro blackout keeping 3-2-1-GO visible and ex
   );
   assert.equal(luaOpt.discardedLoops, 0);
   assert.ok(luaOpt.optimizedSource.includes('tweenScreenBlackout'));
+});
+
+test('parseSpecialNoteType and note codes normalize hazard X, dodge, alt and no_anim notes', () => {
+  assert.equal(parseSpecialNoteType(''), 'default');
+  assert.equal(parseSpecialNoteType('Hurt Note'), 'hurt');
+  assert.equal(parseSpecialNoteType('mine'), 'hurt');
+  assert.equal(parseSpecialNoteType('Kill_Mine'), 'instakill');
+  assert.equal(parseSpecialNoteType('Dodge Note'), 'dodge');
+  assert.equal(parseSpecialNoteType('Alt Animation'), 'alt');
+  assert.equal(parseSpecialNoteType('No Animation'), 'no_anim');
+
+  assert.equal(isHazardXNote('hurt'), true);
+  assert.equal(isHazardXNote('instakill'), true);
+  assert.equal(isHazardXNote('dodge'), false);
+  assert.equal(isHazardXNote('default'), false);
+
+  for (const kind of ['default', 'hurt', 'instakill', 'dodge', 'alt', 'no_anim'] as const) {
+    const code = noteSpecialTypeToCode(kind);
+    assert.equal(noteSpecialCodeToType(code), kind);
+  }
+});
+
+test('matchArrowSparrowSubTexture classifies standard mod NOTE_assets.xml entries and skips holds/confirm', () => {
+  assert.deepEqual(matchArrowSparrowSubTexture('purple0000'), { kind: 'arrow', direction: 'left' });
+  assert.deepEqual(matchArrowSparrowSubTexture('blue0000'), { kind: 'arrow', direction: 'down' });
+  assert.deepEqual(matchArrowSparrowSubTexture('green0000'), { kind: 'arrow', direction: 'up' });
+  assert.deepEqual(matchArrowSparrowSubTexture('red0000'), { kind: 'arrow', direction: 'right' });
+  assert.deepEqual(matchArrowSparrowSubTexture('arrowLEFT0000'), { kind: 'receptor', direction: 'left' });
+  assert.deepEqual(matchArrowSparrowSubTexture('hurt0000'), { kind: 'hurt' });
+  assert.equal(matchArrowSparrowSubTexture('left confirm0000'), null);
+  assert.equal(matchArrowSparrowSubTexture('pruple end hold0000'), null);
+  assert.equal(matchArrowSparrowSubTexture('blue hold piece0000'), null);
+});
+
+test('decodeBfgpExtensionFlags, noteKindCode and normalizeRenderBackendKind preserve BFGP v2 and GPU contract', () => {
+  const flags = (1 | (1 << 9) | (2 << 10) | (1 << 12) | (1 << 13)) >>> 0;
+  const ext = decodeBfgpExtensionFlags(flags);
+  assert.equal(ext.gameOver, true);
+  assert.equal(ext.gameOverPhase, 2);
+  assert.equal(ext.botplay, true);
+  assert.equal(ext.practiceMode, true);
+
+  const noteFlags = (3 & 0x3) | (1 << 2) | (2 << 4);
+  assert.equal(decodeBfgpNoteKindCode(noteFlags), 2);
+  assert.equal(noteSpecialCodeToType(decodeBfgpNoteKindCode(noteFlags)), 'instakill');
+
+  assert.equal(normalizeRenderBackendKind('gles2'), 'gles2');
+  assert.equal(normalizeRenderBackendKind('OpenGL_ES3'), 'gles3');
+  assert.equal(normalizeRenderBackendKind('vulkan'), 'vulkan');
+  assert.equal(normalizeRenderBackendKind('unknown'), 'canvas2d');
 });
 
 

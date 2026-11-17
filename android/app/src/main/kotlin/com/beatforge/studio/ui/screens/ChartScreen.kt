@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.beatforge.studio.AudioPreviewTransportState
 import com.beatforge.studio.ImportKind
+import com.beatforge.studio.NoteSpecialType
 import com.beatforge.studio.ProjectSnapshot
 import com.beatforge.studio.ui.popups.ChartJsonDetailsDialog
 import com.beatforge.studio.ui.popups.ChartStepCueDialog
@@ -63,12 +64,13 @@ fun ChartScreen(
     onOpenUiBlackoutScript: () -> Unit,
     onAddSection: (mustHit: Boolean) -> Unit,
     onToggleSectionMustHit: (secIndex: Int) -> Unit,
-    onToggleChartNote: (secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) -> Unit,
+    onToggleChartNote: (secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int, noteType: String) -> Unit,
     onSetAudioPreviewTransport: (play: Boolean, seekMs: Double) -> Unit,
     onReadAudioPreviewState: suspend () -> AudioPreviewTransportState
 ) {
     val chart = snapshot.chart
     var selectedSustainSteps by remember { mutableIntStateOf(0) }
+    var selectedNoteType by remember { mutableStateOf(NoteSpecialType.Normal) }
     var selectedSectionIdx by remember { mutableIntStateOf(0) }
     var showDetailsDialog by remember { mutableStateOf(false) }
     var activeCueGlobalStep by remember { mutableStateOf<Int?>(null) }
@@ -221,6 +223,7 @@ fun ChartScreen(
             chart = chart,
             activeSection = activeSection,
             selectedSustainSteps = selectedSustainSteps,
+            selectedNoteType = selectedNoteType,
             selectedSectionIdx = selectedSectionIdx,
             sectionPositions = sectionPositions,
             audioPreviewPlaying = audioPreviewPlaying,
@@ -232,6 +235,7 @@ fun ChartScreen(
             onRestoreDemoChart = onRestoreDemoChart,
             onSetChartBpm = onSetChartBpm,
             onSelectSustainSteps = { selectedSustainSteps = it },
+            onSelectNoteType = { selectedNoteType = it },
             onPlayOrPausePlayhead = playOrPausePlayhead,
             onPlayFromSection = playFromMs,
             onRewindPlayheadToStart = rewindToStart,
@@ -265,7 +269,9 @@ fun ChartScreen(
             onSeekPlayheadAndPauseOrKeep = seekPlayheadToStepMs,
             onToggleSectionMustHit = onToggleSectionMustHit,
             onSelectSection = { selectedSectionIdx = it },
-            onToggleChartNote = onToggleChartNote,
+            onToggleChartNote = { sec, step, col, sustain ->
+                onToggleChartNote(sec, step, col, sustain, selectedNoteType.key)
+            },
             onOpenStepCueDialog = { row -> activeCueGlobalStep = row.globalStepIndex },
             modifier = Modifier.weight(0.69f)
         )

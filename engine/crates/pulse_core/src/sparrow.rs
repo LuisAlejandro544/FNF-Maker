@@ -47,6 +47,9 @@ pub enum CharacterAnimKind {
     MissDown,
     MissUp,
     MissRight,
+    DeathStart,
+    DeathLoop,
+    DeathConfirm,
 }
 
 impl CharacterAnimKind {
@@ -69,6 +72,9 @@ impl CharacterAnimKind {
             CharacterAnimKind::MissDown => "Fallo Abajo",
             CharacterAnimKind::MissUp => "Fallo Arriba",
             CharacterAnimKind::MissRight => "Fallo Derecha",
+            CharacterAnimKind::DeathStart => "Muerte Inicio (Dies)",
+            CharacterAnimKind::DeathLoop => "Muerte Bucle (Loop)",
+            CharacterAnimKind::DeathConfirm => "Muerte Reintentar (Confirm)",
         }
     }
 }
@@ -189,8 +195,17 @@ impl SparrowAtlas {
         for prefix in &prefixes {
             let low = prefix.to_ascii_lowercase();
             let is_miss = low.contains("miss") || low.contains("fallo");
+            let is_death = low.contains("death") || low.contains("dies") || low.contains("gameover") || low.contains("muerte");
 
-            if !is_miss && (low.contains("idle") || low.contains("dance") || low.contains("reposo")) {
+            if is_death {
+                if low.contains("confirm") || low.contains("retry") || low.contains("reintent") {
+                    bindings.entry(CharacterAnimKind::DeathConfirm).or_insert_with(|| (*prefix).clone());
+                } else if low.contains("loop") || low.contains("bucle") || low.contains("dead") {
+                    bindings.entry(CharacterAnimKind::DeathLoop).or_insert_with(|| (*prefix).clone());
+                } else {
+                    bindings.entry(CharacterAnimKind::DeathStart).or_insert_with(|| (*prefix).clone());
+                }
+            } else if !is_miss && (low.contains("idle") || low.contains("dance") || low.contains("reposo")) {
                 bindings.entry(CharacterAnimKind::Idle).or_insert_with(|| (*prefix).clone());
             } else if low.contains("left") || low.contains("izq") {
                 let kind = if is_miss { CharacterAnimKind::MissLeft } else { CharacterAnimKind::Left };
@@ -225,6 +240,9 @@ impl SparrowAtlas {
                 CharacterAnimKind::MissDown => self.bindings.get(&CharacterAnimKind::Down),
                 CharacterAnimKind::MissUp => self.bindings.get(&CharacterAnimKind::Up),
                 CharacterAnimKind::MissRight => self.bindings.get(&CharacterAnimKind::Right),
+                CharacterAnimKind::DeathLoop => self.bindings.get(&CharacterAnimKind::DeathStart),
+                CharacterAnimKind::DeathConfirm => self.bindings.get(&CharacterAnimKind::DeathLoop)
+                    .or_else(|| self.bindings.get(&CharacterAnimKind::DeathStart)),
                 _ => None,
             })
             .or_else(|| self.bindings.get(&CharacterAnimKind::Idle))

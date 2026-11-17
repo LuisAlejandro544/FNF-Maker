@@ -102,6 +102,13 @@ private val MOD_GUIDE_ENTRIES = listOf(
         whereInStudio = "Pestaña Scripts -> Importar",
         whereInModFolders = "scripts/, mods/scripts/, data/<cancion>/script.lua o custom_events/",
         note = "Ejecutados en Lua 5.4, oxc TypeScript o QuickJS-NG."
+    ),
+    ModFileGuideEntry(
+        title = "9. Skin de Flechas de Mods (.png + .xml) y Flechas Especiales",
+        accent = StudioColors.AccentCoral,
+        whereInStudio = "Barra lateral -> Skin -> 1. Hoja .PNG y 2. Atlas .XML",
+        whereInModFolders = "images/NOTE_assets.png + images/NOTE_assets.xml, mods/images/NOTE_assets.*, assets/shared/images/NOTE_assets.* o images/noteSkins/",
+        note = "El motor recorta automáticamente las 4 direcciones (purple/blue/green/red o left/down/up/right). Las notas peligrosas (Hurt / Instakill) muestran la flecha SVG con una X."
     )
 )
 

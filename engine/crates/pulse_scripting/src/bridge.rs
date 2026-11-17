@@ -307,6 +307,7 @@ pub enum ScriptCommand {
         entity_id: String,
         dispose_old: bool,
     },
+    TriggerGameOver,
 }
 
 /// Estado compartido accesible por todas las funciones nativas registradas en Lua y JS.
@@ -333,6 +334,7 @@ pub struct ScriptHostState {
     pub arrows_visible: Mutex<bool>,
     pub arrows_opacity: Mutex<f32>,
     pub screen_blackout_alpha: Mutex<f32>,
+    pub game_over: Mutex<bool>,
     pub entity_positions: Mutex<HashMap<String, (f32, f32)>>,
     pub entity_props: Mutex<HashMap<String, EntityPropSnapshot>>,
     pub strum_props: Mutex<[StrumPropSnapshot; 8]>,
@@ -365,6 +367,7 @@ impl Default for ScriptHostState {
             arrows_visible: Mutex::new(true),
             arrows_opacity: Mutex::new(1.0),
             screen_blackout_alpha: Mutex::new(0.0),
+            game_over: Mutex::new(false),
             entity_positions: Mutex::new(HashMap::new()),
             entity_props: Mutex::new(HashMap::new()),
             strum_props: Mutex::new([StrumPropSnapshot::default(); 8]),

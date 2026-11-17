@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
+    <!-- Preparación gráfica modular: OpenGL ES 2.0/3.x y Vulkan opcionales (sin restringir instalación) -->
+    <uses-feature android:glEsVersion="0x00020000" android:required="false" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:required="false" />
+    <uses-feature android:name="android.hardware.vulkan.level" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

@@ -111,6 +111,22 @@ pub fn map_anim_name_to_kind(raw: &str) -> Option<CharacterAnimKind> {
         return Some(CharacterAnimKind::Idle);
     }
 
+    if clean == "firstdeath"
+        || clean == "deathstart"
+        || clean == "death"
+        || clean == "dies"
+        || clean == "muerte"
+        || clean == "muertestart"
+    {
+        return Some(CharacterAnimKind::DeathStart);
+    }
+    if clean == "deathloop" || clean == "dead" || clean == "muerteloop" || clean == "muertebucle" {
+        return Some(CharacterAnimKind::DeathLoop);
+    }
+    if clean == "deathconfirm" || clean == "retry" || clean == "muerteconfirm" || clean == "reintentar" {
+        return Some(CharacterAnimKind::DeathConfirm);
+    }
+
     if clean == "singleft" || clean == "left" || clean == "izquierda" || clean.starts_with("singleft") {
         return Some(CharacterAnimKind::Left);
     }

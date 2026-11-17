@@ -214,6 +214,7 @@ pub(super) fn sync_script_host_state(
     arrows_visible: bool,
     arrows_opacity: f32,
     screen_blackout_alpha: f32,
+    game_over: bool,
 ) {
     *state.song_pos_ms.lock() = song_pos_ms;
     *state.current_bpm.lock() = active_bpm;
@@ -236,6 +237,7 @@ pub(super) fn sync_script_host_state(
     *state.arrows_visible.lock() = arrows_visible;
     *state.arrows_opacity.lock() = arrows_opacity;
     *state.screen_blackout_alpha.lock() = screen_blackout_alpha;
+    *state.game_over.lock() = game_over;
 
     {
         let mut s_lock = state.strum_props.lock();
@@ -487,12 +489,14 @@ pub(super) fn drain_and_apply_script_commands(
             }
             ScriptCommand::SetHealth(hp) => {
                 if hp.is_finite() {
-                    session.health = hp.clamp(0.0, 1.0);
+                    let min_hp = if session.practice_mode { 0.02 } else { 0.0 };
+                    session.health = hp.clamp(min_hp, 1.0);
                 }
             }
             ScriptCommand::AddHealth(delta) => {
                 if delta.is_finite() {
-                    session.health = (session.health + delta).clamp(0.0, 1.0);
+                    let min_hp = if session.practice_mode { 0.02 } else { 0.0 };
+                    session.health = (session.health + delta).clamp(min_hp, 1.0);
                 }
             }
             ScriptCommand::SetScore(val) => {
@@ -915,6 +919,11 @@ pub(super) fn drain_and_apply_script_commands(
                             next_ent.set_opacity(1.0);
                         }
                     }
+                }
+            }
+            ScriptCommand::TriggerGameOver => {
+                if !session.practice_mode {
+                    super::enter_game_over(session, audio_engine);
                 }
             }
             ScriptCommand::Log(msg) => {

@@ -50,6 +50,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.ui.components.StudioNavRail
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
 import com.beatforge.studio.ui.popups.CharacterIconsDialog
@@ -59,6 +60,7 @@ import com.beatforge.studio.ui.screens.ChartScreen
 import com.beatforge.studio.ui.screens.GameplayScreen
 import com.beatforge.studio.ui.screens.HotCompileScreen
 import com.beatforge.studio.ui.screens.HubScreen
+import com.beatforge.studio.ui.screens.ProjectLoadingScreen
 import com.beatforge.studio.ui.screens.ProjectsScreen
 import com.beatforge.studio.ui.screens.ScriptStudioScreen
 import com.beatforge.studio.ui.screens.SpriteLabScreen
@@ -201,6 +203,73 @@ private fun BeatForgeRootContent(
             return@Row
         }
 
+        if (state.isLoadingProject) {
+            ProjectLoadingScreen(
+                projectName = state.loadingProjectName,
+                phase = state.loadingPhase,
+                progress = state.loadingProgress,
+                gfxCapabilities = state.gfxCapabilities,
+                preferredBackend = state.snapshot.preferredRenderBackend
+            )
+            return@Row
+        }
+
+        if (!state.hasSelectedProject) {
+            Box(Modifier.fillMaxSize()) {
+                ProjectsScreen(
+                    projects = state.projects,
+                    activeProjectName = state.snapshot.name,
+                    isLobbyMode = true,
+                    gfxCapabilities = state.gfxCapabilities,
+                    activeRenderBackend = state.snapshot.preferredRenderBackend,
+                    onReturnToLobby = null,
+                    onCreateProject = { name, author -> viewModel.createProject(name, author) },
+                    onImportModPackage = { viewModel.requestImport(ImportKind.ModPackage) },
+                    onOpenProject = { id -> viewModel.openProject(id) },
+                    onExportProject = { id, name -> viewModel.requestExportModPackage(id, name) },
+                    onDuplicateProject = { id -> viewModel.duplicateProject(id) },
+                    onDeleteProject = { id -> viewModel.deleteProject(id) }
+                )
+
+                val lobbyBanner = state.statusBanner
+                if (!lobbyBanner.isNullOrBlank()) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(12.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = StudioColors.BgElevated,
+                        border = BorderStroke(
+                            1.dp,
+                            if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (state.statusIsError) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = if (state.statusIsError) StudioColors.AccentCoral else StudioColors.AccentEmerald,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(lobbyBanner, color = StudioColors.TextPrimary, fontSize = 12.sp)
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(
+                                onClick = { viewModel.dismissBanner() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Rounded.Close, "Cerrar", tint = StudioColors.TextMuted, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            return@Row
+        }
+
         if (state.currentScreen != StudioScreen.Gameplay && state.currentScreen != StudioScreen.HotCompile) {
             StudioNavRail(
                 currentScreen = state.currentScreen,
@@ -231,6 +300,8 @@ private fun BeatForgeRootContent(
                 when (state.currentScreen) {
                     StudioScreen.Hub -> HubScreen(
                         snapshot = state.snapshot,
+                        gfxCapabilities = state.gfxCapabilities,
+                        onSelectRenderBackend = { kind -> viewModel.setPreferredRenderBackend(kind) },
                         onUpdateMeta = { name, author, downscroll, controlMode, offset, speed ->
                             viewModel.updateProjectMeta(name, author, downscroll, controlMode, offset, speed)
                         },
@@ -242,6 +313,10 @@ private fun BeatForgeRootContent(
                     StudioScreen.Projects -> ProjectsScreen(
                         projects = state.projects,
                         activeProjectName = state.snapshot.name,
+                        isLobbyMode = false,
+                        gfxCapabilities = state.gfxCapabilities,
+                        activeRenderBackend = state.snapshot.preferredRenderBackend,
+                        onReturnToLobby = { viewModel.returnToProjectMenu() },
                         onCreateProject = { name, author -> viewModel.createProject(name, author) },
                         onImportModPackage = { viewModel.requestImport(ImportKind.ModPackage) },
                         onOpenProject = { id -> viewModel.openProject(id) },
@@ -271,8 +346,8 @@ private fun BeatForgeRootContent(
                         onOpenUiBlackoutScript = { viewModel.openUiBlackoutScriptInStudio() },
                         onAddSection = { viewModel.addChartSection(it) },
                         onToggleSectionMustHit = { viewModel.toggleSectionMustHit(it) },
-                        onToggleChartNote = { sec, step, col, sustain ->
-                            viewModel.toggleChartNote(sec, step, col, sustain)
+                        onToggleChartNote = { sec, step, col, sustain, noteType ->
+                            viewModel.toggleChartNote(sec, step, col, sustain, noteType)
                         },
                         onSetAudioPreviewTransport = { play, seekMs ->
                             viewModel.setAudioPreviewTransport(play, seekMs)
@@ -360,10 +435,12 @@ private fun BeatForgeRootContent(
                     StudioScreen.Gameplay -> {
                         val playerEntId = state.snapshot.stageEntities.firstOrNull { it.role == "player" }?.id
                         val oppEntId = state.snapshot.stageEntities.firstOrNull { it.role == "opponent" }?.id
+                        val backendLabel = RenderBackendKind.fromKey(state.snapshot.preferredRenderBackend).shortBadge
                         GameplayScreen(
                             frameState = viewModel.gameplayFrameState,
                             arrowBitmaps = state.arrowBitmaps,
                             receptorBitmaps = state.receptorBitmaps,
+                            hurtArrowXBitmap = state.hurtArrowXBitmap,
                             healthBarBitmap = state.healthBarBitmap,
                             ratingBitmaps = state.ratingBitmaps,
                             noteSplashBitmap = state.noteSplashBitmap,
@@ -376,12 +453,23 @@ private fun BeatForgeRootContent(
                             defaultOpponentNormalIcon = state.defaultOpponentNormalIcon,
                             defaultOpponentLosingIcon = state.defaultOpponentLosingIcon,
                             compiledBitmapsByIndex = state.compiledBitmapsByIndex,
+                            debugShowRam = state.debugShowRam,
+                            debugShowTelemetry = state.debugShowTelemetry,
+                            debugBotplay = state.debugBotplay,
+                            debugPracticeMode = state.debugPracticeMode,
+                            debugHideHud = state.debugHideHud,
+                            renderBackendLabel = backendLabel,
                             onStepFrame = { dt, pressed, justPressed ->
                                 viewModel.stepGameplayFrame(dt, pressed, justPressed)
                             },
                             onChangeControlMode = { mode -> viewModel.updateControlMode(mode) },
                             onSetPaused = { viewModel.setGameplayPaused(it) },
                             onRestart = { viewModel.restartGameplay() },
+                            onTriggerGameOver = { viewModel.triggerGameOver() },
+                            onConfirmGameOverRetry = { viewModel.confirmGameOverRetry() },
+                            onUpdateDebug = { ram, tel, bot, prac, hide ->
+                                viewModel.setGameplayDebugOptions(ram, tel, bot, prac, hide)
+                            },
                             onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }
                         )
                     }
@@ -431,10 +519,20 @@ private fun BeatForgeRootContent(
         ArrowSkinDialog(
             skinName = state.snapshot.arrowSkinName,
             customPaths = state.snapshot.customArrowPaths,
+            hasCustomPngArrowSkin = state.snapshot.hasCustomPngArrowSkin,
+            stagedPngPath = state.stagedArrowAtlasPngPath,
+            stagedXmlPath = state.stagedArrowAtlasXmlPath,
             arrowBitmaps = state.arrowBitmaps,
+            hurtArrowXBitmap = state.hurtArrowXBitmap,
             onImportSvg = { dir -> viewModel.requestImport(ImportKind.ArrowSvg(dir)) },
+            onImportArrowAtlasPng = { viewModel.requestImport(ImportKind.ArrowAtlasPng) },
+            onImportArrowAtlasXml = { viewModel.requestImport(ImportKind.ArrowAtlasXml) },
+            onClearStagedArrowAtlas = { viewModel.clearStagedArrowAtlas() },
             onRestoreDefault = { viewModel.restoreDefaultArrowSvg() },
-            onDismiss = { viewModel.setArrowSkinDialogOpen(false) }
+            onDismiss = {
+                viewModel.clearStagedArrowAtlas()
+                viewModel.setArrowSkinDialogOpen(false)
+            }
         )
     }
 

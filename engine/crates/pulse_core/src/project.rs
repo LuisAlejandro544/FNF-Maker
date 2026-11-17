@@ -8,6 +8,7 @@
 //! - Skin de flechas SVG seleccionada y opciones de gameplay (downscroll, offset Oboe)
 
 use crate::chart::ChartData;
+use crate::gfx_backend::RenderBackendKind;
 use crate::stage::{CameraFollowMode, StageCameraConfig, StageScene};
 use crate::svg_skin::ArrowSkinSet;
 use serde::{Deserialize, Serialize};
@@ -1085,6 +1086,8 @@ pub struct ModProject {
     pub control_mode: MobileControlMode,
     pub audio_offset_ms: f64,
     pub scroll_speed_override: Option<f64>,
+    #[serde(default)]
+    pub preferred_render_backend: RenderBackendKind,
 }
 
 impl ModProject {
@@ -1184,6 +1187,7 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             control_mode: MobileControlMode::TapArrows,
             audio_offset_ms: 0.0,
             scroll_speed_override: None,
+            preferred_render_backend: RenderBackendKind::Canvas2d,
         }
     }
 

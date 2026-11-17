@@ -306,21 +306,30 @@ impl ModScriptRuntime {
         }
     }
 
-    pub fn call_on_note_hit(&mut self, lane: i32, is_player: bool) {
+    pub fn call_on_note_hit(&mut self, lane: i32, is_player: bool, note_type: &str) {
         for vm in &mut self.lua_vms {
-            vm.call_note_event("onNoteHit", lane, is_player);
+            vm.call_note_event("onNoteHit", lane, is_player, note_type);
         }
         if let Some(worker) = &self.js_worker {
-            worker.call_note_event("onNoteHit", lane, is_player);
+            worker.call_note_event("onNoteHit", lane, is_player, note_type.to_string());
         }
     }
 
-    pub fn call_on_note_miss(&mut self, lane: i32, is_player: bool) {
+    pub fn call_on_note_miss(&mut self, lane: i32, is_player: bool, note_type: &str) {
         for vm in &mut self.lua_vms {
-            vm.call_note_event("onNoteMiss", lane, is_player);
+            vm.call_note_event("onNoteMiss", lane, is_player, note_type);
         }
         if let Some(worker) = &self.js_worker {
-            worker.call_note_event("onNoteMiss", lane, is_player);
+            worker.call_note_event("onNoteMiss", lane, is_player, note_type.to_string());
+        }
+    }
+
+    pub fn call_on_game_over(&mut self) {
+        for vm in &mut self.lua_vms {
+            vm.call_void("onGameOver");
+        }
+        if let Some(worker) = &self.js_worker {
+            worker.call_void("onGameOver");
         }
     }
 

@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import com.beatforge.studio.ChartSectionSnapshot
 import com.beatforge.studio.ChartSnapshot
 import com.beatforge.studio.ImportKind
+import com.beatforge.studio.NoteSpecialType
 import com.beatforge.studio.ui.theme.StudioColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -64,6 +65,7 @@ fun ChartToolsPanel(
     chart: ChartSnapshot,
     activeSection: ChartSectionSnapshot?,
     selectedSustainSteps: Int,
+    selectedNoteType: NoteSpecialType,
     selectedSectionIdx: Int,
     sectionPositions: Map<Int, Int>,
     audioPreviewPlaying: Boolean,
@@ -75,6 +77,7 @@ fun ChartToolsPanel(
     onRestoreDemoChart: () -> Unit,
     onSetChartBpm: (Double) -> Unit,
     onSelectSustainSteps: (Int) -> Unit,
+    onSelectNoteType: (NoteSpecialType) -> Unit,
     onPlayOrPausePlayhead: () -> Unit,
     onPlayFromSection: (Double) -> Unit,
     onRewindPlayheadToStart: () -> Unit,
@@ -279,6 +282,49 @@ fun ChartToolsPanel(
                             maxLines = 1,
                             softWrap = false
                         )
+                    }
+                }
+            }
+
+            // Tipo de Nota Especial (Normal, Nota X Daño, Muerte X, Esquive, Alt, Sin Anim)
+            Text("Tipo de nota al colocar:", color = StudioColors.TextMuted, fontSize = 11.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                NoteSpecialType.entries.chunked(3).forEach { rowTypes ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        rowTypes.forEach { nType ->
+                            val isSel = selectedNoteType == nType
+                            val chipColor = when (nType) {
+                                NoteSpecialType.Normal -> StudioColors.AccentCyan
+                                NoteSpecialType.Hurt -> StudioColors.AccentCoral
+                                NoteSpecialType.Instakill -> Color(0xFFFF1744)
+                                NoteSpecialType.Dodge -> StudioColors.AccentAmber
+                                NoteSpecialType.AltAnim -> StudioColors.AccentPurple
+                                NoteSpecialType.NoAnim -> StudioColors.TextMuted
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(28.dp)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(if (isSel) chipColor.copy(alpha = 0.22f) else StudioColors.BgCard)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSel) chipColor else StudioColors.BorderSubtle,
+                                        shape = RoundedCornerShape(7.dp)
+                                    )
+                                    .clickable { onSelectNoteType(nType) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = nType.label,
+                                    color = if (isSel) chipColor else StudioColors.TextMuted,
+                                    fontSize = 9.sp,
+                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
                     }
                 }
             }

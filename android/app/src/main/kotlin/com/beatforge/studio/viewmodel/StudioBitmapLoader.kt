@@ -157,6 +157,10 @@ internal class StudioBitmapLoader {
         return out
     }
 
+    fun loadHurtArrowXBitmap(): ImageBitmap? {
+        return decodePngBytes(NativeEngineBridge.nativeGetHurtArrowPngBytes())
+    }
+
     fun loadHealthBarBitmap(): ImageBitmap? {
         return decodePngBytes(NativeEngineBridge.nativeGetHealthBarPngBytes())
     }

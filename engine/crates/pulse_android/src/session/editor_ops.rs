@@ -15,7 +15,9 @@ use pulse_core::project::{
     CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MAX_AUDIO_TRACKS, parse_camera_config_from_lua,
     render_camera_lua_script,
 };
-use pulse_core::svg_skin::{ArrowSkinSet, rasterize_svg_str};
+use pulse_core::svg_skin::{
+    ArrowSkinSet, default_hurt_arrow_x_svg, import_arrow_sparrow_atlas, rasterize_svg_str,
+};
 use pulse_core::{
     CameraFollowMode, ChartData, EntityRole, NoteDirection, ScriptAsset, ScriptLanguage,
     StageCameraConfig, StageEntity,
@@ -140,9 +142,24 @@ impl EngineSession {
         col_0_to_7: u8,
         sustain_steps: u32,
     ) -> String {
-        self.project
-            .chart
-            .toggle_note_at(sec_index, step_in_sec, col_0_to_7, sustain_steps);
+        self.toggle_chart_note_with_type(sec_index, step_in_sec, col_0_to_7, sustain_steps, "default")
+    }
+
+    pub fn toggle_chart_note_with_type(
+        &mut self,
+        sec_index: usize,
+        step_in_sec: u32,
+        col_0_to_7: u8,
+        sustain_steps: u32,
+        note_type: &str,
+    ) -> String {
+        self.project.chart.toggle_note_with_type(
+            sec_index,
+            step_in_sec,
+            col_0_to_7,
+            sustain_steps,
+            note_type,
+        );
         self.save_active_project_now();
         self.ok_response("Nota actualizada")
     }
@@ -687,6 +704,35 @@ impl EngineSession {
         }
     }
 
+    pub fn import_arrow_atlas(&mut self, png_path: PathBuf, xml_path: PathBuf) -> String {
+        let png_bytes = match std::fs::read(&png_path) {
+            Ok(b) => b,
+            Err(e) => return self.err_response(format!("No se pudo leer PNG de flechas: {}", e)),
+        };
+        let xml_text = match std::fs::read_to_string(&xml_path) {
+            Ok(x) => x,
+            Err(e) => return self.err_response(format!("No se pudo leer XML Sparrow de flechas: {}", e)),
+        };
+        let friendly_name = friendly_import_name(&png_path);
+        match import_arrow_sparrow_atlas(&png_bytes, &xml_text, &friendly_name) {
+            Ok(skin) => {
+                let arrows_count = skin.custom_arrow_pngs.len();
+                let receptors_count = skin.custom_receptor_pngs.len();
+                let has_hurt = skin.custom_hurt_arrow_png.is_some();
+                self.project.arrow_skin = skin;
+                self.save_active_project_now();
+                self.ok_response(format!(
+                    "Skin PNG+XML '{}' importada ({} flechas, {} receptores{})",
+                    friendly_name,
+                    arrows_count,
+                    receptors_count,
+                    if has_hurt { ", +Nota X" } else { "" }
+                ))
+            }
+            Err(e) => self.err_response(e),
+        }
+    }
+
     pub fn restore_default_arrow_svg(&mut self) -> String {
         self.project.arrow_skin = ArrowSkinSet::bundled_default();
         self.save_active_project_now();
@@ -695,27 +741,45 @@ impl EngineSession {
 
     pub fn rasterize_arrow_png_bytes(&self, dir_code: u8) -> Vec<u8> {
         let dir = NoteDirection::from_lane(dir_code);
+        if let Some(png) = self.project.arrow_skin.custom_arrow_pngs.get(&dir) {
+            if !png.is_empty() {
+                return png.clone();
+            }
+        }
         let svg = self.project.arrow_skin.svg_for(dir);
         let Ok(raster) = rasterize_svg_str(&svg, self.project.arrow_skin.note_size_px) else {
             return Vec::new();
         };
-        let Some(rgba_img) = image::RgbaImage::from_raw(raster.width, raster.height, raster.rgba) else {
-            return Vec::new();
-        };
-        let mut png_bytes = Vec::new();
-        if image::DynamicImage::ImageRgba8(rgba_img)
-            .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
-            .is_ok()
-        {
-            png_bytes
-        } else {
-            Vec::new()
-        }
+        encode_raster_png(raster.width, raster.height, raster.rgba)
     }
 
     pub fn rasterize_receptor_png_bytes(&self, dir_code: u8) -> Vec<u8> {
         let dir = NoteDirection::from_lane(dir_code);
+        if let Some(png) = self.project.arrow_skin.custom_receptor_pngs.get(&dir) {
+            if !png.is_empty() {
+                return png.clone();
+            }
+        }
         let Ok(raster) = self.project.arrow_skin.rasterize_neutral_receptor(dir) else {
+            return Vec::new();
+        };
+        encode_raster_png(raster.width, raster.height, raster.rgba)
+    }
+
+    pub fn rasterize_hurt_arrow_png_bytes(&self) -> Vec<u8> {
+        if let Some(png) = &self.project.arrow_skin.custom_hurt_arrow_png {
+            if !png.is_empty() {
+                return png.clone();
+            }
+        }
+        let svg = self
+            .project
+            .arrow_skin
+            .custom_hurt_arrow_svg
+            .as_deref()
+            .unwrap_or_else(default_hurt_arrow_x_svg);
+        let size = self.project.arrow_skin.note_size_px.max(128);
+        let Ok(raster) = rasterize_svg_str(svg, size) else {
             return Vec::new();
         };
         encode_raster_png(raster.width, raster.height, raster.rgba)

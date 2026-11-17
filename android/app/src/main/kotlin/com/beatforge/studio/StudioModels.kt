@@ -47,6 +47,26 @@ enum class MobileControlMode(val key: String, val label: String, val description
     }
 }
 
+enum class NoteSpecialType(
+    val key: String,
+    val code: Int,
+    val label: String,
+    val shortTag: String
+) {
+    Normal("default", 0, "Normal", ""),
+    Hurt("hurt", 1, "Nota X (Daño)", "X"),
+    Instakill("instakill", 2, "Muerte X", "💀"),
+    Dodge("dodge", 3, "Esquive", "⚡"),
+    AltAnim("alt", 4, "Alt Anim", "A"),
+    NoAnim("no_anim", 5, "Sin Anim", "∅");
+
+    companion object {
+        fun fromCode(code: Int): NoteSpecialType {
+            return entries.firstOrNull { it.code == code } ?: Normal
+        }
+    }
+}
+
 sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
     data object Chart : ImportKind("chart", arrayOf("application/json", "text/plain", "*/*"))
     data class AudioTrack(val slot: Int) : ImportKind("audio_$slot", arrayOf("audio/*", "application/ogg", "*/*"))
@@ -56,6 +76,8 @@ sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
     data object StageConfig : ImportKind("stage_cfg", arrayOf("application/json", "text/xml", "application/xml", "text/plain", "*/*"))
     data object Script : ImportKind("script", arrayOf("text/plain", "application/javascript", "*/*"))
     data class ArrowSvg(val direction: Int) : ImportKind("arrow_$direction", arrayOf("image/svg+xml", "*/*"))
+    data object ArrowAtlasPng : ImportKind("arrow_atlas_png", arrayOf("image/png", "image/webp", "image/*", "*/*"))
+    data object ArrowAtlasXml : ImportKind("arrow_atlas_xml", arrayOf("text/xml", "application/xml", "text/plain", "*/*"))
     data class CharacterIcon(val entityId: String, val isLosing: Boolean) : ImportKind(
         "icon_${entityId}_${if (isLosing) "losing" else "normal"}",
         arrayOf("image/png", "image/*", "*/*")
@@ -218,7 +240,9 @@ data class ProjectSnapshot(
     val scripts: List<ScriptSnapshot> = emptyList(),
     val arrowSkinName: String = "Vector Original",
     val customArrowPaths: Map<String, String> = emptyMap(),
+    val hasCustomPngArrowSkin: Boolean = false,
     val healthBarSvgPath: String? = null,
+    val preferredRenderBackend: String = "canvas2d",
     val lastCompileReport: CompileReportSnapshot? = null
 )
 
@@ -295,7 +319,9 @@ data class VisibleNote(
     val direction: Int,
     val isPlayer: Boolean,
     val sustainMs: Double,
-    val headHit: Boolean = false
+    val headHit: Boolean = false,
+    val noteType: String = "default",
+    val noteKindCode: Int = 0
 )
 
 data class GameplayStep(
@@ -343,6 +369,10 @@ data class GameplayStep(
     val activeOpponentIdx: Int = -1,
     val paused: Boolean = false,
     val finished: Boolean = false,
+    val gameOver: Boolean = false,
+    val gameOverPhase: Int = 0,
+    val botplay: Boolean = false,
+    val practiceMode: Boolean = false,
     val scriptErrors: List<String> = emptyList(),
     val scriptLogs: List<String> = emptyList(),
     val entities: List<GameplayEntityFrame> = emptyList(),
@@ -458,7 +488,9 @@ object StudioJsonParser {
                         direction = n.optInt("direction", 0),
                         isPlayer = n.optBoolean("isPlayer", true),
                         sustainMs = n.optDouble("sustainMs", 0.0),
-                        headHit = n.optBoolean("headHit", false)
+                        headHit = n.optBoolean("headHit", false),
+                        noteType = n.optString("noteType", "default"),
+                        noteKindCode = n.optInt("noteKindCode", 0)
                     )
                 )
             }
@@ -624,7 +656,9 @@ object StudioJsonParser {
             scripts = scripts,
             arrowSkinName = obj.optString("arrowSkinName", "Original"),
             customArrowPaths = stringMap(obj.optJSONObject("customArrowPaths")),
+            hasCustomPngArrowSkin = obj.optBoolean("hasCustomPngArrowSkin", false),
             healthBarSvgPath = optNullableString(obj, "healthBarSvgPath"),
+            preferredRenderBackend = obj.optString("preferredRenderBackend", "canvas2d"),
             lastCompileReport = compileReport
         )
     }
@@ -695,7 +729,9 @@ object StudioJsonParser {
                             direction = n.optInt("direction", 0),
                             isPlayer = n.optBoolean("isPlayer", true),
                             sustainMs = n.optDouble("sustainMs", 0.0),
-                            headHit = n.optBoolean("headHit", false)
+                            headHit = n.optBoolean("headHit", false),
+                            noteType = n.optString("noteType", "default"),
+                            noteKindCode = n.optInt("noteKindCode", 0)
                         )
                     )
                 }
@@ -785,6 +821,10 @@ object StudioJsonParser {
                 activeOpponentIdx = obj.optInt("activeOpponentIdx", -1),
                 paused = obj.optBoolean("paused", false),
                 finished = obj.optBoolean("finished", false),
+                gameOver = obj.optBoolean("gameOver", false),
+                gameOverPhase = obj.optInt("gameOverPhase", 0),
+                botplay = obj.optBoolean("botplay", false),
+                practiceMode = obj.optBoolean("practiceMode", false),
                 scriptErrors = stringList(obj.optJSONArray("scriptErrors")),
                 scriptLogs = stringList(obj.optJSONArray("scriptLogs")),
                 entities = entities,

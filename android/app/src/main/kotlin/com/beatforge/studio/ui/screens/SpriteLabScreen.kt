@@ -81,7 +81,10 @@ private val ANIM_SLOTS = listOf(
     "miss_left" to "Fallo Izquierda",
     "miss_down" to "Fallo Abajo",
     "miss_up" to "Fallo Arriba",
-    "miss_right" to "Fallo Derecha"
+    "miss_right" to "Fallo Derecha",
+    "death_start" to "Muerte Inicio",
+    "death_loop" to "Muerte Bucle",
+    "death_confirm" to "Muerte Reintentar"
 )
 
 @Composable

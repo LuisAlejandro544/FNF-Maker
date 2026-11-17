@@ -3,6 +3,7 @@
 //! cálculo de cuenta regresiva BPM, hooks de beats/steps/eventos, evaluación de notas
 //! (`Sick`/`Good`/`Bad`/`Miss` y sostenidas `Hold`), retorno a `Idle` y recolección en arena.
 
+use super::enter_game_over;
 use super::script_sync::{
     drain_and_apply_script_commands, sync_script_host_state, update_active_timers,
     update_active_tweens,
@@ -10,7 +11,7 @@ use super::script_sync::{
 use crate::session::{
     EngineSession, GameplayRuntimeState, dir_to_anim, dir_to_miss_anim, trigger_character_anim,
 };
-use pulse_core::chart::{ChartEvent, ChartNote};
+use pulse_core::chart::{ChartEvent, ChartNote, NoteSpecialKind};
 use pulse_core::frame_memory::{ArenaSpan, FrameVisibleNote, NotePlayState};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, StageEntity};
@@ -75,11 +76,13 @@ fn process_chart_notes(
     dt: f32,
     lane_pressed_mask: i32,
     just_pressed: &mut [bool; 4],
-) -> (u8, u8, bool) {
+) -> (u8, u8, bool, bool) {
     let mut player_holding_mask: u8 = 0;
     let mut opp_holding_mask: u8 = 0;
     let mut any_recent_miss = false;
+    let mut triggered_instakill = false;
 
+    let min_hp = if session.practice_mode { 0.02 } else { 0.0 };
     let note_len = notes.len();
     let start_idx = session.note_window.active_start_idx.min(note_len);
 
@@ -93,6 +96,8 @@ fn process_chart_notes(
             break;
         }
 
+        let special_kind = NoteSpecialKind::from_str_loose(&note.note_type);
+
         match state {
             NotePlayState::Holding => {
                 let end_ms = note.time_ms + note.sustain_ms;
@@ -102,15 +107,17 @@ fn process_chart_notes(
                         session.note_window.mark_hit(idx);
                     } else {
                         opp_holding_mask |= 1u8 << (lane_idx as u8);
-                        trigger_character_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Opponent,
-                            &session.active_opponent_id,
-                            dir_to_anim(note.direction),
-                        );
+                        if special_kind != NoteSpecialKind::NoAnim {
+                            trigger_character_anim(
+                                &mut session.bundle.active_entities,
+                                EntityRole::Opponent,
+                                &session.active_opponent_id,
+                                dir_to_anim(note.direction),
+                            );
+                        }
                     }
                 } else {
-                    let is_held = (lane_pressed_mask & (1 << lane_idx)) != 0;
+                    let is_held = session.botplay || (lane_pressed_mask & (1 << lane_idx)) != 0;
                     if song_pos_ms >= end_ms {
                         session.note_window.mark_hit(idx);
                         session.score += 100;
@@ -119,12 +126,14 @@ fn process_chart_notes(
                         player_holding_mask |= 1u8 << (lane_idx as u8);
                         session.score += ((dt * 220.0).round() as i64).max(1);
                         session.health = (session.health + 0.05 * dt).min(1.0);
-                        trigger_character_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Player,
-                            &session.active_player_id,
-                            dir_to_anim(note.direction),
-                        );
+                        if special_kind != NoteSpecialKind::NoAnim {
+                            trigger_character_anim(
+                                &mut session.bundle.active_entities,
+                                EntityRole::Player,
+                                &session.active_player_id,
+                                dir_to_anim(note.direction),
+                            );
+                        }
                     } else if song_pos_ms > note.time_ms + 130.0 {
                         if song_pos_ms >= end_ms - 140.0 {
                             session.note_window.mark_hit(idx);
@@ -138,25 +147,33 @@ fn process_chart_notes(
                                 as f32)
                                 .clamp(0.0, 100.0);
                             session.score -= 25;
-                            session.health = (session.health - 0.03).max(0.0);
+                            session.health = (session.health - 0.03).max(min_hp);
                             session.last_judgement = "Miss".to_string();
                             session.last_rating_code = 4;
                             session.rating_event_id = session.rating_event_id.wrapping_add(1);
                             any_recent_miss = true;
-                            trigger_character_anim(
-                                &mut session.bundle.active_entities,
-                                EntityRole::Player,
-                                &session.active_player_id,
-                                dir_to_miss_anim(note.direction),
-                            );
-                            session.runtime.call_on_note_miss(lane_idx as i32, true);
+                            if special_kind != NoteSpecialKind::NoAnim {
+                                trigger_character_anim(
+                                    &mut session.bundle.active_entities,
+                                    EntityRole::Player,
+                                    &session.active_player_id,
+                                    dir_to_miss_anim(note.direction),
+                                );
+                            }
+                            session
+                                .runtime
+                                .call_on_note_miss(lane_idx as i32, true, &note.note_type);
                         }
                     }
                 }
             }
             NotePlayState::Pending => {
                 if !note.is_player {
-                    if song_pos_ms >= note.time_ms {
+                    if special_kind.is_hazard_x() {
+                        if song_pos_ms > note.time_ms + 80.0 {
+                            session.note_window.mark_hit(idx);
+                        }
+                    } else if song_pos_ms >= note.time_ms {
                         let lane_idx = note.direction as u8;
                         if note.sustain_ms > 45.0 {
                             session.note_window.mark_holding(idx);
@@ -164,41 +181,102 @@ fn process_chart_notes(
                         } else {
                             session.note_window.mark_hit(idx);
                         }
-                        let dir_anim = dir_to_anim(note.direction);
-                        trigger_character_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Opponent,
-                            &session.active_opponent_id,
-                            dir_anim,
-                        );
+                        if special_kind != NoteSpecialKind::NoAnim {
+                            trigger_character_anim(
+                                &mut session.bundle.active_entities,
+                                EntityRole::Opponent,
+                                &session.active_opponent_id,
+                                dir_to_anim(note.direction),
+                            );
+                        }
                         session
                             .runtime
-                            .call_on_note_hit(note.direction as i32, false);
+                            .call_on_note_hit(note.direction as i32, false, &note.note_type);
                     }
                 } else {
                     let diff = note.time_ms - song_pos_ms;
                     let abs_diff = diff.abs();
                     let lane_idx = note.direction as usize;
-                    if just_pressed[lane_idx] && abs_diff <= HIT_WINDOW_BAD_MS {
+                    let bot_should_hit =
+                        session.botplay && !special_kind.is_hazard_x() && song_pos_ms >= note.time_ms;
+                    let manual_hit = !special_kind.is_hazard_x()
+                        && just_pressed[lane_idx]
+                        && abs_diff <= HIT_WINDOW_BAD_MS;
+                    let hazard_hit = !session.botplay
+                        && special_kind.is_hazard_x()
+                        && just_pressed[lane_idx]
+                        && abs_diff <= HIT_WINDOW_GOOD_MS;
+
+                    if hazard_hit {
+                        session.note_window.mark_hit(idx);
+                        just_pressed[lane_idx] = false;
+                        session.combo = 0;
+                        session.misses += 1;
+                        session.judged_count += 1;
+                        session.accuracy_pct = ((session.accuracy_sum
+                            / session.judged_count as f64)
+                            as f32)
+                            .clamp(0.0, 100.0);
+                        session.last_rating_code = 4;
+                        session.rating_event_id = session.rating_event_id.wrapping_add(1);
+                        any_recent_miss = true;
+
+                        if special_kind == NoteSpecialKind::Instakill {
+                            if session.practice_mode {
+                                session.score -= 150;
+                                session.health = (session.health - 0.30).max(min_hp);
+                                session.last_judgement = "¡Nota Mortal X! (Práctica)".to_string();
+                            } else {
+                                session.health = 0.0;
+                                session.score -= 250;
+                                session.last_judgement = "¡Nota Mortal X!".to_string();
+                                triggered_instakill = true;
+                            }
+                        } else {
+                            session.score -= 100;
+                            session.health = (session.health - 0.22).max(min_hp);
+                            session.last_judgement = "¡Nota X! -Vida".to_string();
+                        }
+
+                        trigger_character_anim(
+                            &mut session.bundle.active_entities,
+                            EntityRole::Player,
+                            &session.active_player_id,
+                            dir_to_miss_anim(note.direction),
+                        );
+                        session
+                            .runtime
+                            .call_on_note_miss(lane_idx as i32, true, &note.note_type);
+                    } else if bot_should_hit || manual_hit {
                         if note.sustain_ms > 45.0 {
                             session.note_window.mark_holding(idx);
                             player_holding_mask |= 1u8 << (lane_idx as u8);
                         } else {
                             session.note_window.mark_hit(idx);
                         }
-                        just_pressed[lane_idx] = false;
+                        if !bot_should_hit {
+                            just_pressed[lane_idx] = false;
+                        }
 
-                        let (pts, rating_code, label, acc_weight) =
-                            if abs_diff <= HIT_WINDOW_SICK_MS {
+                        let effective_diff = if bot_should_hit { 0.0 } else { abs_diff };
+                        let (mut pts, rating_code, label, acc_weight) =
+                            if effective_diff <= HIT_WINDOW_SICK_MS {
                                 session.splash_event_id = session.splash_event_id.wrapping_add(1);
                                 session.splash_lane = lane_idx as u8;
                                 (350, 1u8, "¡Sick!", 100.0)
-                            } else if abs_diff <= HIT_WINDOW_GOOD_MS {
+                            } else if effective_diff <= HIT_WINDOW_GOOD_MS {
                                 (200, 2u8, "¡Good!", 75.0)
                             } else {
                                 (100, 3u8, "Bad", 40.0)
                             };
-                        session.last_judgement = label.to_string();
+                        let mut hp_gain = 0.035_f32;
+                        if special_kind == NoteSpecialKind::Dodge {
+                            pts += 150;
+                            hp_gain += 0.06;
+                            session.last_judgement = format!("¡Esquive! {}", label);
+                        } else {
+                            session.last_judgement = label.to_string();
+                        }
                         session.last_rating_code = rating_code;
                         session.rating_event_id = session.rating_event_id.wrapping_add(1);
                         session.judged_count += 1;
@@ -212,37 +290,61 @@ fn process_chart_notes(
                         session.combo += 1;
                         session.max_combo = session.max_combo.max(session.combo);
                         session.hits += 1;
-                        session.health = (session.health + 0.035).min(1.0);
+                        session.health = (session.health + hp_gain).min(1.0);
 
-                        trigger_character_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Player,
-                            &session.active_player_id,
-                            dir_to_anim(note.direction),
-                        );
-                        session.runtime.call_on_note_hit(lane_idx as i32, true);
+                        if special_kind != NoteSpecialKind::NoAnim {
+                            trigger_character_anim(
+                                &mut session.bundle.active_entities,
+                                EntityRole::Player,
+                                &session.active_player_id,
+                                dir_to_anim(note.direction),
+                            );
+                        }
+                        session
+                            .runtime
+                            .call_on_note_hit(lane_idx as i32, true, &note.note_type);
                     } else if song_pos_ms > note.time_ms + HIT_WINDOW_BAD_MS {
-                        session.note_window.mark_missed(idx);
-                        session.combo = 0;
-                        session.misses += 1;
-                        session.judged_count += 1;
-                        session.accuracy_pct = ((session.accuracy_sum
-                            / session.judged_count as f64)
-                            as f32)
-                            .clamp(0.0, 100.0);
-                        session.score -= 50;
-                        session.health = (session.health - 0.06).max(0.0);
-                        session.last_judgement = "Miss".to_string();
-                        session.last_rating_code = 4;
-                        session.rating_event_id = session.rating_event_id.wrapping_add(1);
-                        any_recent_miss = true;
-                        trigger_character_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Player,
-                            &session.active_player_id,
-                            dir_to_miss_anim(note.direction),
-                        );
-                        session.runtime.call_on_note_miss(lane_idx as i32, true);
+                        if special_kind.is_hazard_x() {
+                            // Las notas con X se esquivan dejándolas pasar sin presionarlas.
+                            session.note_window.mark_hit(idx);
+                        } else {
+                            session.note_window.mark_missed(idx);
+                            session.combo = 0;
+                            session.misses += 1;
+                            session.judged_count += 1;
+                            session.accuracy_pct = ((session.accuracy_sum
+                                / session.judged_count as f64)
+                                as f32)
+                                .clamp(0.0, 100.0);
+                            session.score -= 50;
+                            let penalty = if special_kind == NoteSpecialKind::Dodge {
+                                0.14
+                            } else {
+                                0.06
+                            };
+                            session.health = (session.health - penalty).max(min_hp);
+                            session.last_judgement = if special_kind == NoteSpecialKind::Dodge {
+                                "¡Sin esquivar!".to_string()
+                            } else {
+                                "Miss".to_string()
+                            };
+                            session.last_rating_code = 4;
+                            session.rating_event_id = session.rating_event_id.wrapping_add(1);
+                            any_recent_miss = true;
+                            if special_kind != NoteSpecialKind::NoAnim {
+                                trigger_character_anim(
+                                    &mut session.bundle.active_entities,
+                                    EntityRole::Player,
+                                    &session.active_player_id,
+                                    dir_to_miss_anim(note.direction),
+                                );
+                            }
+                            session.runtime.call_on_note_miss(
+                                lane_idx as i32,
+                                true,
+                                &note.note_type,
+                            );
+                        }
                     }
                 }
             }
@@ -250,7 +352,12 @@ fn process_chart_notes(
         }
     }
 
-    (player_holding_mask, opp_holding_mask, any_recent_miss)
+    (
+        player_holding_mask,
+        opp_holding_mask,
+        any_recent_miss,
+        triggered_instakill,
+    )
 }
 
 impl EngineSession {
@@ -322,8 +429,38 @@ impl EngineSession {
         ];
         let mut player_holding_mask: u8 = 0;
         let mut opp_holding_mask: u8 = 0;
+        let mut should_restart_after_confirm = false;
 
-        if !session.paused && !session.finished {
+        if session.game_over {
+            session.game_over_timer_sec += dt;
+            for ent in &mut session.bundle.active_entities {
+                let is_player_ent = if !session.active_player_id.is_empty() {
+                    ent.id == session.active_player_id
+                } else {
+                    ent.role == EntityRole::Player && ent.visible
+                };
+                if is_player_ent {
+                    ent.anim_timer_sec += dt;
+                    if session.game_over_phase == 1 {
+                        let start_dur = ent
+                            .atlas
+                            .as_ref()
+                            .map(|a| a.anim_duration_sec(CharacterAnimKind::DeathStart))
+                            .filter(|d| *d > 0.05)
+                            .unwrap_or(0.85);
+                        if ent.anim_timer_sec >= start_dur {
+                            session.game_over_phase = 2;
+                            ent.active_anim = CharacterAnimKind::DeathLoop;
+                            ent.anim_timer_sec = 0.0;
+                            hud_changed = true;
+                        }
+                    }
+                }
+            }
+            if session.game_over_phase == 3 && session.game_over_timer_sec >= 0.72 {
+                should_restart_after_confirm = true;
+            }
+        } else if !session.paused && !session.finished {
             if session.flash_alpha > 0.0 {
                 session.flash_alpha =
                     (session.flash_alpha - session.flash_decay_per_sec * dt).max(0.0);
@@ -377,6 +514,7 @@ impl EngineSession {
                 session.arrows_visible,
                 session.arrows_opacity,
                 session.screen_blackout_alpha,
+                session.game_over,
             );
 
             if !in_countdown && !session.song_started {
@@ -433,7 +571,7 @@ impl EngineSession {
                 (target_base_zoom - self.project.stage.camera_zoom) * (dt * 6.0);
             self.project.stage.camera_shake *= (1.0 - dt * 10.0).max(0.0);
 
-            let (p_hold, o_hold, any_recent_miss) = process_chart_notes(
+            let (p_hold, o_hold, any_recent_miss, triggered_instakill) = process_chart_notes(
                 session,
                 &self.project.chart.notes,
                 song_pos_ms,
@@ -453,19 +591,30 @@ impl EngineSession {
                 .player_missed_recently
                 .store(any_recent_miss, Ordering::Relaxed);
 
-            let sing_hold_sec = (beat_sec * 0.90).clamp(0.28, 0.58);
-            for ent in &mut session.bundle.active_entities {
-                ent.anim_timer_sec += dt;
-                if ent.active_anim != CharacterAnimKind::Idle && ent.anim_timer_sec > sing_hold_sec {
-                    ent.active_anim = CharacterAnimKind::Idle;
-                    ent.anim_timer_sec = 0.0;
+            if (triggered_instakill || session.health <= 0.0001) && !session.practice_mode {
+                enter_game_over(session, &self.audio_engine);
+            } else {
+                let sing_hold_sec = (beat_sec * 0.90).clamp(0.28, 0.58);
+                for ent in &mut session.bundle.active_entities {
+                    ent.anim_timer_sec += dt;
+                    if ent.active_anim != CharacterAnimKind::Idle
+                        && ent.anim_timer_sec > sing_hold_sec
+                    {
+                        ent.active_anim = CharacterAnimKind::Idle;
+                        ent.anim_timer_sec = 0.0;
+                    }
+                }
+
+                if song_pos_ms > self.project.chart.stats.duration_ms + 1200.0 {
+                    session.finished = true;
+                    self.audio_engine.mixer.pause();
                 }
             }
+        }
 
-            if song_pos_ms > self.project.chart.stats.duration_ms + 1200.0 {
-                session.finished = true;
-                self.audio_engine.mixer.pause();
-            }
+        if should_restart_after_confirm {
+            let _ = self.restart_gameplay();
+            return self.step_gameplay_internal(0.0, 0, 0);
         }
 
         if prev_judgement != session.last_judgement

@@ -141,6 +141,10 @@ declare function tweenScreenBlackout(tag: string, targetAlpha: number, durationS
 declare function setTrackVolume(slotIndex: number, volume: number): void;
 declare function setTrackMute(slotIndex: number, muted: boolean): void;
 
+// Estado Game Over / Muerte estilo FNF
+declare function triggerGameOver(): void;
+declare function isGameOver(): boolean;
+
 // Callbacks de ciclo de vida del Mod
 declare function onCreate(): void;
 declare function onSongStart(): void;
@@ -148,8 +152,9 @@ declare function onUpdate(dt: number): void;
 declare function onBeatHit(beat: number): void;
 declare function onStepHit(step: number): void;
 declare function onCountdownTick(stage: number): void;
-declare function onNoteHit(lane: number, isPlayer: boolean): void;
-declare function onNoteMiss(lane: number, isPlayer: boolean): void;
+declare function onNoteHit(lane: number, isPlayer: boolean, noteType?: string): void;
+declare function onNoteMiss(lane: number, isPlayer: boolean, noteType?: string): void;
+declare function onGameOver(): void;
 declare function onEvent(name: string, value1: string, value2: string): void;
 declare function onTweenCompleted(tag: string): void;
 declare function onTimerCompleted(tag: string): void;

@@ -6,8 +6,11 @@
 //! de fuentes del sistema Android) para garantizar rasterización nítida en 32 y 64 bits.
 
 use crate::chart::NoteDirection;
+use crate::sparrow::SparrowAtlas;
+use image::{DynamicImage, GenericImageView, ImageFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -49,12 +52,20 @@ pub struct RasterizedArrow {
     pub rgba: Vec<u8>,
 }
 
-/// Configuración de rutas SVG elegidas por el usuario (si está vacía, usa el SVG propio integrado).
+/// Configuración de rutas SVG y PNG/XML Sparrow elegidas por el usuario (si está vacía, usa el SVG propio integrado).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ArrowSkinSet {
     pub skin_name: String,
     pub custom_svg_paths: HashMap<NoteDirection, PathBuf>,
     pub custom_svg_sources: HashMap<NoteDirection, String>,
+    #[serde(default)]
+    pub custom_arrow_pngs: HashMap<NoteDirection, Vec<u8>>,
+    #[serde(default)]
+    pub custom_receptor_pngs: HashMap<NoteDirection, Vec<u8>>,
+    #[serde(default)]
+    pub custom_hurt_arrow_svg: Option<String>,
+    #[serde(default)]
+    pub custom_hurt_arrow_png: Option<Vec<u8>>,
     pub note_size_px: u32,
 }
 
@@ -64,8 +75,16 @@ impl ArrowSkinSet {
             skin_name: "Pulse Vector (Original)".to_string(),
             custom_svg_paths: HashMap::new(),
             custom_svg_sources: HashMap::new(),
+            custom_arrow_pngs: HashMap::new(),
+            custom_receptor_pngs: HashMap::new(),
+            custom_hurt_arrow_svg: None,
+            custom_hurt_arrow_png: None,
             note_size_px: 128,
         }
+    }
+
+    pub fn has_custom_png_atlas(&self) -> bool {
+        !self.custom_arrow_pngs.is_empty()
     }
 
     pub fn svg_for(&self, dir: NoteDirection) -> String {
@@ -143,6 +162,23 @@ pub fn default_receptor_svg_bundle(dir: NoteDirection) -> &'static str {
   <path d="M96 64 L72 86 L72 74 L34 74 L34 54 L72 54 L72 42 Z" fill="#94A3B8" fill-opacity="0.35"/>
 </svg>"##,
     }
+}
+
+/// Genera la flecha SVG especial marcada con una "X" para notas peligrosas (`hurt` / `instakill`).
+pub fn default_hurt_arrow_x_svg() -> &'static str {
+    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="gHurtX" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EF4444"/>
+      <stop offset="55%" stop-color="#B91C1C"/>
+      <stop offset="100%" stop-color="#450A0A"/>
+    </linearGradient>
+  </defs>
+  <path d="M64 14 L112 64 L88 64 L88 112 L40 112 L40 64 L16 64 Z" fill="url(#gHurtX)" stroke="#FCA5A5" stroke-width="5" stroke-linejoin="round"/>
+  <circle cx="64" cy="70" r="26" fill="#090D16" fill-opacity="0.88" stroke="#F87171" stroke-width="3.5"/>
+  <path d="M51 57 L77 83 M77 57 L51 83" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+  <path d="M51 57 L77 83 M77 57 L51 83" stroke="#FACC15" stroke-width="3" stroke-linecap="round"/>
+</svg>"##
 }
 
 /// Marco SVG de barra de vida estilo FNF (interior transparente para que el motor pinte
@@ -405,6 +441,175 @@ pub fn rasterize_arrow_skin(
 }
 
 
+/// Recorta, rota si hace falta (`rotated="true"`), escala a `128x128` y codifica a PNG.
+fn extract_sparrow_subtexture_rgba128(
+    sheet: &DynamicImage,
+    frame: &crate::sparrow::SparrowFrame,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (img_w, img_h) = sheet.dimensions();
+    if frame.x >= img_w || frame.y >= img_h {
+        return None;
+    }
+    let crop_w = frame.width.min(img_w - frame.x).max(1);
+    let crop_h = frame.height.min(img_h - frame.y).max(1);
+    let cropped = sheet.crop_imm(frame.x, frame.y, crop_w, crop_h).to_rgba8();
+    let oriented = if frame.rotated {
+        image::imageops::rotate270(&cropped)
+    } else {
+        cropped
+    };
+    let resized = image::imageops::resize(
+        &oriented,
+        128,
+        128,
+        image::imageops::FilterType::Triangle,
+    );
+    let raw_rgba = resized.as_raw().clone();
+    let mut png_bytes = Vec::new();
+    if DynamicImage::ImageRgba8(resized)
+        .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
+        .is_ok()
+    {
+        Some((png_bytes, raw_rgba))
+    } else {
+        None
+    }
+}
+
+/// Importa una skin de flechas estándar de mods (`NOTE_assets.png` + `NOTE_assets.xml`) recortando
+/// flechas (`purple`/`blue`/`green`/`red`), receptores (`arrowLEFT`/`DOWN`/`UP`/`RIGHT`) y opcionalmente notas X (`hurt`/`mine`).
+pub fn import_arrow_sparrow_atlas(
+    png_bytes: &[u8],
+    xml_text: &str,
+    skin_name: &str,
+) -> Result<ArrowSkinSet, String> {
+    let atlas = SparrowAtlas::from_xml_str(xml_text)
+        .map_err(|e| format!("XML de flechas inválido: {}", e))?;
+    let sheet = image::load_from_memory(png_bytes)
+        .map_err(|e| format!("PNG de flechas inválido: {}", e))?;
+
+    let mut skin = ArrowSkinSet::bundled_default();
+    let clean_name = skin_name.trim();
+    skin.skin_name = if clean_name.is_empty() {
+        "Mod Atlas (PNG + XML)".to_string()
+    } else {
+        clean_name.to_string()
+    };
+
+    let mut arrow_rgba: HashMap<NoteDirection, Vec<u8>> = HashMap::new();
+
+    for (prefix, anim) in &atlas.animations {
+        let Some(first_frame) = anim.frames.first() else {
+            continue;
+        };
+        let low = prefix.to_ascii_lowercase().replace(['_', '-', ' '], "");
+
+        let is_receptor = low.starts_with("arrow")
+            && !low.contains("confirm")
+            && !low.contains("press");
+        if is_receptor {
+            let dir = if low.contains("left") || low.contains("izq") {
+                Some(NoteDirection::Left)
+            } else if low.contains("down") || low.contains("abajo") {
+                Some(NoteDirection::Down)
+            } else if low.contains("up") || low.contains("arriba") {
+                Some(NoteDirection::Up)
+            } else if low.contains("right") || low.contains("der") {
+                Some(NoteDirection::Right)
+            } else {
+                None
+            };
+            if let Some(d) = dir {
+                if !skin.custom_receptor_pngs.contains_key(&d) {
+                    if let Some((png, _)) = extract_sparrow_subtexture_rgba128(&sheet, first_frame) {
+                        skin.custom_receptor_pngs.insert(d, png);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if low.contains("hurt")
+            || low.contains("mine")
+            || low.contains("mina")
+            || low.contains("death")
+            || low.contains("kill")
+            || low.contains("danger")
+        {
+            if skin.custom_hurt_arrow_png.is_none() {
+                if let Some((png, _)) = extract_sparrow_subtexture_rgba128(&sheet, first_frame) {
+                    skin.custom_hurt_arrow_png = Some(png);
+                }
+            }
+            continue;
+        }
+
+        let is_fx = low.contains("hold")
+            || low.contains("tail")
+            || low.contains("end")
+            || low.contains("piece")
+            || low.contains("confirm")
+            || low.contains("press");
+        if is_fx {
+            continue;
+        }
+
+        let dir = if low == "purple" || low.contains("purple") || low.contains("left") || low.contains("izq") {
+            Some(NoteDirection::Left)
+        } else if low == "blue" || low.contains("blue") || low.contains("down") || low.contains("abajo") {
+            Some(NoteDirection::Down)
+        } else if low == "green" || low.contains("green") || low.contains("up") || low.contains("arriba") {
+            Some(NoteDirection::Up)
+        } else if low == "red" || low.contains("red") || low.contains("right") || low.contains("der") {
+            Some(NoteDirection::Right)
+        } else {
+            None
+        };
+
+        if let Some(d) = dir {
+            if !skin.custom_arrow_pngs.contains_key(&d) {
+                if let Some((png, rgba)) = extract_sparrow_subtexture_rgba128(&sheet, first_frame) {
+                    skin.custom_arrow_pngs.insert(d, png);
+                    arrow_rgba.insert(d, rgba);
+                }
+            }
+        }
+    }
+
+    if skin.custom_arrow_pngs.is_empty() {
+        return Err(
+            "No se reconocieron flechas estándar en el XML (usa prefijos purple/blue/green/red o left/down/up/right)."
+                .to_string(),
+        );
+    }
+
+    // Completar receptores neutros faltantes desaturando las flechas importadas.
+    for dir in NoteDirection::ALL {
+        if !skin.custom_receptor_pngs.contains_key(&dir) {
+            if let Some(rgba) = arrow_rgba.get(&dir) {
+                let neutral = desaturate_to_neutral_receptor(&RasterizedArrow {
+                    width: 128,
+                    height: 128,
+                    rgba: rgba.clone(),
+                });
+                if let Some(rgba_img) =
+                    image::RgbaImage::from_raw(neutral.width, neutral.height, neutral.rgba)
+                {
+                    let mut png_out = Vec::new();
+                    if DynamicImage::ImageRgba8(rgba_img)
+                        .write_to(&mut Cursor::new(&mut png_out), ImageFormat::Png)
+                        .is_ok()
+                    {
+                        skin.custom_receptor_pngs.insert(dir, png_out);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(skin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +637,33 @@ mod tests {
 
         assert!(rec_max_chroma <= 25);
         assert!(note_max_chroma >= 100);
+    }
+
+    #[test]
+    fn imports_sparrow_png_xml_arrow_skin_with_fallback_receptors() {
+        let mut img = image::RgbaImage::new(128, 64);
+        for px in img.pixels_mut() {
+            *px = image::Rgba([220, 40, 200, 255]);
+        }
+        let mut png_bytes = Vec::new();
+        DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
+            .unwrap();
+
+        let xml = r#"
+            <TextureAtlas imagePath="NOTE_assets.png">
+                <SubTexture name="purple0000" x="0" y="0" width="32" height="32"/>
+                <SubTexture name="blue0000" x="32" y="0" width="32" height="32"/>
+                <SubTexture name="green0000" x="64" y="0" width="32" height="32"/>
+                <SubTexture name="red0000" x="96" y="0" width="32" height="32"/>
+                <SubTexture name="arrowLEFT0000" x="0" y="32" width="32" height="32"/>
+                <SubTexture name="hurt0000" x="32" y="32" width="32" height="32"/>
+            </TextureAtlas>
+        "#;
+
+        let skin = import_arrow_sparrow_atlas(&png_bytes, xml, "NOTE_assets").unwrap();
+        assert_eq!(skin.custom_arrow_pngs.len(), 4);
+        assert_eq!(skin.custom_receptor_pngs.len(), 4);
+        assert!(skin.custom_hurt_arrow_png.is_some());
     }
 }

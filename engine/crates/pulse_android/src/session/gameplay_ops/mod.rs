@@ -13,6 +13,7 @@ mod simulation;
 
 use super::persistence_ops::sanitize_project_id;
 use super::{EngineSession, GameplayRuntimeState, StrumOverrideState};
+use crate::session::trigger_character_anim;
 use pulse_audio::StreamingAudioSource;
 use pulse_core::disk_cache::{evict_lru_subdirs, touch_dir_last_used};
 use pulse_core::frame_memory::{FrameBumpArena, NoteSlidingWindow};
@@ -20,6 +21,7 @@ use pulse_core::hot_compile::{
     DeviceResourceTier, analyze_reused_entity_ids, hot_compile_project_to_dir,
 };
 use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::EntityRole;
 use pulse_scripting::ModScriptRuntime;
 use script_sync::sync_script_host_state;
@@ -113,6 +115,7 @@ impl EngineSession {
             &runtime.state,
             &self.project.stage,
             &bundle.active_entities,
+            &[],
             &active_player_id,
             &active_opponent_id,
             &default_strums,
@@ -127,10 +130,18 @@ impl EngineSession {
             100.0,
             self.project.chart.speed,
             self.project.downscroll,
+            true,
+            1.0,
+            1.0,
+            true,
+            1.0,
+            0.0,
+            false,
         );
         runtime.call_on_create();
 
         self.audio_engine.mixer.pause();
+        self.audio_engine.mixer.clear_gameover_sfx();
         self.audio_engine.mixer.clear_stream_source();
         self.audio_engine.ensure_started();
 
@@ -228,6 +239,11 @@ impl EngineSession {
             next_preload_event_idx: 0,
             paused: false,
             finished: false,
+            game_over: false,
+            game_over_phase: 0,
+            game_over_timer_sec: 0.0,
+            botplay: false,
+            practice_mode: false,
             last_logs: Vec::new(),
             last_countdown_stage: -2,
             hud_revision: 1,
@@ -240,6 +256,9 @@ impl EngineSession {
     /// Alterna el estado de pausa del gameplay y del reloj maestro AAudio.
     pub fn set_gameplay_paused(&mut self, paused: bool) -> String {
         if let Some(session) = self.gameplay.as_mut() {
+            if session.game_over {
+                return self.step_gameplay(0.0, 0, 0);
+            }
             session.paused = paused;
             session.hud_revision = session.hud_revision.wrapping_add(1);
             if paused {
@@ -252,9 +271,66 @@ impl EngineSession {
         self.step_gameplay(0.0, 0, 0)
     }
 
+    /// Configura modos de depuración en gameplay (`botplay` y `practice_mode`).
+    pub fn set_gameplay_debug(&mut self, botplay: bool, practice_mode: bool) -> String {
+        if let Some(session) = self.gameplay.as_mut() {
+            session.botplay = botplay;
+            session.practice_mode = practice_mode;
+            if practice_mode && session.health < 0.02 {
+                session.health = 0.02;
+            }
+            session.hud_revision = session.hud_revision.wrapping_add(1);
+        }
+        self.step_gameplay(0.0, 0, 0)
+    }
+
+    /// Dispara manualmente el estado de Game Over (útil desde scripts o menú Debug).
+    pub fn trigger_game_over(&mut self) -> String {
+        if let Some(session) = self.gameplay.as_mut() {
+            enter_game_over(session, &self.audio_engine);
+        }
+        self.step_gameplay(0.0, 0, 0)
+    }
+
+    /// Inicia la fase de confirmación (`DeathConfirm`) tras tocar la pantalla en Game Over.
+    pub fn confirm_game_over_retry(&mut self) -> String {
+        if let Some(session) = self.gameplay.as_mut() {
+            if session.game_over && session.game_over_phase != 3 {
+                session.game_over_phase = 3;
+                session.game_over_timer_sec = 0.0;
+                session.last_judgement = "¡Reintentando!".to_string();
+                session.hud_revision = session.hud_revision.wrapping_add(1);
+                trigger_character_anim(
+                    &mut session.bundle.active_entities,
+                    EntityRole::Player,
+                    &session.active_player_id,
+                    CharacterAnimKind::DeathConfirm,
+                );
+            }
+        }
+        self.step_gameplay(0.0, 0, 0)
+    }
+
+    /// Reinicia la partida desde cero conservando las banderas activas de Debug (`botplay`/`practice_mode`).
+    pub fn restart_gameplay(&mut self) -> String {
+        let (prev_botplay, prev_practice) = self
+            .gameplay
+            .as_ref()
+            .map(|g| (g.botplay, g.practice_mode))
+            .unwrap_or((false, false));
+        let _ = self.start_gameplay();
+        if let Some(session) = self.gameplay.as_mut() {
+            session.botplay = prev_botplay;
+            session.practice_mode = prev_practice;
+            session.hud_revision = session.hud_revision.wrapping_add(1);
+        }
+        self.step_gameplay(0.0, 0, 0)
+    }
+
     /// Finaliza el gameplay, cierra el streaming de disco y recarga las pistas PCM del editor.
     pub fn stop_gameplay(&mut self) -> String {
         self.audio_engine.mixer.pause();
+        self.audio_engine.mixer.clear_gameover_sfx();
         self.audio_engine.mixer.clear_stream_source();
         self.gameplay = None;
         if self.project.active_audio_count() > 0
@@ -264,6 +340,32 @@ impl EngineSession {
         }
         self.ok_response("Partida finalizada")
     }
+}
+
+/// Activa el estado de Game Over pausando la música, disparando el sonido sintetizado y animando `DeathStart`.
+pub(super) fn enter_game_over(
+    session: &mut GameplayRuntimeState,
+    audio_engine: &pulse_audio::AudioEngineHandle,
+) {
+    if session.game_over {
+        return;
+    }
+    session.game_over = true;
+    session.paused = false;
+    session.game_over_phase = 1;
+    session.game_over_timer_sec = 0.0;
+    session.last_judgement = "Game Over".to_string();
+    session.hud_revision = session.hud_revision.wrapping_add(1);
+    audio_engine.mixer.pause();
+    audio_engine.mixer.trigger_gameover_sfx();
+    trigger_character_anim(
+        &mut session.bundle.active_entities,
+        EntityRole::Player,
+        &session.active_player_id,
+        CharacterAnimKind::DeathStart,
+    );
+    *session.runtime.state.game_over.lock() = true;
+    session.runtime.call_on_game_over();
 }
 
 #[cfg(test)]

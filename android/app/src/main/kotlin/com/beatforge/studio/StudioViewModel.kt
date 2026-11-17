@@ -12,6 +12,7 @@ import android.net.Uri
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.viewmodel.StudioBitmapLoader
 import com.beatforge.studio.viewmodel.StudioEditorDelegate
 import com.beatforge.studio.viewmodel.StudioGameplayCoordinator
@@ -129,9 +130,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun openProject(projectId: String) = editorDelegate.openProject(projectId)
 
+    fun returnToProjectMenu() = editorDelegate.returnToProjectMenu()
+
     fun duplicateProject(projectId: String) = editorDelegate.duplicateProject(projectId)
 
     fun deleteProject(projectId: String) = editorDelegate.deleteProject(projectId)
+
+    fun setPreferredRenderBackend(kind: RenderBackendKind) = editorDelegate.setPreferredRenderBackend(kind)
 
     fun navigateTo(screen: StudioScreen) {
         if (_uiState.value.currentScreen == StudioScreen.Gameplay && screen != StudioScreen.Gameplay) {
@@ -158,6 +163,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun setArrowSkinDialogOpen(open: Boolean) {
         _uiState.update { it.copy(arrowSkinDialogOpen = open) }
     }
+
+    fun clearStagedArrowAtlas() = editorDelegate.clearStagedArrowAtlas()
 
     fun setCharacterIconsDialogOpen(open: Boolean) {
         _uiState.update { it.copy(characterIconsDialogOpen = open) }
@@ -222,8 +229,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleSectionMustHit(secIndex: Int) = editorDelegate.toggleSectionMustHit(secIndex)
 
-    fun toggleChartNote(secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) =
-        editorDelegate.toggleChartNote(secIndex, stepInSec, col0To7, sustainSteps)
+    fun toggleChartNote(
+        secIndex: Int,
+        stepInSec: Int,
+        col0To7: Int,
+        sustainSteps: Int,
+        noteType: String = "default"
+    ) = editorDelegate.toggleChartNote(secIndex, stepInSec, col0To7, sustainSteps, noteType)
 
     fun removeAudioTrack(slot: Int) = editorDelegate.removeAudioTrack(slot)
 
@@ -353,6 +365,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun setGameplayPaused(paused: Boolean) = gameplayCoordinator.setGameplayPaused(paused)
 
     fun restartGameplay() = gameplayCoordinator.restartGameplay()
+
+    fun triggerGameOver() = gameplayCoordinator.triggerGameOver()
+
+    fun confirmGameOverRetry() = gameplayCoordinator.confirmGameOverRetry()
+
+    fun setGameplayDebugOptions(
+        showRam: Boolean = _uiState.value.debugShowRam,
+        showTelemetry: Boolean = _uiState.value.debugShowTelemetry,
+        botplay: Boolean = _uiState.value.debugBotplay,
+        practiceMode: Boolean = _uiState.value.debugPracticeMode,
+        hideHud: Boolean = _uiState.value.debugHideHud
+    ) = gameplayCoordinator.setGameplayDebugOptions(
+        showRam,
+        showTelemetry,
+        botplay,
+        practiceMode,
+        hideHud
+    )
 
     fun stopGameplayAndNavigate(target: StudioScreen = StudioScreen.Hub) =
         gameplayCoordinator.stopGameplayAndNavigate(target)

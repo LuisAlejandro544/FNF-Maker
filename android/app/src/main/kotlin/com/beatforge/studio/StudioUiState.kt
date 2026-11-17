@@ -6,6 +6,7 @@
 package com.beatforge.studio
 
 import androidx.compose.ui.graphics.ImageBitmap
+import com.beatforge.studio.gfx.GfxCapabilities
 
 data class LoadedEntityBitmap(
     val bitmap: ImageBitmap,
@@ -21,7 +22,12 @@ data class AudioPreviewTransportState(
 
 data class StudioUiState(
     val initialized: Boolean = false,
-    val currentScreen: StudioScreen = StudioScreen.Hub,
+    val hasSelectedProject: Boolean = false,
+    val isLoadingProject: Boolean = false,
+    val loadingProjectName: String = "",
+    val loadingPhase: String = "Preparando estudio...",
+    val loadingProgress: Float = 0f,
+    val currentScreen: StudioScreen = StudioScreen.Projects,
     val snapshot: ProjectSnapshot = ProjectSnapshot(),
     val projects: List<ProjectSummary> = emptyList(),
     val selectedEntityId: String = "",
@@ -29,9 +35,17 @@ data class StudioUiState(
     val arrowSkinDialogOpen: Boolean = false,
     val characterIconsDialogOpen: Boolean = false,
     val modFilesGuideDialogOpen: Boolean = false,
+    val stagedArrowAtlasPngPath: String? = null,
+    val stagedArrowAtlasXmlPath: String? = null,
     val audioPreviewPlaying: Boolean = false,
     val selectedTier: DeviceTier = DeviceTier.Balanced,
+    val gfxCapabilities: GfxCapabilities = GfxCapabilities(),
     val hotCompileProgress: HotCompileProgress = HotCompileProgress(),
+    val debugShowRam: Boolean = false,
+    val debugShowTelemetry: Boolean = false,
+    val debugBotplay: Boolean = false,
+    val debugPracticeMode: Boolean = false,
+    val debugHideHud: Boolean = false,
     val isBusy: Boolean = false,
     val statusBanner: String? = null,
     val statusIsError: Boolean = false,
@@ -39,6 +53,7 @@ data class StudioUiState(
     val scriptValidationOk: Boolean = true,
     val arrowBitmaps: Map<Int, ImageBitmap> = emptyMap(),
     val receptorBitmaps: Map<Int, ImageBitmap> = emptyMap(),
+    val hurtArrowXBitmap: ImageBitmap? = null,
     val healthBarBitmap: ImageBitmap? = null,
     val ratingBitmaps: Map<Int, ImageBitmap> = emptyMap(),
     val noteSplashBitmap: ImageBitmap? = null,

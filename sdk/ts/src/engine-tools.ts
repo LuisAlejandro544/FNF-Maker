@@ -3495,6 +3495,235 @@ export function parseUiBlackoutEvent(ev: {
   };
 }
 
+/**
+ * Tipos canónicos de notas especiales compatibles con `pulse_core::chart::NoteSpecialKind`.
+ */
+export type NoteSpecialType = 'default' | 'hurt' | 'instakill' | 'dodge' | 'alt' | 'no_anim';
+
+/**
+ * Backends gráficos reconocidos por `pulse_core::gfx_backend::RenderBackendKind`.
+ */
+export type RenderBackendKind = 'canvas2d' | 'gles2' | 'gles3' | 'vulkan';
+
+/**
+ * Normaliza cadenas libres de tipo de nota (ej. `Hurt Note`, `mine`, `kill_mine`, `dodge`, `alt`)
+ * hacia el identificador canónico de BeatForge Studio.
+ */
+export function parseSpecialNoteType(raw?: string | null): NoteSpecialType {
+  const clean = (raw ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  if (!clean || clean === 'default' || clean === 'normal' || clean === 'gf_sing' || clean === 'gf') {
+    return 'default';
+  }
+  if (
+    clean === 'hurt' ||
+    clean === 'hurt_note' ||
+    clean === 'mine' ||
+    clean === 'mina' ||
+    clean === 'damage' ||
+    clean === 'danger' ||
+    clean === 'peligro' ||
+    clean === 'x'
+  ) {
+    return 'hurt';
+  }
+  if (
+    clean === 'instakill' ||
+    clean === 'insta_kill' ||
+    clean === 'death' ||
+    clean === 'death_note' ||
+    clean === 'kill' ||
+    clean === 'kill_mine' ||
+    clean === 'muerte'
+  ) {
+    return 'instakill';
+  }
+  if (clean === 'dodge' || clean === 'dodge_note' || clean === 'esquive' || clean === 'warning' || clean === 'parry') {
+    return 'dodge';
+  }
+  if (clean === 'alt' || clean === 'alt_animation' || clean === 'alt_anim' || clean === 'hey') {
+    return 'alt';
+  }
+  if (clean === 'no_anim' || clean === 'no_animation' || clean === 'sin_anim') {
+    return 'no_anim';
+  }
+  if (clean.includes('instakill') || clean.includes('death') || clean.includes('kill')) {
+    return 'instakill';
+  }
+  if (clean.includes('hurt') || clean.includes('mine') || clean.includes('mina')) {
+    return 'hurt';
+  }
+  if (clean.includes('dodge') || clean.includes('esquiv')) {
+    return 'dodge';
+  }
+  if (clean.includes('alt')) {
+    return 'alt';
+  }
+  if (clean.includes('no_anim') || clean.includes('noanim')) {
+    return 'no_anim';
+  }
+  return 'default';
+}
+
+/**
+ * Convierte un tipo canónico de nota especial a su código binario en `BFGP` v2 (`nf` bits 4..7).
+ */
+export function noteSpecialTypeToCode(kind: NoteSpecialType): number {
+  switch (kind) {
+    case 'hurt':
+      return 1;
+    case 'instakill':
+      return 2;
+    case 'dodge':
+      return 3;
+    case 'alt':
+      return 4;
+    case 'no_anim':
+      return 5;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Convierte el código numérico almacenado en `nf` bits 4..7 al tipo canónico de nota especial.
+ */
+export function noteSpecialCodeToType(code: number): NoteSpecialType {
+  switch (code & 0xf) {
+    case 1:
+      return 'hurt';
+    case 2:
+      return 'instakill';
+    case 3:
+      return 'dodge';
+    case 4:
+      return 'alt';
+    case 5:
+      return 'no_anim';
+    default:
+      return 'default';
+  }
+}
+
+/**
+ * Indica si una nota debe renderizarse con la flecha especial marcada con una "X" (`hurt` o `instakill`).
+ */
+export function isHazardXNote(kind: NoteSpecialType | string): boolean {
+  const normalized = parseSpecialNoteType(kind);
+  return normalized === 'hurt' || normalized === 'instakill';
+}
+
+/**
+ * Normaliza la clave del backend gráfico seleccionado para el proyecto (`canvas2d`, `gles2`, `gles3`, `vulkan`).
+ */
+export function normalizeRenderBackendKind(raw?: string | null): RenderBackendKind {
+  switch ((raw ?? '').trim().toLowerCase()) {
+    case 'gles2':
+    case 'opengl_es2':
+    case 'opengles2':
+      return 'gles2';
+    case 'gles3':
+    case 'gles':
+    case 'opengl_es3':
+    case 'opengles3':
+      return 'gles3';
+    case 'vulkan':
+    case 'vk':
+      return 'vulkan';
+    default:
+      return 'canvas2d';
+  }
+}
+
+export interface ArrowSparrowMatch {
+  kind: 'arrow' | 'receptor' | 'hurt';
+  direction?: 'left' | 'down' | 'up' | 'right';
+}
+
+/**
+ * Clasifica un `<SubTexture name="...">` dentro de un atlas `NOTE_assets.xml` estándar de mods
+ * (flechas `purple/blue/green/red`, receptores `arrowLEFT/DOWN/UP/RIGHT` y minas/notas X `hurt/mine`),
+ * ignorando cuadros auxiliares (`hold`, `tail`, `end`, `piece`, `confirm`, `press`).
+ * Espejo exacto de `pulse_core::svg_skin::import_arrow_sparrow_atlas`.
+ */
+export function matchArrowSparrowSubTexture(subTexName: string): ArrowSparrowMatch | null {
+  const low = subTexName.trim().toLowerCase().replace(/[_\-\s0-9]/g, '');
+  if (!low) return null;
+
+  const isReceptor =
+    low.startsWith('arrow') && !low.includes('confirm') && !low.includes('press');
+  if (isReceptor) {
+    if (low.includes('left') || low.includes('izq')) return { kind: 'receptor', direction: 'left' };
+    if (low.includes('down') || low.includes('abajo')) return { kind: 'receptor', direction: 'down' };
+    if (low.includes('up') || low.includes('arriba')) return { kind: 'receptor', direction: 'up' };
+    if (low.includes('right') || low.includes('der')) return { kind: 'receptor', direction: 'right' };
+    return null;
+  }
+
+  if (
+    low.includes('hurt') ||
+    low.includes('mine') ||
+    low.includes('mina') ||
+    low.includes('death') ||
+    low.includes('kill') ||
+    low.includes('danger')
+  ) {
+    return { kind: 'hurt' };
+  }
+
+  const isFx =
+    low.includes('hold') ||
+    low.includes('tail') ||
+    low.includes('end') ||
+    low.includes('piece') ||
+    low.includes('confirm') ||
+    low.includes('press');
+  if (isFx) {
+    return null;
+  }
+
+  if (low === 'purple' || low.includes('purple') || low.includes('left') || low.includes('izq')) {
+    return { kind: 'arrow', direction: 'left' };
+  }
+  if (low === 'blue' || low.includes('blue') || low.includes('down') || low.includes('abajo')) {
+    return { kind: 'arrow', direction: 'down' };
+  }
+  if (low === 'green' || low.includes('green') || low.includes('up') || low.includes('arriba')) {
+    return { kind: 'arrow', direction: 'up' };
+  }
+  if (low === 'red' || low.includes('red') || low.includes('right') || low.includes('der')) {
+    return { kind: 'arrow', direction: 'right' };
+  }
+  return null;
+}
+
+export interface BfgpExtensionFlags {
+  gameOver: boolean;
+  gameOverPhase: number;
+  botplay: boolean;
+  practiceMode: boolean;
+}
+
+/**
+ * Decodifica los bits extendidos `9..13` del campo `flags` en la cabecera `BFGP` v2 (`152B`):
+ * bit 9 = `gameOver`, bits 10..11 = `gameOverPhase` (`0..3`), bit 12 = `botplay`, bit 13 = `practiceMode`.
+ */
+export function decodeBfgpExtensionFlags(flags: number): BfgpExtensionFlags {
+  return {
+    gameOver: (flags & (1 << 9)) !== 0,
+    gameOverPhase: (flags >>> 10) & 0x3,
+    botplay: (flags & (1 << 12)) !== 0,
+    practiceMode: (flags & (1 << 13)) !== 0,
+  };
+}
+
+/**
+ * Extrae el código de nota especial (`0..5`) codificado en `noteFlags` bits 4..7 de cada nota visible `BFGP` v2.
+ */
+export function decodeBfgpNoteKindCode(noteFlags: number): number {
+  return (noteFlags >>> 4) & 0xf;
+}
+
+
 
 
 

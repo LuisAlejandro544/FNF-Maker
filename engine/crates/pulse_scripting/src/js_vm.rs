@@ -689,6 +689,17 @@ impl JsScriptVm {
                     }
                 );
             }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("triggerGameOver", move || {
+                    *h.game_over.lock() = true;
+                    h.push_command(ScriptCommand::TriggerGameOver);
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("isGameOver", move || -> bool { *h.game_over.lock() });
+            }
 
             Self::arm_deadline(
                 &watchdog_origin,
@@ -860,7 +871,7 @@ impl JsScriptVm {
         }
     }
 
-    pub fn call_note_event(&mut self, fn_name: &str, lane: i32, is_player: bool) {
+    pub fn call_note_event(&mut self, fn_name: &str, lane: i32, is_player: bool, note_type: &str) {
         if self.disabled_by_watchdog {
             return;
         }
@@ -873,7 +884,7 @@ impl JsScriptVm {
                     &self.watchdog_tripped,
                     JS_FRAME_BUDGET_MS,
                 );
-                let res = func.call::<_, ()>((lane, is_player));
+                let res = func.call::<_, ()>((lane, is_player, note_type));
                 self.watchdog_deadline_us.store(0, Ordering::Relaxed);
                 if let Err(e) = res {
                     call_err = Some(e.to_string());
@@ -935,6 +946,7 @@ enum JsWorkerCmd {
         fn_name: &'static str,
         lane: i32,
         is_player: bool,
+        note_type: String,
         ack: std::sync::mpsc::SyncSender<()>,
     },
     CallChartEvent {
@@ -1005,10 +1017,11 @@ impl JsWorkerHandle {
                             fn_name,
                             lane,
                             is_player,
+                            note_type,
                             ack,
                         } => {
                             for vm in &mut vms {
-                                vm.call_note_event(fn_name, lane, is_player);
+                                vm.call_note_event(fn_name, lane, is_player, &note_type);
                             }
                             let _ = ack.send(());
                         }
@@ -1105,7 +1118,13 @@ impl JsWorkerHandle {
         }
     }
 
-    pub fn call_note_event(&self, fn_name: &'static str, lane: i32, is_player: bool) {
+    pub fn call_note_event(
+        &self,
+        fn_name: &'static str,
+        lane: i32,
+        is_player: bool,
+        note_type: String,
+    ) {
         if let Some(tx) = &self.tx {
             let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
             if tx
@@ -1113,6 +1132,7 @@ impl JsWorkerHandle {
                     fn_name,
                     lane,
                     is_player,
+                    note_type,
                     ack: ack_tx,
                 })
                 .is_ok()

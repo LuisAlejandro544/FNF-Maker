@@ -111,6 +111,7 @@ internal class StudioGameplayCoordinator(
             )
             val arrows = bitmapLoader.loadArrowBitmaps()
             val receptors = bitmapLoader.loadReceptorBitmaps()
+            val hurtX = bitmapLoader.loadHurtArrowXBitmap()
             val hudAssets = bitmapLoader.loadHudSvgAssets()
             val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(snap.stageEntities)
 
@@ -125,7 +126,12 @@ internal class StudioGameplayCoordinator(
                 )
             }
 
-            val gpRaw = NativeEngineBridge.nativeStartGameplay()
+            NativeEngineBridge.nativeStartGameplay()
+            val stNow = uiState.value
+            val gpRaw = NativeEngineBridge.nativeSetGameplayDebug(
+                stNow.debugBotplay,
+                stNow.debugPracticeMode
+            )
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
             val compiledByIndex = gpStep.entities.map { compiledMap[it.id] }
 
@@ -147,6 +153,7 @@ internal class StudioGameplayCoordinator(
                     compiledBitmapsByIndex = compiledByIndex,
                     arrowBitmaps = arrows,
                     receptorBitmaps = receptors,
+                    hurtArrowXBitmap = hurtX,
                     healthBarBitmap = hudAssets.healthBar,
                     ratingBitmaps = hudAssets.ratings,
                     noteSplashBitmap = hudAssets.noteSplash,
@@ -339,7 +346,11 @@ internal class StudioGameplayCoordinator(
                 }
             }
 
-            val gpRaw = NativeEngineBridge.nativeStartGameplay()
+            NativeEngineBridge.nativeRestartGameplay()
+            val gpRaw = NativeEngineBridge.nativeSetGameplayDebug(
+                st.debugBotplay,
+                st.debugPracticeMode
+            )
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
             val compiledByIndex = gpStep.entities.map { restoredMap[it.id] }
             withContext(Dispatchers.Main) {
@@ -350,6 +361,55 @@ internal class StudioGameplayCoordinator(
                     compiledBitmaps = restoredMap,
                     compiledBitmapsByIndex = compiledByIndex
                 )
+            }
+        }
+    }
+
+    fun triggerGameOver() {
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeTriggerGameOver()
+            val step = StudioJsonParser.parseGameplayStep(raw)
+            withContext(Dispatchers.Main) {
+                gameplayFrameState.seedFromJsonStep(step)
+            }
+        }
+    }
+
+    fun confirmGameOverRetry() {
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeConfirmGameOverRetry()
+            val step = StudioJsonParser.parseGameplayStep(raw)
+            withContext(Dispatchers.Main) {
+                gameplayFrameState.seedFromJsonStep(step)
+            }
+        }
+    }
+
+    fun setGameplayDebugOptions(
+        showRam: Boolean,
+        showTelemetry: Boolean,
+        botplay: Boolean,
+        practiceMode: Boolean,
+        hideHud: Boolean
+    ) {
+        val engineChanged = uiState.value.debugBotplay != botplay ||
+            uiState.value.debugPracticeMode != practiceMode
+        uiState.update {
+            it.copy(
+                debugShowRam = showRam,
+                debugShowTelemetry = showTelemetry,
+                debugBotplay = botplay,
+                debugPracticeMode = practiceMode,
+                debugHideHud = hideHud
+            )
+        }
+        if (engineChanged && uiState.value.currentScreen == StudioScreen.Gameplay) {
+            scope.launch(engineIoDispatcher) {
+                val raw = NativeEngineBridge.nativeSetGameplayDebug(botplay, practiceMode)
+                val step = StudioJsonParser.parseGameplayStep(raw)
+                withContext(Dispatchers.Main) {
+                    gameplayFrameState.seedFromJsonStep(step)
+                }
             }
         }
     }

@@ -56,6 +56,76 @@ impl NoteDirection {
     }
 }
 
+/// Clasificación de tipo de nota especial soportada por BeatForge Studio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum NoteSpecialKind {
+    Normal = 0,
+    Hurt = 1,
+    Instakill = 2,
+    Dodge = 3,
+    AltAnim = 4,
+    NoAnim = 5,
+}
+
+impl NoteSpecialKind {
+    pub fn from_str_loose(raw: &str) -> Self {
+        let clean = raw.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match clean.as_str() {
+            "" | "default" | "normal" | "gf_sing" | "gf" => NoteSpecialKind::Normal,
+            "hurt" | "hurt_note" | "mine" | "mina" | "damage" | "danger" | "peligro" | "x" => {
+                NoteSpecialKind::Hurt
+            }
+            "instakill" | "insta_kill" | "death" | "death_note" | "kill" | "kill_mine" | "muerte" => {
+                NoteSpecialKind::Instakill
+            }
+            "dodge" | "dodge_note" | "esquive" | "warning" | "parry" => NoteSpecialKind::Dodge,
+            "alt" | "alt_animation" | "alt_anim" | "hey" => NoteSpecialKind::AltAnim,
+            "no_anim" | "no_animation" | "sin_anim" => NoteSpecialKind::NoAnim,
+            _ if clean.contains("instakill") || clean.contains("death") || clean.contains("kill") => {
+                NoteSpecialKind::Instakill
+            }
+            _ if clean.contains("hurt") || clean.contains("mine") || clean.contains("mina") => {
+                NoteSpecialKind::Hurt
+            }
+            _ if clean.contains("dodge") || clean.contains("esquiv") => NoteSpecialKind::Dodge,
+            _ if clean.contains("alt") => NoteSpecialKind::AltAnim,
+            _ if clean.contains("no_anim") || clean.contains("noanim") => NoteSpecialKind::NoAnim,
+            _ => NoteSpecialKind::Normal,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => NoteSpecialKind::Hurt,
+            2 => NoteSpecialKind::Instakill,
+            3 => NoteSpecialKind::Dodge,
+            4 => NoteSpecialKind::AltAnim,
+            5 => NoteSpecialKind::NoAnim,
+            _ => NoteSpecialKind::Normal,
+        }
+    }
+
+    pub fn canonical_key(self) -> &'static str {
+        match self {
+            NoteSpecialKind::Normal => "default",
+            NoteSpecialKind::Hurt => "hurt",
+            NoteSpecialKind::Instakill => "instakill",
+            NoteSpecialKind::Dodge => "dodge",
+            NoteSpecialKind::AltAnim => "alt",
+            NoteSpecialKind::NoAnim => "no_anim",
+        }
+    }
+
+    pub fn is_hazard_x(self) -> bool {
+        matches!(self, NoteSpecialKind::Hurt | NoteSpecialKind::Instakill)
+    }
+}
+
 /// Evento cronológico dentro de `chart.json` (ej. cambios de cámara, zoom, flash o texto).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChartEvent {
@@ -753,14 +823,25 @@ impl ChartData {
         }
     }
 
-    /// Coloca o quita una nota manualmente en `(sec_index, step_in_sec, col_0_to_7)`:
-    /// columnas `0..=3` corresponden a Oponente y `4..=7` al Jugador.
+    /// Coloca o quita una nota manualmente en `(sec_index, step_in_sec, col_0_to_7)` con tipo `"default"`.
     pub fn toggle_note_at(
         &mut self,
         sec_index: usize,
         step_in_sec: u32,
         col_0_to_7: u8,
         sustain_steps: u32,
+    ) -> bool {
+        self.toggle_note_with_type(sec_index, step_in_sec, col_0_to_7, sustain_steps, "default")
+    }
+
+    /// Coloca o quita una nota manualmente indicando `note_type` (`default`, `hurt`, `instakill`, `dodge`, `alt`, `no_anim`).
+    pub fn toggle_note_with_type(
+        &mut self,
+        sec_index: usize,
+        step_in_sec: u32,
+        col_0_to_7: u8,
+        sustain_steps: u32,
+        note_type: &str,
     ) -> bool {
         if sec_index >= self.sections.len() {
             return false;
@@ -771,6 +852,14 @@ impl ChartData {
         let is_player = col_0_to_7 >= 4;
         let dir = NoteDirection::from_lane(col_0_to_7 % 4);
         let tolerance_ms = step_ms * 0.45;
+        let clean_type = {
+            let trimmed = note_type.trim();
+            if trimmed.is_empty() {
+                "default".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        };
 
         if let Some(existing_idx) = self.notes.iter().position(|n| {
             n.is_player == is_player
@@ -789,7 +878,7 @@ impl ChartData {
                 direction: dir,
                 is_player,
                 sustain_ms,
-                note_type: "default".to_string(),
+                note_type: clean_type,
                 hit: false,
                 missed: false,
             });

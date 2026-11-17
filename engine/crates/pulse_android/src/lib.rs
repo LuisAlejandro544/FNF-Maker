@@ -1031,4 +1031,107 @@ mod jni_exports {
         let json = session().lock().stop_gameplay();
         to_jstr(&mut env, &json)
     }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeToggleChartNoteWithType<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        sec_index: jint,
+        step_in_sec: jint,
+        col_0_to_7: jint,
+        sustain_steps: jint,
+        note_type: JString<'local>,
+    ) -> JString<'local> {
+        let nt = read_str(&mut env, &note_type);
+        let json = session().lock().toggle_chart_note_with_type(
+            sec_index.max(0) as usize,
+            step_in_sec.max(0) as u32,
+            col_0_to_7.clamp(0, 7) as u8,
+            sustain_steps.max(0) as u32,
+            &nt,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportArrowAtlas<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        png_path: JString<'local>,
+        xml_path: JString<'local>,
+    ) -> JString<'local> {
+        let png = PathBuf::from(read_str(&mut env, &png_path));
+        let xml = PathBuf::from(read_str(&mut env, &xml_path));
+        let json = session().lock().import_arrow_atlas(png, xml);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetHurtArrowPngBytes<'local>(
+        env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JByteArray<'local> {
+        let bytes = session().lock().rasterize_hurt_arrow_png_bytes();
+        env.byte_array_from_slice(&bytes).unwrap_or_default()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeTriggerGameOver<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().trigger_game_over();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeConfirmGameOverRetry<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().confirm_game_over_retry();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRestartGameplay<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().restart_gameplay();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetGameplayDebug<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        botplay: jboolean,
+        practice_mode: jboolean,
+    ) -> JString<'local> {
+        let json = session()
+            .lock()
+            .set_gameplay_debug(botplay != 0, practice_mode != 0);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeProbeGraphicsBackends<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().probe_graphics_backends_json();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetPreferredRenderBackend<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        backend_key: JString<'local>,
+    ) -> JString<'local> {
+        let key = read_str(&mut env, &backend_key);
+        let json = session().lock().set_preferred_render_backend(&key);
+        to_jstr(&mut env, &json)
+    }
 }

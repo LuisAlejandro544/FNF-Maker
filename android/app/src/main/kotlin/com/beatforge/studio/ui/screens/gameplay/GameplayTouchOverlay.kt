@@ -31,6 +31,12 @@ internal fun GameplayTouchOverlay(
     isClassicHitbox: Boolean,
     touchMaskState: GameplayTouchMaskState
 ) {
+    val hud = frameState.hudState
+    if (hud.paused || hud.finished || hud.gameOver) {
+        touchMaskState.pressedMask = 0
+        touchMaskState.pendingJustPressedMask = 0
+        return
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()

@@ -12,6 +12,7 @@
 //! - `frame_memory`: Arena temporal por frame (`FrameBumpArena`), ventana deslizante de notas (`NoteSlidingWindow`) y caché LRU (`LruCache`).
 //! - `mod_descriptors`: Lectura de descriptores `.json` y `.xml` de mods (`characters/*`, `stages/*`) con posición en escenario, cámara y offsets por animación.
 //! - `script_optimizer`: Analizador inteligente de bucles pesados/infinitos en Lua, JS y TypeScript.
+//! - `gfx_backend`: Enumeración de backends gráficos (`Canvas2D`, `OpenGL ES 2/3`, `Vulkan`) y capacidades detectadas.
 //! - `vanilla`: Empaquetador e importador de contenedores Vanilla (`.mod`) apoyado en Zstandard (`zstd`), optimización WebP sin pérdida y verificación FNV-1a.
 
 pub mod astc_loader;
@@ -19,6 +20,7 @@ pub mod atlas_json;
 pub mod chart;
 pub mod disk_cache;
 pub mod frame_memory;
+pub mod gfx_backend;
 pub mod hot_compile;
 pub mod mod_descriptors;
 pub mod project;
@@ -33,7 +35,8 @@ pub use astc_loader::{
     save_lossless_webp,
 };
 pub use atlas_json::{AnimateDocument, AnimateSpritemap, DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
-pub use chart::{ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection};
+pub use chart::{ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection, NoteSpecialKind};
+pub use gfx_backend::{GfxCapabilities, RenderBackendKind};
 pub use disk_cache::{
     CacheBudgetSplit, DEFAULT_TOTAL_CACHE_QUOTA_BYTES, LruEvictionReport, MAX_CACHE_QUOTA_BYTES,
     MIN_CACHE_QUOTA_BYTES, cleanup_legacy_flat_compiled_cache, compute_cache_budget_split,
@@ -61,7 +64,11 @@ pub use project::{
 pub use script_optimizer::{ScriptBatchReport, ScriptLoopOptResult, optimize_scripts_for_hot_compile, optimize_single_script};
 pub use sparrow::{AnimSet, CharacterAnimKind, SparrowAtlas, SparrowFrame};
 pub use stage::{CameraFollowMode, EntityRole, StageCameraConfig, StageEntity, StageScene};
-pub use svg_skin::{ArrowSkinSet, RasterizedArrow, default_arrow_svg_bundle, default_receptor_svg_bundle, desaturate_to_neutral_receptor, rasterize_arrow_skin};
+pub use svg_skin::{
+    ArrowSkinSet, RasterizedArrow, default_arrow_svg_bundle, default_hurt_arrow_x_svg,
+    default_receptor_svg_bundle, desaturate_to_neutral_receptor, import_arrow_sparrow_atlas,
+    rasterize_arrow_skin,
+};
 pub use vanilla::{
     VANILLA_FILE_EXTENSION, VANILLA_FORMAT_VERSION, VANILLA_HEADER_BYTES, VANILLA_MAGIC,
     VanillaEntry, VanillaEntryCodec, VanillaExportReport, VanillaImportResult, VanillaManifest,

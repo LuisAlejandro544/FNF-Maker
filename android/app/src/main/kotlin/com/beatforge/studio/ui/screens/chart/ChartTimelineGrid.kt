@@ -767,16 +767,45 @@ private fun ChartNoteCell(
             }
         }
 
-        // Capa 2: Cabeza de nota (flecha) sobre el origen del sustain
+        // Capa 2: Cabeza de nota (flecha o nota especial X / Esquive / Alt / Sin Anim)
         if (hasNote) {
+            val isHurt = note!!.noteKindCode == 1 || note.noteType.equals("hurt", ignoreCase = true)
+            val isInstakill = note.noteKindCode == 2 || note.noteType.equals("instakill", ignoreCase = true)
+            val isDodge = note.noteKindCode == 3 || note.noteType.equals("dodge", ignoreCase = true)
+            val isAlt = note.noteKindCode == 4 || note.noteType.equals("alt", ignoreCase = true)
+            val isNoAnim = note.noteKindCode == 5 || note.noteType.equals("no_anim", ignoreCase = true)
+
+            val noteBgColor = when {
+                isInstakill -> Color(0xFFB71C1C)
+                isHurt -> StudioColors.AccentCoral
+                isDodge -> StudioColors.AccentAmber
+                isAlt -> StudioColors.AccentPurple
+                isNoAnim -> StudioColors.BgElevated
+                else -> laneColor.copy(alpha = 0.94f)
+            }
+            val noteBorderColor = when {
+                isInstakill -> Color(0xFFFF8A80)
+                isHurt -> Color.White
+                isDodge -> Color(0xFFFFF59D)
+                else -> Color.White.copy(alpha = 0.75f)
+            }
+            val symbolText = when {
+                isInstakill -> "X!"
+                isHurt -> "X"
+                isDodge -> "⚡"
+                isAlt -> "${LANE_ARROWS[laneIndex]}A"
+                isNoAnim -> "${LANE_ARROWS[laneIndex]}∅"
+                else -> LANE_ARROWS[laneIndex]
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(28.dp)
                     .padding(horizontal = 1.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(laneColor.copy(alpha = 0.94f))
-                    .border(1.dp, Color.White.copy(alpha = 0.75f), RoundedCornerShape(6.dp)),
+                    .background(noteBgColor)
+                    .border(if (isHurt || isInstakill) 1.5.dp else 1.dp, noteBorderColor, RoundedCornerShape(6.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Row(
@@ -784,9 +813,9 @@ private fun ChartNoteCell(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = LANE_ARROWS[laneIndex],
-                        color = Color.White,
-                        fontSize = 12.sp,
+                        text = symbolText,
+                        color = if (isDodge) Color(0xFF1F1200) else Color.White,
+                        fontSize = 11.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
                         softWrap = false
@@ -794,7 +823,7 @@ private fun ChartNoteCell(
                     if (sustainSteps > 0) {
                         Text(
                             text = "${sustainSteps}p",
-                            color = Color.White.copy(alpha = 0.90f),
+                            color = (if (isDodge) Color(0xFF1F1200) else Color.White).copy(alpha = 0.90f),
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,

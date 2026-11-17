@@ -7,7 +7,7 @@
 //! 3. `LruCache`: Caché LRU determinista con presupuesto máximo de bytes y entradas para
 //!    desechar automáticamente texturas/recursos menos usados en teléfonos con poca RAM.
 
-use crate::chart::ChartNote;
+use crate::chart::{ChartNote, NoteSpecialKind};
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -218,6 +218,7 @@ pub struct FrameVisibleNote {
     pub time_ms: f64,
     pub sustain_ms: f64,
     pub direction: u8,
+    pub note_kind_code: u8,
     pub is_player: bool,
     pub is_holding: bool,
 }
@@ -340,6 +341,7 @@ impl NoteSlidingWindow {
                 time_ms: note.time_ms,
                 sustain_ms: note.sustain_ms,
                 direction: note.direction as u8,
+                note_kind_code: NoteSpecialKind::from_str_loose(&note.note_type).code(),
                 is_player: note.is_player,
                 is_holding: st == NotePlayState::Holding,
             });
@@ -510,6 +512,7 @@ mod tests {
                 time_ms: 500.0,
                 sustain_ms: 0.0,
                 direction: 0,
+                note_kind_code: 0,
                 is_player: true,
                 is_holding: false,
             },
@@ -518,6 +521,7 @@ mod tests {
                 time_ms: 800.0,
                 sustain_ms: 150.0,
                 direction: 2,
+                note_kind_code: 1,
                 is_player: false,
                 is_holding: true,
             },

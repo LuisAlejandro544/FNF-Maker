@@ -56,15 +56,20 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.rounded.Memory
 import com.beatforge.studio.MobileControlMode
 import com.beatforge.studio.ProjectSnapshot
 import com.beatforge.studio.StudioScreen
+import com.beatforge.studio.gfx.GfxCapabilities
+import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.ui.theme.StudioColors
 import kotlin.math.roundToInt
 
 @Composable
 fun HubScreen(
     snapshot: ProjectSnapshot,
+    gfxCapabilities: GfxCapabilities = GfxCapabilities(),
+    onSelectRenderBackend: (RenderBackendKind) -> Unit = {},
     onUpdateMeta: (
         name: String,
         author: String,
@@ -317,6 +322,104 @@ fun HubScreen(
                     StatBadge("Pistas", "$activeTracks/3", StudioColors.AccentEmerald)
                     StatBadge("Capas", snapshot.stageEntities.size.toString(), StudioColors.AccentIndigo)
                     StatBadge("Scripts", "$enabledScripts/${snapshot.scripts.size}", StudioColors.AccentPurple)
+                }
+            }
+
+            // Terreno preparado para backends OpenGL ES 2.0 / 3.x y Vulkan
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = StudioColors.BgPanel,
+                border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+            ) {
+                val activeBackend = RenderBackendKind.fromKey(snapshot.preferredRenderBackend)
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Rounded.Memory,
+                                contentDescription = null,
+                                tint = StudioColors.AccentAmber,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Motor Gráfico (Terreno GPU)",
+                                color = StudioColors.TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Text(
+                            text = if (gfxCapabilities.vulkanSupported) "Vulkan listo" else gfxCapabilities.glesVersionLabel,
+                            color = StudioColors.AccentEmerald,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        RenderBackendKind.entries.forEach { kind ->
+                            val selected = activeBackend == kind
+                            val supported = gfxCapabilities.supports(kind)
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { onSelectRenderBackend(kind) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) {
+                                    StudioColors.AccentAmber.copy(alpha = 0.18f)
+                                } else {
+                                    StudioColors.BgCard
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) StudioColors.AccentAmber else StudioColors.BorderSubtle
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = kind.shortBadge,
+                                        color = if (selected) StudioColors.AccentAmber else StudioColors.TextPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = if (kind == RenderBackendKind.Canvas2d) {
+                                            "Activo"
+                                        } else if (supported) {
+                                            "Sonda OK"
+                                        } else {
+                                            "No disp."
+                                        },
+                                        color = if (supported) StudioColors.AccentEmerald else StudioColors.TextMuted,
+                                        fontSize = 9.sp,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "${activeBackend.subtitle} · ${gfxCapabilities.detail}",
+                        color = StudioColors.TextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp
+                    )
                 }
             }
         }

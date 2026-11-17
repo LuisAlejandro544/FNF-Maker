@@ -13,7 +13,7 @@ use crate::session::{
 };
 use pulse_core::project::MobileControlMode;
 use pulse_core::sparrow::{CharacterAnimKind, SparrowFrame};
-use pulse_core::{EntityRole, StageEntity};
+use pulse_core::{EntityRole, NoteSpecialKind, StageEntity};
 
 fn role_to_code(role: EntityRole) -> u32 {
     match role {
@@ -209,6 +209,10 @@ impl EngineSession {
                 active_opponent_idx: -1,
                 paused: false,
                 finished: false,
+                game_over: false,
+                game_over_phase: 0,
+                botplay: false,
+                practice_mode: false,
                 script_errors: Vec::new(),
                 script_logs: Vec::new(),
                 entities: Vec::new(),
@@ -298,6 +302,7 @@ impl EngineSession {
         let mut visible_notes = std::mem::take(&mut session.step_notes_scratch);
         visible_notes.clear();
         for n in session.frame_arena.get_slice(sim.visible_span) {
+            let note_type = NoteSpecialKind::from_code(n.note_kind_code);
             visible_notes.push(VisibleNoteJson {
                 id: n.id,
                 time_ms: n.time_ms,
@@ -305,6 +310,8 @@ impl EngineSession {
                 is_player: n.is_player,
                 sustain_ms: n.sustain_ms,
                 head_hit: n.is_holding,
+                note_type: note_type.canonical_key().to_string(),
+                note_kind_code: n.note_kind_code,
             });
         }
 
@@ -384,6 +391,10 @@ impl EngineSession {
             active_opponent_idx,
             paused: session.paused,
             finished: session.finished,
+            game_over: session.game_over,
+            game_over_phase: session.game_over_phase,
+            botplay: session.botplay,
+            practice_mode: session.practice_mode,
             script_errors: session.script_errors.clone(),
             script_logs: session.last_logs.clone(),
             entities,
@@ -575,6 +586,16 @@ impl EngineSession {
         if !session.arrows_visible {
             flags |= 1 << 8;
         }
+        if session.game_over {
+            flags |= 1 << 9;
+        }
+        flags |= ((session.game_over_phase as u32) & 0x3) << 10;
+        if session.botplay {
+            flags |= 1 << 12;
+        }
+        if session.practice_mode {
+            flags |= 1 << 13;
+        }
         let blackout_u8 = (session.screen_blackout_alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
         let arrows_inv_u8 =
             ((1.0 - session.arrows_opacity.clamp(0.0, 1.0)) * 255.0).round() as u32;
@@ -686,6 +707,7 @@ impl EngineSession {
             if n.is_holding {
                 n_flags |= 1 << 3;
             }
+            n_flags |= ((n.note_kind_code as u32) & 0xF) << 4;
             w.write_u64(n.id);
             w.write_f64(n.time_ms);
             w.write_f64(n.sustain_ms);

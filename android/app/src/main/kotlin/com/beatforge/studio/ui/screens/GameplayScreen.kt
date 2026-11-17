@@ -14,7 +14,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -24,6 +28,8 @@ import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.MobileControlMode
 import com.beatforge.studio.ui.screens.gameplay.GameplayCountdownOverlay
+import com.beatforge.studio.ui.screens.gameplay.GameplayDebugOverlay
+import com.beatforge.studio.ui.screens.gameplay.GameplayGameOverOverlay
 import com.beatforge.studio.ui.screens.gameplay.GameplayHealthBarAndStats
 import com.beatforge.studio.ui.screens.gameplay.GameplayPauseButton
 import com.beatforge.studio.ui.screens.gameplay.GameplayPauseDialog
@@ -43,6 +49,7 @@ fun GameplayScreen(
     frameState: GameplayFrameState,
     arrowBitmaps: Map<Int, ImageBitmap>,
     receptorBitmaps: Map<Int, ImageBitmap>,
+    hurtArrowXBitmap: ImageBitmap?,
     healthBarBitmap: ImageBitmap?,
     ratingBitmaps: Map<Int, ImageBitmap>,
     noteSplashBitmap: ImageBitmap?,
@@ -55,14 +62,25 @@ fun GameplayScreen(
     defaultOpponentNormalIcon: ImageBitmap?,
     defaultOpponentLosingIcon: ImageBitmap?,
     compiledBitmapsByIndex: List<LoadedEntityBitmap?>,
+    debugShowRam: Boolean,
+    debugShowTelemetry: Boolean,
+    debugBotplay: Boolean,
+    debugPracticeMode: Boolean,
+    debugHideHud: Boolean,
+    renderBackendLabel: String,
     onStepFrame: suspend (dtSec: Float, pressedMask: Int, justPressedMask: Int) -> Unit,
     onChangeControlMode: (MobileControlMode) -> Unit,
     onSetPaused: (Boolean) -> Unit,
     onRestart: () -> Unit,
+    onTriggerGameOver: () -> Unit,
+    onConfirmGameOverRetry: () -> Unit,
+    onUpdateDebug: (showRam: Boolean, showTelemetry: Boolean, botplay: Boolean, practiceMode: Boolean, hideHud: Boolean) -> Unit,
     onExitToStudio: () -> Unit
 ) {
     val touchMaskState = remember { GameplayTouchMaskState() }
     val hud = frameState.hudState
+    var liveFps by remember { mutableIntStateOf(60) }
+    var liveFrameMs by remember { mutableFloatStateOf(16.6f) }
 
     val ratingPopup = remember { RatingPopupHolder() }
     val splashPool = remember { SplashPoolHolder() }
@@ -75,11 +93,23 @@ fun GameplayScreen(
 
     LaunchedEffect(Unit) {
         var lastNs = 0L
+        var accumSec = 0f
+        var frameCounter = 0
         while (true) {
             var dt = 0.016f
             withFrameNanos { ns ->
                 if (lastNs != 0L) {
-                    dt = ((ns - lastNs) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                    val rawDt = (ns - lastNs) / 1_000_000_000f
+                    dt = rawDt.coerceIn(0.001f, 0.05f)
+                    accumSec += rawDt
+                    frameCounter += 1
+                    if (accumSec >= 0.35f) {
+                        val avgDt = accumSec / frameCounter.coerceAtLeast(1)
+                        liveFps = (1f / avgDt.coerceAtLeast(0.001f)).toInt().coerceIn(1, 240)
+                        liveFrameMs = avgDt * 1000f
+                        accumSec = 0f
+                        frameCounter = 0
+                    }
                 }
                 lastNs = ns
             }
@@ -176,6 +206,7 @@ fun GameplayScreen(
                 sy = sy,
                 arrowBitmaps = arrowBitmaps,
                 receptorBitmaps = receptorBitmaps,
+                hurtArrowXBitmap = hurtArrowXBitmap,
                 noteSplashBitmap = noteSplashBitmap,
                 splashPool = splashPool,
                 dynamicTextPaint = dynamicTextPaint
@@ -188,21 +219,28 @@ fun GameplayScreen(
             touchMaskState = touchMaskState
         )
 
-        GameplayHealthBarAndStats(
-            frameState = frameState,
-            hud = hud,
-            healthBarBitmap = healthBarBitmap,
-            fallbackPlayerId = fallbackPlayerId,
-            fallbackOpponentId = fallbackOpponentId,
-            entityNormalIcons = entityNormalIcons,
-            entityLosingIcons = entityLosingIcons,
-            defaultPlayerNormalIcon = defaultPlayerNormalIcon,
-            defaultPlayerLosingIcon = defaultPlayerLosingIcon,
-            defaultOpponentNormalIcon = defaultOpponentNormalIcon,
-            defaultOpponentLosingIcon = defaultOpponentLosingIcon
-        )
+        if (!debugHideHud && !hud.gameOver) {
+            GameplayHealthBarAndStats(
+                frameState = frameState,
+                hud = hud,
+                healthBarBitmap = healthBarBitmap,
+                fallbackPlayerId = fallbackPlayerId,
+                fallbackOpponentId = fallbackOpponentId,
+                entityNormalIcons = entityNormalIcons,
+                entityLosingIcons = entityLosingIcons,
+                defaultPlayerNormalIcon = defaultPlayerNormalIcon,
+                defaultPlayerLosingIcon = defaultPlayerLosingIcon,
+                defaultOpponentNormalIcon = defaultOpponentNormalIcon,
+                defaultOpponentLosingIcon = defaultOpponentLosingIcon
+            )
+        }
 
-        GameplayPauseButton(onPause = { onSetPaused(true) })
+        if (!hud.gameOver) {
+            GameplayPauseButton(
+                discreet = debugHideHud,
+                onPause = { onSetPaused(true) }
+            )
+        }
 
         // Cortina de pantalla en negro (`screenBlackoutAlpha`) y destello sobre HUD:
         // cubre escenario, flechas y barra de vida, pero conserva visible el conteo "3, 2, 1, ¡YA!" y Pausa.
@@ -225,13 +263,43 @@ fun GameplayScreen(
             }
         }
 
-        GameplayScriptBanner(hud = hud)
+        GameplayDebugOverlay(
+            showRam = debugShowRam,
+            showTelemetry = debugShowTelemetry,
+            fps = liveFps,
+            frameMs = liveFrameMs,
+            compiledBitmapsCount = compiledBitmapsByIndex.count { it != null },
+            renderBackendLabel = renderBackendLabel,
+            frameState = frameState,
+            hud = hud
+        )
+
+        if (!debugHideHud) {
+            GameplayScriptBanner(hud = hud)
+        }
 
         GameplayCountdownOverlay(hud = hud)
 
+        GameplayGameOverOverlay(
+            hud = hud,
+            onConfirmRetry = onConfirmGameOverRetry,
+            onExitToStudio = onExitToStudio
+        )
+
         GameplayPauseDialog(
             hud = hud,
+            debugShowRam = debugShowRam,
+            debugShowTelemetry = debugShowTelemetry,
+            debugBotplay = debugBotplay,
+            debugPracticeMode = debugPracticeMode,
+            debugHideHud = debugHideHud,
             onChangeControlMode = onChangeControlMode,
+            onToggleDebugRam = { onUpdateDebug(it, debugShowTelemetry, debugBotplay, debugPracticeMode, debugHideHud) },
+            onToggleDebugTelemetry = { onUpdateDebug(debugShowRam, it, debugBotplay, debugPracticeMode, debugHideHud) },
+            onToggleDebugBotplay = { onUpdateDebug(debugShowRam, debugShowTelemetry, it, debugPracticeMode, debugHideHud) },
+            onToggleDebugPractice = { onUpdateDebug(debugShowRam, debugShowTelemetry, debugBotplay, it, debugHideHud) },
+            onToggleDebugHideHud = { onUpdateDebug(debugShowRam, debugShowTelemetry, debugBotplay, debugPracticeMode, it) },
+            onTriggerGameOver = onTriggerGameOver,
             onResume = { onSetPaused(false) },
             onRestart = onRestart,
             onExitToStudio = onExitToStudio

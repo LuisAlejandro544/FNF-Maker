@@ -300,4 +300,37 @@ object NativeEngineBridge {
 
     @JvmStatic
     external fun nativeStopGameplay(): String
+
+    @JvmStatic
+    external fun nativeToggleChartNoteWithType(
+        secIndex: Int,
+        stepInSec: Int,
+        col0To7: Int,
+        sustainSteps: Int,
+        noteType: String
+    ): String
+
+    @JvmStatic
+    external fun nativeImportArrowAtlas(pngPath: String, xmlPath: String): String
+
+    @JvmStatic
+    external fun nativeGetHurtArrowPngBytes(): ByteArray
+
+    @JvmStatic
+    external fun nativeTriggerGameOver(): String
+
+    @JvmStatic
+    external fun nativeConfirmGameOverRetry(): String
+
+    @JvmStatic
+    external fun nativeRestartGameplay(): String
+
+    @JvmStatic
+    external fun nativeSetGameplayDebug(botplay: Boolean, practiceMode: Boolean): String
+
+    @JvmStatic
+    external fun nativeProbeGraphicsBackends(): String
+
+    @JvmStatic
+    external fun nativeSetPreferredRenderBackend(backendKey: String): String
 }

@@ -11,6 +11,7 @@
 pub mod dto;
 pub mod editor_ops;
 pub mod gameplay_ops;
+pub mod gfx_probe;
 pub mod persistence_ops;
 pub mod sprite_ops;
 
@@ -204,6 +205,9 @@ pub(super) fn anim_kind_key(kind: CharacterAnimKind) -> &'static str {
         CharacterAnimKind::MissDown => "miss_down",
         CharacterAnimKind::MissUp => "miss_up",
         CharacterAnimKind::MissRight => "miss_right",
+        CharacterAnimKind::DeathStart => "death_start",
+        CharacterAnimKind::DeathLoop => "death_loop",
+        CharacterAnimKind::DeathConfirm => "death_confirm",
     }
 }
 
@@ -218,6 +222,9 @@ pub(super) fn parse_anim_kind(key: &str) -> Option<CharacterAnimKind> {
         "miss_down" | "downmiss" | "singdownmiss" | "fallo_abajo" => Some(CharacterAnimKind::MissDown),
         "miss_up" | "upmiss" | "singupmiss" | "fallo_arriba" => Some(CharacterAnimKind::MissUp),
         "miss_right" | "rightmiss" | "singrightmiss" | "fallo_derecha" => Some(CharacterAnimKind::MissRight),
+        "death_start" | "deathstart" | "firstdeath" | "death" | "dies" | "muerte_inicio" => Some(CharacterAnimKind::DeathStart),
+        "death_loop" | "deathloop" | "dead" | "muerte_loop" => Some(CharacterAnimKind::DeathLoop),
+        "death_confirm" | "deathconfirm" | "retry" | "muerte_confirm" => Some(CharacterAnimKind::DeathConfirm),
         _ => None,
     }
 }

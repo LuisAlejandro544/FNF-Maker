@@ -7,6 +7,7 @@ use pulse_core::frame_memory::{FrameBumpArena, FrameVisibleNote, NoteSlidingWind
 use pulse_core::hot_compile::CompiledBundle;
 use pulse_core::project::MAX_AUDIO_TRACKS;
 use pulse_core::sparrow::CharacterAnimKind;
+use pulse_core::NoteSpecialKind;
 use pulse_scripting::ModScriptRuntime;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -64,7 +65,9 @@ pub struct ProjectSnapshotJson {
     pub scripts: Vec<ScriptSnapshotJson>,
     pub arrow_skin_name: String,
     pub custom_arrow_paths: HashMap<String, String>,
+    pub has_custom_png_arrow_skin: bool,
     pub health_bar_svg_path: Option<String>,
+    pub preferred_render_backend: String,
     pub last_compile_report: Option<CompileReportJson>,
 }
 
@@ -263,6 +266,8 @@ pub struct VisibleNoteJson {
     pub is_player: bool,
     pub sustain_ms: f64,
     pub head_hit: bool,
+    pub note_type: String,
+    pub note_kind_code: u8,
 }
 
 #[derive(Serialize)]
@@ -312,6 +317,10 @@ pub struct GameplayStepJson {
     pub active_opponent_idx: i32,
     pub paused: bool,
     pub finished: bool,
+    pub game_over: bool,
+    pub game_over_phase: u8,
+    pub botplay: bool,
+    pub practice_mode: bool,
     pub script_errors: Vec<String>,
     pub script_logs: Vec<String>,
     pub entities: Vec<GameplayEntityFrameJson>,
@@ -438,6 +447,11 @@ pub struct GameplayRuntimeState {
     pub next_preload_event_idx: usize,
     pub paused: bool,
     pub finished: bool,
+    pub game_over: bool,
+    pub game_over_phase: u8,
+    pub game_over_timer_sec: f32,
+    pub botplay: bool,
+    pub practice_mode: bool,
     pub last_logs: Vec<String>,
     pub last_countdown_stage: i32,
     pub hud_revision: u32,
@@ -674,6 +688,8 @@ impl EngineSession {
                         is_player: n.is_player,
                         sustain_ms: n.sustain_ms,
                         head_hit: false,
+                        note_type: n.note_type.clone(),
+                        note_kind_code: NoteSpecialKind::from_str_loose(&n.note_type).code(),
                     })
                     .collect(),
                 events: self
@@ -695,11 +711,13 @@ impl EngineSession {
             scripts,
             arrow_skin_name: self.project.arrow_skin.skin_name.clone(),
             custom_arrow_paths,
+            has_custom_png_arrow_skin: self.project.arrow_skin.has_custom_png_atlas(),
             health_bar_svg_path: self
                 .project
                 .health_bar_svg_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
+            preferred_render_backend: self.project.preferred_render_backend.as_key().to_string(),
             last_compile_report,
         }
     }

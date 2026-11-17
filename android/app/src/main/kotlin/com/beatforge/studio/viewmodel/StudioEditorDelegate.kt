@@ -20,6 +20,8 @@ import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.StudioJsonParser
 import com.beatforge.studio.StudioScreen
 import com.beatforge.studio.StudioUiState
+import com.beatforge.studio.gfx.RenderBackendKind
+import com.beatforge.studio.gfx.VulkanProbeBridge
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 internal class StudioEditorDelegate(
     private val app: Application,
@@ -50,31 +53,30 @@ internal class StudioEditorDelegate(
             val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
             val arrows = bitmapLoader.loadArrowBitmaps()
             val receptors = bitmapLoader.loadReceptorBitmaps()
+            val hurtX = bitmapLoader.loadHurtArrowXBitmap()
             val hudAssets = bitmapLoader.loadHudSvgAssets()
-            val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(snap.stageEntities)
-            val entBmps = bitmapLoader.loadEditorEntityBitmaps(
-                snap.stageEntities,
-                uiState.value.selectedTier
-            )
+            val gfxCaps = VulkanProbeBridge.probeCombinedCapabilities(app)
+
             uiState.update { state ->
                 state.copy(
                     initialized = true,
+                    hasSelectedProject = false,
+                    currentScreen = StudioScreen.Projects,
                     snapshot = snap,
                     projects = projects,
+                    gfxCapabilities = gfxCaps,
                     selectedEntityId = snap.stageEntities.firstOrNull()?.id ?: "",
                     selectedScriptId = snap.scripts.firstOrNull()?.id ?: "",
                     arrowBitmaps = arrows,
                     receptorBitmaps = receptors,
+                    hurtArrowXBitmap = hurtX,
                     healthBarBitmap = hudAssets.healthBar,
                     ratingBitmaps = hudAssets.ratings,
                     noteSplashBitmap = hudAssets.noteSplash,
                     defaultPlayerNormalIcon = hudAssets.playerNormal,
                     defaultPlayerLosingIcon = hudAssets.playerLosing,
                     defaultOpponentNormalIcon = hudAssets.opponentNormal,
-                    defaultOpponentLosingIcon = hudAssets.opponentLosing,
-                    entityNormalIcons = normalIcons,
-                    entityLosingIcons = losingIcons,
-                    entityBitmaps = entBmps
+                    defaultOpponentLosingIcon = hudAssets.opponentLosing
                 )
             }
         }
@@ -171,46 +173,103 @@ internal class StudioEditorDelegate(
                 return@launch
             }
 
+            var deleteLocalInFinally = true
             try {
-                if (kind is ImportKind.ModPackage) {
-                    if (uiState.value.audioPreviewPlaying) {
-                        NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
-                    }
-                    val rawJson = NativeEngineBridge.nativeImportModPackage(localPath)
-                    applyProjectSwitchResult(rawJson, navigateToHub = true)
-                } else {
-                    val rawJson = when (kind) {
-                        is ImportKind.Chart -> NativeEngineBridge.nativeImportChart(localPath)
-                        is ImportKind.AudioTrack -> NativeEngineBridge.nativeImportAudioTrack(kind.slot, localPath)
-                        is ImportKind.SpritePng -> NativeEngineBridge.nativeImportSpriteSheetPng(kind.entityId, localPath)
-                        is ImportKind.SparrowXml -> NativeEngineBridge.nativeImportSparrowXml(kind.entityId, localPath)
-                        is ImportKind.CharacterConfig -> NativeEngineBridge.nativeImportCharacterConfig(kind.entityId, localPath)
-                        is ImportKind.StageConfig -> NativeEngineBridge.nativeImportStageConfig(localPath)
-                        is ImportKind.Script -> NativeEngineBridge.nativeImportScript(localPath)
-                        is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
-                        is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
-                        is ImportKind.HealthBarSvg -> NativeEngineBridge.nativeImportHealthBarSvg(localPath)
-                        is ImportKind.ModPackage -> error("handled above")
+                when (kind) {
+                    is ImportKind.ModPackage -> {
+                        if (uiState.value.audioPreviewPlaying) {
+                            NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
+                        }
+                        beginLoadingOverlay("Importando paquete .mod...", 0.25f, "Descomprimiendo mod Vanilla...")
+                        val rawJson = NativeEngineBridge.nativeImportModPackage(localPath)
+                        applyProjectSwitchResult(rawJson, navigateToHub = true)
                     }
 
-                    applyActionJson(rawJson)
-                    when (kind) {
-                        is ImportKind.ArrowSvg -> reloadArrowBitmaps()
-                        is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
-                        is ImportKind.CharacterIcon -> reloadCustomIcons(uiState.value.snapshot.stageEntities)
-                        is ImportKind.SpritePng, is ImportKind.SparrowXml, is ImportKind.CharacterConfig, is ImportKind.StageConfig -> {
-                            bitmapLoader.evictRegionCache()
-                            reloadEntityBitmaps(uiState.value.snapshot.stageEntities)
+                    is ImportKind.ArrowAtlasPng -> {
+                        deleteLocalInFinally = false
+                        uiState.value.stagedArrowAtlasPngPath?.let { old ->
+                            SafFileBridge.deleteStagedFile(app, old)
                         }
-                        else -> Unit
+                        uiState.update { it.copy(stagedArrowAtlasPngPath = localPath) }
+                        maybeApplyStagedArrowAtlas()
                     }
-                    refreshProjectsInternal()
+
+                    is ImportKind.ArrowAtlasXml -> {
+                        deleteLocalInFinally = false
+                        uiState.value.stagedArrowAtlasXmlPath?.let { old ->
+                            SafFileBridge.deleteStagedFile(app, old)
+                        }
+                        uiState.update { it.copy(stagedArrowAtlasXmlPath = localPath) }
+                        maybeApplyStagedArrowAtlas()
+                    }
+
+                    else -> {
+                        val rawJson = when (kind) {
+                            is ImportKind.Chart -> NativeEngineBridge.nativeImportChart(localPath)
+                            is ImportKind.AudioTrack -> NativeEngineBridge.nativeImportAudioTrack(kind.slot, localPath)
+                            is ImportKind.SpritePng -> NativeEngineBridge.nativeImportSpriteSheetPng(kind.entityId, localPath)
+                            is ImportKind.SparrowXml -> NativeEngineBridge.nativeImportSparrowXml(kind.entityId, localPath)
+                            is ImportKind.CharacterConfig -> NativeEngineBridge.nativeImportCharacterConfig(kind.entityId, localPath)
+                            is ImportKind.StageConfig -> NativeEngineBridge.nativeImportStageConfig(localPath)
+                            is ImportKind.Script -> NativeEngineBridge.nativeImportScript(localPath)
+                            is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
+                            is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
+                            is ImportKind.HealthBarSvg -> NativeEngineBridge.nativeImportHealthBarSvg(localPath)
+                            is ImportKind.ModPackage,
+                            is ImportKind.ArrowAtlasPng,
+                            is ImportKind.ArrowAtlasXml -> error("handled above")
+                        }
+
+                        applyActionJson(rawJson)
+                        when (kind) {
+                            is ImportKind.ArrowSvg -> reloadArrowBitmaps()
+                            is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
+                            is ImportKind.CharacterIcon -> reloadCustomIcons(uiState.value.snapshot.stageEntities)
+                            is ImportKind.SpritePng, is ImportKind.SparrowXml, is ImportKind.CharacterConfig, is ImportKind.StageConfig -> {
+                                bitmapLoader.evictRegionCache()
+                                reloadEntityBitmaps(uiState.value.snapshot.stageEntities)
+                            }
+                            else -> Unit
+                        }
+                        refreshProjectsInternal()
+                    }
                 }
             } finally {
-                SafFileBridge.deleteStagedFile(app, localPath)
+                if (deleteLocalInFinally) {
+                    SafFileBridge.deleteStagedFile(app, localPath)
+                }
+                endLoadingOverlay()
                 setBusy(false)
             }
         }
+    }
+
+    private fun maybeApplyStagedArrowAtlas() {
+        val st = uiState.value
+        val pngPath = st.stagedArrowAtlasPngPath
+        val xmlPath = st.stagedArrowAtlasXmlPath
+        if (pngPath != null && xmlPath != null && File(pngPath).isFile && File(xmlPath).isFile) {
+            val rawJson = NativeEngineBridge.nativeImportArrowAtlas(pngPath, xmlPath)
+            applyActionJson(rawJson)
+            reloadArrowBitmaps()
+            SafFileBridge.deleteStagedFile(app, pngPath)
+            SafFileBridge.deleteStagedFile(app, xmlPath)
+            uiState.update {
+                it.copy(stagedArrowAtlasPngPath = null, stagedArrowAtlasXmlPath = null)
+            }
+            refreshProjectsInternal()
+        } else if (pngPath != null && xmlPath == null) {
+            postBanner("PNG de flechas listo. Ahora selecciona el archivo .xml (NOTE_assets.xml).", isError = false)
+        } else if (xmlPath != null && pngPath == null) {
+            postBanner("XML de flechas listo. Ahora selecciona la hoja .png (NOTE_assets.png).", isError = false)
+        }
+    }
+
+    fun clearStagedArrowAtlas() {
+        val st = uiState.value
+        st.stagedArrowAtlasPngPath?.let { SafFileBridge.deleteStagedFile(app, it) }
+        st.stagedArrowAtlasXmlPath?.let { SafFileBridge.deleteStagedFile(app, it) }
+        uiState.update { it.copy(stagedArrowAtlasPngPath = null, stagedArrowAtlasXmlPath = null) }
     }
 
     fun flushSave() {
@@ -233,8 +292,10 @@ internal class StudioEditorDelegate(
             if (uiState.value.audioPreviewPlaying) {
                 NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
             }
+            beginLoadingOverlay(name, 0.22f, "Creando estructura del mod...")
             val raw = NativeEngineBridge.nativeCreateProject(name, author)
             applyProjectSwitchResult(raw, navigateToHub = true)
+            endLoadingOverlay()
             setBusy(false)
         }
     }
@@ -245,9 +306,40 @@ internal class StudioEditorDelegate(
             if (uiState.value.audioPreviewPlaying) {
                 NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
             }
+            val projName = uiState.value.projects.firstOrNull { it.id == projectId }?.name ?: "Mod BeatForge"
+            beginLoadingOverlay(projName, 0.18f, "Cargando proyecto y chart.json...")
             val raw = NativeEngineBridge.nativeOpenProject(projectId)
             applyProjectSwitchResult(raw, navigateToHub = true)
+            endLoadingOverlay()
             setBusy(false)
+        }
+    }
+
+    fun returnToProjectMenu() {
+        scope.launch(engineIoDispatcher) {
+            if (uiState.value.audioPreviewPlaying) {
+                NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
+            }
+            NativeEngineBridge.nativeFlushSave()
+            refreshProjectsInternal()
+            uiState.update {
+                it.copy(
+                    hasSelectedProject = false,
+                    isLoadingProject = false,
+                    audioPreviewPlaying = false,
+                    currentScreen = StudioScreen.Projects,
+                    statusBanner = null
+                )
+            }
+        }
+    }
+
+    fun setPreferredRenderBackend(kind: RenderBackendKind) {
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeSetPreferredRenderBackend(kind.key)
+            applyActionJson(raw)
+            val caps = VulkanProbeBridge.probeCombinedCapabilities(app)
+            uiState.update { it.copy(gfxCapabilities = caps) }
         }
     }
 
@@ -407,12 +499,20 @@ internal class StudioEditorDelegate(
         }
     }
 
-    fun toggleChartNote(secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) {
+    fun toggleChartNote(
+        secIndex: Int,
+        stepInSec: Int,
+        col0To7: Int,
+        sustainSteps: Int,
+        noteType: String = "default"
+    ) {
         scope.launch(engineIoDispatcher) {
-            applyActionJson(
-                NativeEngineBridge.nativeToggleChartNote(secIndex, stepInSec, col0To7, sustainSteps),
-                silentOk = true
-            )
+            val raw = if (noteType == "default") {
+                NativeEngineBridge.nativeToggleChartNote(secIndex, stepInSec, col0To7, sustainSteps)
+            } else {
+                NativeEngineBridge.nativeToggleChartNoteWithType(secIndex, stepInSec, col0To7, sustainSteps, noteType)
+            }
+            applyActionJson(raw, silentOk = true)
         }
     }
 
@@ -684,31 +784,71 @@ internal class StudioEditorDelegate(
         }
     }
 
+    private fun beginLoadingOverlay(projectName: String, progress: Float, phase: String) {
+        uiState.update {
+            it.copy(
+                isLoadingProject = true,
+                loadingProjectName = projectName,
+                loadingProgress = progress.coerceIn(0f, 1f),
+                loadingPhase = phase
+            )
+        }
+    }
+
+    private fun updateLoadingOverlay(progress: Float, phase: String) {
+        uiState.update {
+            it.copy(
+                loadingProgress = progress.coerceIn(0f, 1f),
+                loadingPhase = phase
+            )
+        }
+    }
+
+    private fun endLoadingOverlay() {
+        uiState.update {
+            it.copy(isLoadingProject = false, loadingProgress = 1f)
+        }
+    }
+
     private fun applyProjectSwitchResult(rawJson: String, navigateToHub: Boolean) {
         val result = StudioJsonParser.parseActionResult(rawJson)
         val nextSnap = result.snapshot ?: uiState.value.snapshot
+        if (uiState.value.isLoadingProject) {
+            updateLoadingOverlay(0.48f, "Cargando skins de flechas y HUD SVG...")
+        }
         bitmapLoader.evictRegionCache()
         val arrows = bitmapLoader.loadArrowBitmaps()
         val receptors = bitmapLoader.loadReceptorBitmaps()
+        val hurtX = bitmapLoader.loadHurtArrowXBitmap()
         val hudAssets = bitmapLoader.loadHudSvgAssets()
+        if (uiState.value.isLoadingProject) {
+            updateLoadingOverlay(0.72f, "Decodificando sprites e íconos del escenario...")
+        }
         val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(nextSnap.stageEntities)
         val entBmps = bitmapLoader.loadEditorEntityBitmaps(
             nextSnap.stageEntities,
             uiState.value.selectedTier
         )
+        if (uiState.value.isLoadingProject) {
+            updateLoadingOverlay(0.92f, "Verificando drivers OpenGL ES / Vulkan...")
+        }
+        val gfxCaps = VulkanProbeBridge.probeCombinedCapabilities(app)
         val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
 
         uiState.update { state ->
             state.copy(
+                hasSelectedProject = if (navigateToHub && result.ok) true else state.hasSelectedProject,
                 currentScreen = if (navigateToHub && result.ok) StudioScreen.Hub else state.currentScreen,
                 snapshot = nextSnap,
                 projects = projects,
+                gfxCapabilities = gfxCaps,
                 audioPreviewPlaying = false,
                 selectedEntityId = nextSnap.stageEntities.firstOrNull()?.id ?: "",
                 selectedScriptId = nextSnap.scripts.firstOrNull()?.id ?: "",
                 scriptValidationMsg = null,
                 arrowBitmaps = arrows,
                 receptorBitmaps = receptors,
+                hurtArrowXBitmap = hurtX,
                 healthBarBitmap = hudAssets.healthBar,
                 ratingBitmaps = hudAssets.ratings,
                 noteSplashBitmap = hudAssets.noteSplash,
@@ -760,7 +900,8 @@ internal class StudioEditorDelegate(
     private fun reloadArrowBitmaps() {
         val arrows = bitmapLoader.loadArrowBitmaps()
         val receptors = bitmapLoader.loadReceptorBitmaps()
-        uiState.update { it.copy(arrowBitmaps = arrows, receptorBitmaps = receptors) }
+        val hurtX = bitmapLoader.loadHurtArrowXBitmap()
+        uiState.update { it.copy(arrowBitmaps = arrows, receptorBitmaps = receptors, hurtArrowXBitmap = hurtX) }
     }
 
     private fun reloadHealthBarBitmap() {

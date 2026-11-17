@@ -23,6 +23,10 @@ data class GameplayHudState(
     val downscroll: Boolean = false,
     val paused: Boolean = false,
     val finished: Boolean = false,
+    val gameOver: Boolean = false,
+    val gameOverPhase: Int = 0,
+    val botplay: Boolean = false,
+    val practiceMode: Boolean = false,
     val controlMode: String = MobileControlMode.TapArrows.key,
     val activeBpm: Double = 120.0,
     val countdownStage: Int = -1,
@@ -77,6 +81,7 @@ class MutableVisibleNote {
     var direction: Int = 0
     var isPlayer: Boolean = true
     var headHit: Boolean = false
+    var noteKindCode: Int = 0
 }
 
 class MutableStrumOverride {
@@ -130,6 +135,10 @@ class GameplayFrameState {
     var downscroll: Boolean = false
     var paused: Boolean = false
     var finished: Boolean = false
+    var gameOver: Boolean = false
+    var gameOverPhase: Int = 0
+    var botplay: Boolean = false
+    var practiceMode: Boolean = false
     var controlMode: String = MobileControlMode.TapArrows.key
     var holdingLanesMask: Int = 0
     var opponentHoldingLanesMask: Int = 0
@@ -186,6 +195,12 @@ class GameplayFrameState {
 
     fun reset() {
         active = false
+        paused = false
+        finished = false
+        gameOver = false
+        gameOverPhase = 0
+        botplay = false
+        practiceMode = false
         entityCount = 0
         entityIdsByIndex = emptyList()
         visibleNoteCount = 0
@@ -223,6 +238,10 @@ class GameplayFrameState {
         downscroll = step.downscroll
         paused = step.paused
         finished = step.finished
+        gameOver = step.gameOver
+        gameOverPhase = step.gameOverPhase
+        botplay = step.botplay
+        practiceMode = step.practiceMode
         controlMode = step.controlMode
         holdingLanesMask = step.holdingLanesMask
         opponentHoldingLanesMask = step.opponentHoldingLanesMask
@@ -305,6 +324,7 @@ class GameplayFrameState {
             dst.direction = src.direction
             dst.isPlayer = src.isPlayer
             dst.headHit = src.headHit
+            dst.noteKindCode = src.noteKindCode
         }
 
         for (i in 0 until 8) {
@@ -349,6 +369,10 @@ class GameplayFrameState {
             downscroll = step.downscroll,
             paused = step.paused,
             finished = step.finished,
+            gameOver = step.gameOver,
+            gameOverPhase = step.gameOverPhase,
+            botplay = step.botplay,
+            practiceMode = step.practiceMode,
             controlMode = step.controlMode,
             activeBpm = step.activeBpm,
             countdownStage = step.countdownStage,
@@ -431,6 +455,10 @@ class GameplayFrameState {
         hudVisible = (flags and (1 shl 6)) != 0
         flashOverHud = (flags and (1 shl 7)) != 0
         arrowsVisible = (flags and (1 shl 8)) == 0
+        gameOver = (flags and (1 shl 9)) != 0
+        gameOverPhase = (flags ushr 10) and 0x3
+        botplay = (flags and (1 shl 12)) != 0
+        practiceMode = (flags and (1 shl 13)) != 0
         screenBlackoutAlpha = ((flags ushr 16) and 0xFF) / 255f
         arrowsOpacity = 1f - (((flags ushr 24) and 0xFF) / 255f)
         hudOpacity = hudOpVal
@@ -488,6 +516,7 @@ class GameplayFrameState {
             dst.direction = nf and 0x3
             dst.isPlayer = (nf and (1 shl 2)) != 0
             dst.headHit = (nf and (1 shl 3)) != 0
+            dst.noteKindCode = (nf ushr 4) and 0xF
         }
 
         for (i in 0 until 8) {
@@ -541,13 +570,17 @@ class GameplayFrameState {
         val prevHudOp = (prev.hudOpacity * 50f).toInt()
         val quantizedHudZoom = (hudZoomVal * 100f).toInt()
         val prevHudZoom = (prev.hudZoom * 100f).toInt()
-        val countdownAnimating = cdStage in 0..3 && !paused && !finished
+        val countdownAnimating = cdStage in 0..3 && !paused && !finished && !gameOver
 
         val hudNeedsUpdate = hasHudStrings ||
             prev.active != active ||
             prev.downscroll != downscroll ||
             prev.paused != paused ||
             prev.finished != finished ||
+            prev.gameOver != gameOver ||
+            prev.gameOverPhase != gameOverPhase ||
+            prev.botplay != botplay ||
+            prev.practiceMode != practiceMode ||
             prev.controlMode != controlMode ||
             prev.countdownStage != cdStage ||
             prev.score != scoreVal ||
@@ -569,6 +602,10 @@ class GameplayFrameState {
                 downscroll = downscroll,
                 paused = paused,
                 finished = finished,
+                gameOver = gameOver,
+                gameOverPhase = gameOverPhase,
+                botplay = botplay,
+                practiceMode = practiceMode,
                 controlMode = controlMode,
                 activeBpm = activeBpm,
                 countdownStage = cdStage,

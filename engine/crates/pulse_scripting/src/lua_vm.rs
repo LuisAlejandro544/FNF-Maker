@@ -940,6 +940,24 @@ impl LuaScriptVm {
                 )?,
             )?;
         }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "triggerGameOver",
+                lua.create_function(move |_, ()| {
+                    *h.game_over.lock() = true;
+                    h.push_command(ScriptCommand::TriggerGameOver);
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "isGameOver",
+                lua.create_function(move |_, ()| Ok(*h.game_over.lock()))?,
+            )?;
+        }
 
         Self::arm_deadline(
             &watchdog_origin,
@@ -1078,13 +1096,13 @@ impl LuaScriptVm {
         }
     }
 
-    pub fn call_note_event(&mut self, fn_name: &str, lane: i32, is_player: bool) {
+    pub fn call_note_event(&mut self, fn_name: &str, lane: i32, is_player: bool, note_type: &str) {
         if self.disabled_by_watchdog {
             return;
         }
         if let Ok(func) = self.lua.globals().get::<Function>(fn_name) {
             self.begin_frame_watchdog();
-            let res = func.call::<()>((lane, is_player));
+            let res = func.call::<()>((lane, is_player, note_type));
             self.end_frame_watchdog();
             if let Err(e) = res {
                 self.handle_call_error(fn_name, e);

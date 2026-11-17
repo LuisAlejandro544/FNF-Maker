@@ -53,7 +53,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.rounded.Memory
 import com.beatforge.studio.ProjectSummary
+import com.beatforge.studio.gfx.GfxCapabilities
+import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.ui.theme.StudioColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -64,6 +67,10 @@ import kotlin.math.roundToInt
 fun ProjectsScreen(
     projects: List<ProjectSummary>,
     activeProjectName: String,
+    isLobbyMode: Boolean = false,
+    gfxCapabilities: GfxCapabilities = GfxCapabilities(),
+    activeRenderBackend: String = "canvas2d",
+    onReturnToLobby: (() -> Unit)? = null,
     onCreateProject: (name: String, author: String) -> Unit,
     onImportModPackage: () -> Unit,
     onOpenProject: (projectId: String) -> Unit,
@@ -77,6 +84,7 @@ fun ProjectsScreen(
     val dateFormatter = remember {
         SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
     }
+    val backendKind = RenderBackendKind.fromKey(activeRenderBackend)
 
     Column(
         modifier = Modifier
@@ -84,11 +92,14 @@ fun ProjectsScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Cabecera superior con resumen de guardado automático y botón de creación
+        // Cabecera superior con modo Menú Principal o Gestor de Proyectos del Estudio
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = StudioColors.BgPanel,
-            border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+            border = BorderStroke(
+                1.dp,
+                if (isLobbyMode) StudioColors.AccentCyan.copy(alpha = 0.45f) else StudioColors.BorderSubtle
+            )
         ) {
             Row(
                 modifier = Modifier
@@ -110,13 +121,21 @@ fun ProjectsScreen(
                     Spacer(Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Proyectos Guardados (${projects.size})",
+                            text = if (isLobbyMode) {
+                                "BeatForge Studio · Menú Principal (${projects.size})"
+                            } else {
+                                "Proyectos Guardados (${projects.size})"
+                            },
                             color = StudioColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp
                         )
                         Text(
-                            text = "Activo: $activeProjectName · Guardado instantáneo en memoria interna",
+                            text = if (isLobbyMode) {
+                                "Elige un proyecto para cargarlo y empezar a editar tu mod"
+                            } else {
+                                "Activo: $activeProjectName · Guardado instantáneo en memoria interna"
+                            },
                             color = StudioColors.TextMuted,
                             fontSize = 11.sp,
                             maxLines = 1,
@@ -125,12 +144,57 @@ fun ProjectsScreen(
                     }
                 }
 
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(8.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = StudioColors.BgCard,
+                    border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Memory,
+                            contentDescription = null,
+                            tint = StudioColors.AccentAmber,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "${backendKind.shortBadge} · ${gfxCapabilities.glesVersionLabel}${if (gfxCapabilities.vulkanSupported) " + Vulkan" else ""}",
+                            color = StudioColors.TextMuted,
+                            fontSize = 10.sp,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
 
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (!isLobbyMode && onReturnToLobby != null) {
+                        OutlinedButton(
+                            onClick = onReturnToLobby,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, StudioColors.BorderSubtle),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                "Menú Principal",
+                                color = StudioColors.TextPrimary,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
                     OutlinedButton(
                         onClick = onImportModPackage,
                         shape = RoundedCornerShape(10.dp),
@@ -194,6 +258,7 @@ fun ProjectsScreen(
                         rowItems.forEach { proj ->
                             ProjectCard(
                                 project = proj,
+                                isLobbyMode = isLobbyMode,
                                 formattedDate = if (proj.updatedAtMs > 0L) {
                                     dateFormatter.format(Date(proj.updatedAtMs))
                                 } else {
@@ -269,6 +334,7 @@ fun ProjectsScreen(
 @Composable
 private fun ProjectCard(
     project: ProjectSummary,
+    isLobbyMode: Boolean,
     formattedDate: String,
     canDelete: Boolean,
     onOpen: () -> Unit,
@@ -277,13 +343,18 @@ private fun ProjectCard(
     onRequestDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val borderColor = if (project.isActive) StudioColors.AccentEmerald else StudioColors.BorderSubtle
+    val showActiveBadge = !isLobbyMode && project.isActive
+    val borderColor = if (showActiveBadge || (isLobbyMode && project.isActive)) {
+        StudioColors.AccentEmerald
+    } else {
+        StudioColors.BorderSubtle
+    }
 
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         color = StudioColors.BgCard,
-        border = BorderStroke(if (project.isActive) 1.5.dp else 1.dp, borderColor)
+        border = BorderStroke(if (borderColor == StudioColors.AccentEmerald) 1.5.dp else 1.dp, borderColor)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -312,7 +383,7 @@ private fun ProjectCard(
                     )
                 }
 
-                if (project.isActive) {
+                if (showActiveBadge || (isLobbyMode && project.isActive)) {
                     Spacer(Modifier.width(8.dp))
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -331,7 +402,7 @@ private fun ProjectCard(
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                text = "ACTIVO",
+                                text = if (isLobbyMode) "RECIENTE" else "ACTIVO",
                                 color = StudioColors.AccentEmerald,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold
@@ -383,7 +454,7 @@ private fun ProjectCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (!project.isActive) {
+                if (isLobbyMode || !project.isActive) {
                     Button(
                         onClick = onOpen,
                         shape = RoundedCornerShape(8.dp),
@@ -394,7 +465,13 @@ private fun ProjectCard(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.height(30.dp)
                     ) {
-                        Text("Abrir", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                        Text(
+                            text = if (isLobbyMode) "Editar Mod" else "Abrir",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
                 }
 

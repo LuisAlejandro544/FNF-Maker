@@ -53,6 +53,8 @@ pub struct AudioMixerState {
     pub countdown_total_frames: AtomicU64,
     pub countdown_remaining_frames: AtomicU64,
     pub countdown_beat_frames: AtomicU64,
+    pub gameover_sfx_total_frames: AtomicU64,
+    pub gameover_sfx_remaining_frames: AtomicU64,
     pub tracks: RwLock<[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS]>,
     pub stream_source: RwLock<Option<Arc<StreamingAudioSource>>>,
     pub configs: [TrackRuntimeConfig; MAX_AUDIO_TRACKS],
@@ -70,6 +72,8 @@ impl AudioMixerState {
             countdown_total_frames: AtomicU64::new(0),
             countdown_remaining_frames: AtomicU64::new(0),
             countdown_beat_frames: AtomicU64::new(0),
+            gameover_sfx_total_frames: AtomicU64::new(0),
+            gameover_sfx_remaining_frames: AtomicU64::new(0),
             tracks: RwLock::new([None, None, None]),
             stream_source: RwLock::new(None),
             configs: [
@@ -115,6 +119,19 @@ impl AudioMixerState {
     pub fn clear_countdown(&self) {
         self.countdown_remaining_frames.store(0, Ordering::Release);
         self.countdown_total_frames.store(0, Ordering::Release);
+    }
+
+    /// Dispara el efecto de sonido sintetizado de Game Over (audible incluso con el mezclador pausado).
+    pub fn trigger_gameover_sfx(&self) {
+        let sr = self.sample_rate.load(Ordering::Relaxed).max(8000) as f64;
+        let frames = (sr * 0.68).round().max(1.0) as u64;
+        self.gameover_sfx_total_frames.store(frames, Ordering::Release);
+        self.gameover_sfx_remaining_frames.store(frames, Ordering::Release);
+    }
+
+    pub fn clear_gameover_sfx(&self) {
+        self.gameover_sfx_remaining_frames.store(0, Ordering::Release);
+        self.gameover_sfx_total_frames.store(0, Ordering::Release);
     }
 
     /// Inicia una cuenta regresiva de 4 pulsos ("3, 2, 1, ¡YA!") sincronizada exactamente al BPM.
@@ -168,16 +185,30 @@ impl AudioMixerState {
 
     /// Llena el buffer de salida estéreo (llamado directamente desde el callback de audio AAudio).
     pub fn render_audio_frames(&self, out_interleaved: &mut [f32]) {
-        if !self.is_playing.load(Ordering::Acquire) {
-            out_interleaved.fill(0.0);
-            return;
-        }
-
         let total_requested = out_interleaved.len() / 2;
         if total_requested == 0 {
             return;
         }
         let sr = self.sample_rate.load(Ordering::Relaxed).max(1) as f32;
+
+        if !self.is_playing.load(Ordering::Acquire) {
+            out_interleaved.fill(0.0);
+            let rem_go = self.gameover_sfx_remaining_frames.load(Ordering::Acquire);
+            if rem_go > 0 {
+                let total_go = self.gameover_sfx_total_frames.load(Ordering::Relaxed).max(rem_go);
+                let frames_to_mix = total_requested.min(rem_go as usize);
+                let elapsed_start = total_go.saturating_sub(rem_go);
+                for f in 0..frames_to_mix {
+                    let t = ((elapsed_start + f as u64) as f32) / sr;
+                    let s = synthesize_gameover_cue(t).tanh();
+                    out_interleaved[f * 2] = s;
+                    out_interleaved[f * 2 + 1] = s;
+                }
+                self.gameover_sfx_remaining_frames
+                    .store(rem_go.saturating_sub(frames_to_mix as u64), Ordering::Release);
+            }
+            return;
+        }
         out_interleaved.fill(0.0);
 
         let rem_cd = self.countdown_remaining_frames.load(Ordering::Acquire);
@@ -330,6 +361,30 @@ fn synthesize_countdown_cue(beat_idx: u8, t: f32) -> f32 {
     }
 }
 
+/// Sintetiza el golpe y caída clásica de Game Over (libre de derechos) cuando el jugador pierde.
+#[inline]
+fn synthesize_gameover_cue(t: f32) -> f32 {
+    if t > 0.68 {
+        return 0.0;
+    }
+    let thud_env = (-t * 11.0).exp();
+    let thud_freq = 155.0 * (-t * 5.2).exp() + 44.0;
+    let thud = (2.0 * PI * thud_freq * t).sin() * thud_env * 0.62;
+
+    let drop_env = (t / 0.02).min(1.0) * (-t * 4.2).exp();
+    let drop_freq = if t < 0.22 {
+        311.13 // Eb4
+    } else if t < 0.42 {
+        277.18 // Db4
+    } else {
+        220.00 // A3
+    };
+    let voice = ((2.0 * PI * drop_freq * t).sin() * 0.40
+        + (2.0 * PI * (drop_freq * 0.5) * t).sin() * 0.25)
+        * drop_env;
+    thud + voice
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,5 +435,15 @@ mod tests {
         mixer.play();
         mixer.render_audio_frames(&mut buf);
         assert!((mixer.position_ms() - 1500.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn gameover_sfx_renders_even_while_song_mixer_is_paused() {
+        let mixer = AudioMixerState::new(48_000);
+        mixer.pause();
+        mixer.trigger_gameover_sfx();
+        let mut buf = vec![0.0_f32; 4_800 * 2];
+        mixer.render_audio_frames(&mut buf);
+        assert!(buf.iter().any(|s| s.abs() > 0.05));
     }
 }

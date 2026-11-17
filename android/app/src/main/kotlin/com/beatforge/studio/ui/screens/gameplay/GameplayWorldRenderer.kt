@@ -55,117 +55,166 @@ internal fun DrawScope.drawGameplaySceneLayer(
     }) {
         // 1. Dibujar entidades compiladas en Z-order usando índice pre-resuelto O(1)
         val entCount = frameState.entityCount
-        for (i in 0 until entCount) {
-            val ent = frameState.entitiesPool[i]
-            if (ent.retired || !ent.visible || ent.opacity <= 0.01f) continue
-            val cx = ent.x * sx
-            val cy = ent.y * sy
-            val w = ent.width * ent.scale * sx
-            val h = ent.height * ent.scale * sy
-            val left = cx - w / 2f
-            val top = cy - h / 2f
-            val rawLoaded = compiledBitmapsByIndex.getOrNull(i)
-            val loaded = if (rawLoaded != null && !rawLoaded.bitmap.asAndroidBitmap().isRecycled) {
-                rawLoaded
-            } else {
-                null
+        val inGameOver = frameState.gameOver
+        val playerIdx = frameState.activePlayerIdx
+
+        // En Game Over oscurecemos primero el escenario para dejar al jugador en foco estilo FNF
+        val passLimit = if (inGameOver) 2 else 1
+        for (pass in 0 until passLimit) {
+            if (pass == 1) {
+                drawRect(
+                    color = Color.Black.copy(alpha = 0.88f),
+                    topLeft = Offset(-2000f, -2000f),
+                    size = Size(6000f, 6000f)
+                )
             }
-
-            withTransform({
-                if (ent.rotationDeg != 0f) {
-                    rotate(ent.rotationDeg, pivot = Offset(cx, cy))
+            for (i in 0 until entCount) {
+                val ent = frameState.entitiesPool[i]
+                if (ent.retired || !ent.visible || ent.opacity <= 0.01f) continue
+                val isPlayerEnt = (i == playerIdx) || (playerIdx < 0 && ent.roleCode == 2)
+                if (inGameOver) {
+                    if (pass == 0 && isPlayerEnt) continue
+                    if (pass == 1 && !isPlayerEnt) continue
                 }
-                if (ent.flipX) {
-                    scale(scaleX = -1f, scaleY = 1f, pivot = Offset(cx, cy))
+
+                val cx = ent.x * sx
+                val cy = ent.y * sy
+                val w = ent.width * ent.scale * sx
+                val h = ent.height * ent.scale * sy
+                val left = cx - w / 2f
+                val top = cy - h / 2f
+                val rawLoaded = compiledBitmapsByIndex.getOrNull(i)
+                val loaded = if (rawLoaded != null && !rawLoaded.bitmap.asAndroidBitmap().isRecycled) {
+                    rawLoaded
+                } else {
+                    null
                 }
-            }) {
-                if (loaded != null) {
-                    val bmp = loaded.bitmap
-                    val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.toFloat()
-                    val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.toFloat()
 
-                    if (ent.hasFrame && ent.atlasW > 0 && ent.atlasH > 0) {
-                        val srcX = (ent.atlasX * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
-                        val srcY = (ent.atlasY * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
-                        val srcW = (ent.atlasW * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
-                        val srcH = (ent.atlasH * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
+                // Foco azul/celeste bajo el jugador durante Game Over (y ligera inclinación si es DeathLoop)
+                val deathTiltDeg = if (inGameOver && isPlayerEnt && !ent.hasFrame && frameState.gameOverPhase >= 2) {
+                    -14f
+                } else {
+                    0f
+                }
+                if (inGameOver && isPlayerEnt) {
+                    drawOval(
+                        color = if (frameState.gameOverPhase == 3) {
+                            StudioColors.AccentEmerald.copy(alpha = 0.25f)
+                        } else {
+                            Color(0xFF3B82F6).copy(alpha = 0.22f)
+                        },
+                        topLeft = Offset(cx - w * 0.42f, top + h * 0.80f),
+                        size = Size(w * 0.84f, h * 0.16f)
+                    )
+                }
 
-                        val visW = if (ent.frameRotated) ent.atlasH else ent.atlasW
-                        val visH = if (ent.frameRotated) ent.atlasW else ent.atlasH
-                        val logicalW = ent.logicalW.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
-                        val logicalH = ent.logicalH.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
-                        val fit = min(w / logicalW, h / logicalH)
+                val deathFilter = if (inGameOver && isPlayerEnt && !ent.hasFrame) {
+                    ColorFilter.tint(Color(0xFF93C5FD), BlendMode.Modulate)
+                } else {
+                    null
+                }
 
-                        val boxW = logicalW * fit
-                        val boxH = logicalH * fit
-                        val boxLeft = cx - boxW / 2f
-                        val boxTop = (top + h) - boxH
+                withTransform({
+                    val totalRot = ent.rotationDeg + deathTiltDeg
+                    if (totalRot != 0f) {
+                        rotate(totalRot, pivot = Offset(cx, cy))
+                    }
+                    if (ent.flipX) {
+                        scale(scaleX = -1f, scaleY = 1f, pivot = Offset(cx, cy))
+                    }
+                }) {
+                    if (loaded != null) {
+                        val bmp = loaded.bitmap
+                        val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.toFloat()
+                        val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.toFloat()
 
-                        val visDrawW = visW * fit
-                        val visDrawH = visH * fit
-                        val visLeft = boxLeft + (-ent.offX * fit)
-                        val visTop = boxTop + (-ent.offY * fit)
-                        val frameCenterX = visLeft + visDrawW / 2f
-                        val frameCenterY = visTop + visDrawH / 2f
+                        if (ent.hasFrame && ent.atlasW > 0 && ent.atlasH > 0) {
+                            val srcX = (ent.atlasX * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
+                            val srcY = (ent.atlasY * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
+                            val srcW = (ent.atlasW * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
+                            val srcH = (ent.atlasH * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
 
-                        val dstW = (ent.atlasW * fit).roundToInt().coerceAtLeast(2)
-                        val dstH = (ent.atlasH * fit).roundToInt().coerceAtLeast(2)
-                        val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
-                        val dstTop = (frameCenterY - dstH / 2f).roundToInt()
+                            val visW = if (ent.frameRotated) ent.atlasH else ent.atlasW
+                            val visH = if (ent.frameRotated) ent.atlasW else ent.atlasH
+                            val logicalW = ent.logicalW.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                            val logicalH = ent.logicalH.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                            val fit = min(w / logicalW, h / logicalH)
 
-                        withTransform({
-                            if (ent.frameRotated) {
-                                rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
+                            val boxW = logicalW * fit
+                            val boxH = logicalH * fit
+                            val boxLeft = cx - boxW / 2f
+                            val boxTop = (top + h) - boxH
+
+                            val visDrawW = visW * fit
+                            val visDrawH = visH * fit
+                            val visLeft = boxLeft + (-ent.offX * fit)
+                            val visTop = boxTop + (-ent.offY * fit)
+                            val frameCenterX = visLeft + visDrawW / 2f
+                            val frameCenterY = visTop + visDrawH / 2f
+
+                            val dstW = (ent.atlasW * fit).roundToInt().coerceAtLeast(2)
+                            val dstH = (ent.atlasH * fit).roundToInt().coerceAtLeast(2)
+                            val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
+                            val dstTop = (frameCenterY - dstH / 2f).roundToInt()
+
+                            withTransform({
+                                if (ent.frameRotated) {
+                                    rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
+                                }
+                            }) {
+                                drawImage(
+                                    image = bmp,
+                                    srcOffset = IntOffset(srcX, srcY),
+                                    srcSize = IntSize(srcW, srcH),
+                                    dstOffset = IntOffset(dstLeft, dstTop),
+                                    dstSize = IntSize(dstW, dstH),
+                                    alpha = ent.opacity.coerceIn(0f, 1f),
+                                    colorFilter = deathFilter,
+                                    filterQuality = FilterQuality.Medium
+                                )
                             }
-                        }) {
+                        } else {
                             drawImage(
                                 image = bmp,
-                                srcOffset = IntOffset(srcX, srcY),
-                                srcSize = IntSize(srcW, srcH),
-                                dstOffset = IntOffset(dstLeft, dstTop),
-                                dstSize = IntSize(dstW, dstH),
+                                srcOffset = IntOffset(0, 0),
+                                srcSize = IntSize(bmp.width, bmp.height),
+                                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                                dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
                                 alpha = ent.opacity.coerceIn(0f, 1f),
+                                colorFilter = deathFilter,
                                 filterQuality = FilterQuality.Medium
                             )
                         }
                     } else {
-                        drawImage(
-                            image = bmp,
-                            srcOffset = IntOffset(0, 0),
-                            srcSize = IntSize(bmp.width, bmp.height),
-                            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                            dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
-                            alpha = ent.opacity.coerceIn(0f, 1f),
-                            filterQuality = FilterQuality.Medium
+                        val boxColor = when (ent.roleCode) {
+                            0 -> Color(0xFF172033)
+                            1 -> StudioColors.AccentCoral.copy(alpha = 0.28f)
+                            2 -> StudioColors.AccentCyan.copy(alpha = 0.28f)
+                            else -> StudioColors.AccentIndigo.copy(alpha = 0.25f)
+                        }
+                        drawRect(
+                            color = boxColor,
+                            topLeft = Offset(left, top),
+                            size = Size(w, h)
+                        )
+                        drawRect(
+                            color = StudioColors.BorderSubtle.copy(alpha = ent.opacity),
+                            topLeft = Offset(left, top),
+                            size = Size(w, h),
+                            style = Stroke(width = 2f)
                         )
                     }
-                } else {
-                    val boxColor = when (ent.roleCode) {
-                        0 -> Color(0xFF172033)
-                        1 -> StudioColors.AccentCoral.copy(alpha = 0.28f)
-                        2 -> StudioColors.AccentCyan.copy(alpha = 0.28f)
-                        else -> StudioColors.AccentIndigo.copy(alpha = 0.25f)
-                    }
-                    drawRect(
-                        color = boxColor,
-                        topLeft = Offset(left, top),
-                        size = Size(w, h)
-                    )
-                    drawRect(
-                        color = StudioColors.BorderSubtle.copy(alpha = ent.opacity),
-                        topLeft = Offset(left, top),
-                        size = Size(w, h),
-                        style = Stroke(width = 2f)
-                    )
                 }
             }
         }
 
         // 1.5 Gráficos y textos dinámicos de mundo creados por scripts (`makeGraphic`)
-        for (i in 0 until frameState.dynamicCount) {
-            val item = frameState.dynamicPool[i]
-            if (!item.isHud && item.visible && item.opacity > 0.01f) {
-                drawDynamicItem(item, sx, sy, dynamicTextPaint)
+        if (!inGameOver) {
+            for (i in 0 until frameState.dynamicCount) {
+                val item = frameState.dynamicPool[i]
+                if (!item.isHud && item.visible && item.opacity > 0.01f) {
+                    drawDynamicItem(item, sx, sy, dynamicTextPaint)
+                }
             }
         }
 
@@ -253,10 +302,12 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
     sy: Float,
     arrowBitmaps: Map<Int, ImageBitmap>,
     receptorBitmaps: Map<Int, ImageBitmap>,
+    hurtArrowXBitmap: ImageBitmap?,
     noteSplashBitmap: ImageBitmap?,
     splashPool: SplashPoolHolder,
     dynamicTextPaint: Paint
 ) {
+    if (frameState.gameOver) return
     val classicMode = frameState.controlMode == MobileControlMode.ClassicHitbox.key
     val useDownscrollTactileLayout = frameState.downscroll && !classicMode
 
@@ -386,19 +437,63 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
             }
 
             if (!note.headHit) {
-                val bmp = arrowBitmaps[dir]
+                val isHazardX = note.noteKindCode == 1 || note.noteKindCode == 2
+                val isInstakill = note.noteKindCode == 2
+                val isDodge = note.noteKindCode == 3
+                val bmp = if (isHazardX) hurtArrowXBitmap else arrowBitmaps[dir]
                 withTransform({
                     if (strumOv.angle != 0f) {
                         rotate(strumOv.angle, pivot = Offset(noteX, headY))
                     }
                 }) {
+                    if (isDodge) {
+                        drawCircle(
+                            color = StudioColors.AccentAmber.copy(alpha = 0.72f * noteAlpha),
+                            radius = notePxSize * 0.52f,
+                            center = Offset(noteX, headY),
+                            style = Stroke(width = 4.dp.toPx())
+                        )
+                    } else if (isInstakill) {
+                        drawCircle(
+                            color = Color(0xFFFF1744).copy(alpha = 0.65f * noteAlpha),
+                            radius = notePxSize * 0.54f,
+                            center = Offset(noteX, headY),
+                            style = Stroke(width = 4.5.dp.toPx())
+                        )
+                    }
+
                     if (bmp != null) {
                         val half = notePxSize / 2f
                         drawImage(
                             image = bmp,
                             dstOffset = IntOffset((noteX - half).roundToInt(), (headY - half).roundToInt()),
                             dstSize = IntSize(notePxSize.roundToInt().coerceAtLeast(2), notePxSize.roundToInt().coerceAtLeast(2)),
-                            alpha = noteAlpha
+                            alpha = noteAlpha,
+                            colorFilter = if (isInstakill) {
+                                ColorFilter.tint(Color(0xFF991B1B), BlendMode.Modulate)
+                            } else {
+                                null
+                            }
+                        )
+                    } else if (isHazardX) {
+                        val halfCross = notePxSize * 0.34f
+                        val xColor = (if (isInstakill) Color(0xFFFF1744) else StudioColors.AccentCoral).copy(alpha = noteAlpha)
+                        drawCircle(
+                            color = Color(0xFF1F070A).copy(alpha = 0.9f * noteAlpha),
+                            radius = notePxSize * 0.43f,
+                            center = Offset(noteX, headY)
+                        )
+                        drawLine(
+                            color = xColor,
+                            start = Offset(noteX - halfCross, headY - halfCross),
+                            end = Offset(noteX + halfCross, headY + halfCross),
+                            strokeWidth = 6.dp.toPx()
+                        )
+                        drawLine(
+                            color = xColor,
+                            start = Offset(noteX + halfCross, headY - halfCross),
+                            end = Offset(noteX - halfCross, headY + halfCross),
+                            strokeWidth = 6.dp.toPx()
                         )
                     } else {
                         drawCircle(
