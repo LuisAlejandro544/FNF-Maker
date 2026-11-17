@@ -512,7 +512,7 @@ mod jni_exports {
 
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeReadAudioPreviewState<'local>(
-        mut env: JNIEnv<'local>,
+        env: JNIEnv<'local>,
         _cls: JClass<'local>,
         out_state: JDoubleArray<'local>,
     ) -> jboolean {

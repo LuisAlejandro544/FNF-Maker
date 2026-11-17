@@ -772,12 +772,10 @@ impl EngineSession {
                 return png.clone();
             }
         }
-        let svg = self
-            .project
-            .arrow_skin
-            .custom_hurt_arrow_svg
-            .as_deref()
-            .unwrap_or_else(default_hurt_arrow_x_svg);
+        let svg: &str = match self.project.arrow_skin.custom_hurt_arrow_svg.as_deref() {
+            Some(custom) => custom,
+            None => default_hurt_arrow_x_svg(),
+        };
         let size = self.project.arrow_skin.note_size_px.max(128);
         let Ok(raster) = rasterize_svg_str(svg, size) else {
             return Vec::new();

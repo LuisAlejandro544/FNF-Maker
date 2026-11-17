@@ -429,14 +429,11 @@ impl EngineSession {
     }
 
     pub fn clear_character_icons(&mut self, entity_id: &str) -> String {
-        let mut old_normal: Option<PathBuf> = None;
-        let mut old_losing: Option<PathBuf> = None;
-        if let Some(ent) = self.project.stage.find_mut(entity_id) {
-            old_normal = ent.icon_normal_path.take();
-            old_losing = ent.icon_losing_path.take();
+        let (old_normal, old_losing) = if let Some(ent) = self.project.stage.find_mut(entity_id) {
+            (ent.icon_normal_path.take(), ent.icon_losing_path.take())
         } else {
             return self.err_response("Personaje no encontrado en el escenario");
-        }
+        };
         self.remove_managed_asset_if_unreferenced(old_normal.as_deref());
         self.remove_managed_asset_if_unreferenced(old_losing.as_deref());
         self.save_active_project_now();

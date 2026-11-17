@@ -38,7 +38,7 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay
-import androidx.compose.material.icons.rounded.Skull
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -702,7 +702,7 @@ internal fun GameplayPauseDialog(
                                 .height(32.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Skull,
+                                imageVector = Icons.Rounded.Warning,
                                 contentDescription = null,
                                 tint = StudioColors.AccentCoral,
                                 modifier = Modifier.size(15.dp)
