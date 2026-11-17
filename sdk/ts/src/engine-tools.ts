@@ -97,34 +97,201 @@ export interface StageEntitySpec {
 
 const DIRECTIONS: NoteDirection[] = ['left', 'down', 'up', 'right'];
 
-export function parseChartJson(rawJson: string): ParsedChart {
-  const root = JSON.parse(rawJson);
-  const song = root?.song && typeof root.song === 'object' ? root.song : root;
-  if (!song || !Array.isArray(song.notes)) {
-    throw new Error('Chart JSON inválido: falta arreglo notes');
+function unwrapChartContainer(root: Record<string, unknown>): Record<string, unknown> {
+  let curr: Record<string, unknown> = root;
+  for (let i = 0; i < 4; i++) {
+    if (curr.notes !== undefined || curr.sections !== undefined || curr.strumLines !== undefined) {
+      break;
+    }
+    const candidate =
+      (curr.song && typeof curr.song === 'object' && !Array.isArray(curr.song)
+        ? (curr.song as Record<string, unknown>)
+        : null) ??
+      (curr.chart && typeof curr.chart === 'object' && !Array.isArray(curr.chart)
+        ? (curr.chart as Record<string, unknown>)
+        : null) ??
+      (curr.data && typeof curr.data === 'object' && !Array.isArray(curr.data)
+        ? (curr.data as Record<string, unknown>)
+        : null);
+    if (!candidate) break;
+    curr = candidate;
   }
+  return curr;
+}
 
-  const bpm = typeof song.bpm === 'number' && song.bpm > 10 ? song.bpm : 120;
-  const speed = typeof song.speed === 'number' && song.speed > 0.1 ? song.speed : 1.8;
-  const title = typeof song.song === 'string' ? song.song : 'Sin título';
-  const needsVoices = typeof song.needsVoices === 'boolean' ? song.needsVoices : true;
-  const player1 = typeof song.player1 === 'string' ? song.player1 : 'protagonista';
-  const player2 = typeof song.player2 === 'string' ? song.player2 : 'rival';
-  const gfVersion = typeof song.gfVersion === 'string' ? song.gfVersion : 'acompanante';
-  const stage = typeof song.stage === 'string' ? song.stage : 'escenario_base';
-  const arrowSkin = typeof song.arrowSkin === 'string' ? song.arrowSkin : '';
-  const splashSkin = typeof song.splashSkin === 'string' ? song.splashSkin : '';
-  const validScore = typeof song.validScore === 'boolean' ? song.validScore : true;
+function asFiniteNumber(val: unknown): number | null {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (typeof val === 'string' && val.trim().length > 0) {
+    const n = Number(val.trim());
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function firstValidNumber(candidates: unknown[], minExclusive: number): number | null {
+  for (const c of candidates) {
+    const n = asFiniteNumber(c);
+    if (n !== null && n > minExclusive) return n;
+  }
+  return null;
+}
+
+function firstNonEmptyString(candidates: unknown[]): string | null {
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim().length > 0) return c.trim();
+  }
+  return null;
+}
+
+function extractScrollSpeed(obj: Record<string, unknown>): number | null {
+  for (const key of ['speed', 'scrollSpeed']) {
+    const val = obj[key];
+    const direct = asFiniteNumber(val);
+    if (direct !== null && direct > 0.1) return direct;
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const map = val as Record<string, unknown>;
+      for (const diff of ['hard', 'normal', 'easy', 'erect', 'nightmare']) {
+        const n = asFiniteNumber(map[diff]);
+        if (n !== null && n > 0.1) return n;
+      }
+      for (const anyVal of Object.values(map)) {
+        const n = asFiniteNumber(anyVal);
+        if (n !== null && n > 0.1) return n;
+      }
+    }
+  }
+  return null;
+}
+
+function pickVSliceDifficultyArray(notesMap: Record<string, unknown>): unknown[] | null {
+  for (const diff of ['hard', 'normal', 'easy', 'erect', 'nightmare']) {
+    const arr = notesMap[diff];
+    if (Array.isArray(arr) && arr.length > 0) return arr;
+  }
+  for (const val of Object.values(notesMap)) {
+    if (Array.isArray(val) && val.length > 0) return val;
+  }
+  for (const val of Object.values(notesMap)) {
+    if (Array.isArray(val)) return val;
+  }
+  return null;
+}
+
+function buildSyntheticSections(
+  bpm: number,
+  notes: ParsedChartNote[],
+  events: ChartEventSpec[],
+): ChartSectionSpec[] {
+  const safeBpm = Math.max(40, bpm);
+  const secMs = ((60000 / safeBpm) / 4) * 16;
+  let maxMs = secMs * 4;
+  for (const n of notes) maxMs = Math.max(maxMs, n.timeMs + n.sustainMs);
+  for (const ev of events) maxMs = Math.max(maxMs, ev.timeMs);
+  const totalSecs = Math.min(2000, Math.max(4, Math.ceil(maxMs / secMs)));
+  const out: ChartSectionSpec[] = [];
+  for (let idx = 0; idx < totalSecs; idx++) {
+    const startMs = idx * secMs;
+    const endMs = startMs + secMs;
+    let pCount = 0;
+    let oCount = 0;
+    for (const n of notes) {
+      if (n.timeMs >= startMs - 1 && n.timeMs < endMs - 1) {
+        if (n.isPlayer) pCount++;
+        else oCount++;
+      }
+    }
+    const mustHit = pCount === 0 && oCount === 0 ? true : pCount >= oCount;
+    out.push({
+      mustHitSection: mustHit,
+      sectionBeats: 4,
+      bpm: safeBpm,
+      changeBpm: false,
+      altAnim: false,
+      gfSection: false,
+    });
+  }
+  return out;
+}
+
+export function parseChartJson(rawJson: string): ParsedChart {
+  const cleaned = rawJson.replace(/^\uFEFF/, '').trim();
+  const root = JSON.parse(cleaned) as Record<string, unknown>;
+  const song = unwrapChartContainer(root);
+
+  const timeChangesSong = Array.isArray(song.timeChanges) ? song.timeChanges : [];
+  const timeChangesRoot = Array.isArray(root.timeChanges) ? root.timeChanges : [];
+  const bpm =
+    firstValidNumber(
+      [
+        song.bpm,
+        song.BPM,
+        root.bpm,
+        root.BPM,
+        (timeChangesSong[0] as Record<string, unknown> | undefined)?.bpm,
+        (timeChangesRoot[0] as Record<string, unknown> | undefined)?.bpm,
+      ],
+      10,
+    ) ?? 120;
+
+  const speed = extractScrollSpeed(song) ?? extractScrollSpeed(root) ?? 1.8;
+  const title =
+    firstNonEmptyString([
+      song.song,
+      song.songName,
+      song.title,
+      song.name,
+      root.songName,
+      root.song,
+      root.title,
+    ]) ?? 'Sin título';
+  const needsVoices =
+    typeof song.needsVoices === 'boolean'
+      ? song.needsVoices
+      : typeof root.needsVoices === 'boolean'
+        ? root.needsVoices
+        : true;
+
+  const playData =
+    (song.playData as Record<string, unknown> | undefined) ??
+    (root.playData as Record<string, unknown> | undefined);
+  const playChars = playData?.characters as Record<string, unknown> | undefined;
+
+  const player1 =
+    firstNonEmptyString([song.player1, playChars?.player, root.player1]) ?? 'protagonista';
+  const player2 =
+    firstNonEmptyString([song.player2, playChars?.opponent, root.player2]) ?? 'rival';
+  const gfVersion =
+    firstNonEmptyString([
+      song.gfVersion,
+      song.player3,
+      playChars?.girlfriend,
+      root.gfVersion,
+      root.player3,
+    ]) ?? 'acompanante';
+  const stage =
+    firstNonEmptyString([song.stage, playData?.stage, root.stage]) ?? 'escenario_base';
+  const arrowSkin = firstNonEmptyString([song.arrowSkin, root.arrowSkin]) ?? '';
+  const splashSkin = firstNonEmptyString([song.splashSkin, root.splashSkin]) ?? '';
+  const validScore =
+    typeof song.validScore === 'boolean'
+      ? song.validScore
+      : typeof root.validScore === 'boolean'
+        ? root.validScore
+        : true;
 
   const events: ChartEventSpec[] = [];
-  if (Array.isArray(song.events)) {
-    for (const group of song.events) {
-      if (!Array.isArray(group) || group.length < 2) continue;
-      const timeMs = Math.max(0, Number(group[0]) || 0);
+  const rawEvents = Array.isArray(song.events)
+    ? song.events
+    : Array.isArray(root.events)
+      ? root.events
+      : [];
+  for (const group of rawEvents) {
+    if (Array.isArray(group) && group.length >= 2) {
+      const timeMs = Math.max(0, asFiniteNumber(group[0]) ?? 0);
       const inner = group[1];
       if (Array.isArray(inner)) {
         for (const ev of inner) {
-          if (!Array.isArray(ev) || typeof ev[0] !== 'string') continue;
+          if (!Array.isArray(ev) || typeof ev[0] !== 'string' || !ev[0]) continue;
           events.push({
             timeMs,
             name: ev[0],
@@ -132,68 +299,226 @@ export function parseChartJson(rawJson: string): ParsedChart {
             value2: ev[2] !== undefined ? String(ev[2]) : '',
           });
         }
+      } else if (typeof inner === 'string' && inner) {
+        events.push({
+          timeMs,
+          name: inner,
+          value1: group[2] !== undefined ? String(group[2]) : '',
+          value2: group[3] !== undefined ? String(group[3]) : '',
+        });
       }
+    } else if (group && typeof group === 'object') {
+      const evObj = group as Record<string, unknown>;
+      const timeMs = Math.max(0, asFiniteNumber(evObj.t ?? evObj.time) ?? 0);
+      const name = typeof (evObj.e ?? evObj.name) === 'string' ? String(evObj.e ?? evObj.name).trim() : '';
+      if (!name) continue;
+      const params = Array.isArray(evObj.params) ? evObj.params : null;
+      const value1 = params
+        ? params[0] !== undefined
+          ? String(params[0])
+          : ''
+        : evObj.v && typeof evObj.v === 'object'
+          ? JSON.stringify(evObj.v)
+          : evObj.v !== undefined
+            ? String(evObj.v)
+            : evObj.value1 !== undefined
+              ? String(evObj.value1)
+              : '';
+      const value2 = params
+        ? params[1] !== undefined
+          ? String(params[1])
+          : ''
+        : evObj.value2 !== undefined
+          ? String(evObj.value2)
+          : '';
+      events.push({ timeMs, name, value1, value2 });
     }
   }
 
   const notes: ParsedChartNote[] = [];
-  const sections: ChartSectionSpec[] = [];
-  let runningBpm = bpm;
+  let sections: ChartSectionSpec[] = [];
 
-  for (const sec of song.notes) {
-    const mustHit = Boolean(sec?.mustHitSection ?? true);
-    const changeBpm = Boolean(sec?.changeBPM ?? false);
-    const secBpm = typeof sec?.bpm === 'number' && sec.bpm > 10 ? sec.bpm : runningBpm;
-    if (changeBpm) {
-      runningBpm = secBpm;
-    }
-    const sectionBeats =
-      typeof sec?.sectionBeats === 'number' && sec.sectionBeats > 0
-        ? sec.sectionBeats
-        : typeof sec?.lengthInSteps === 'number' && sec.lengthInSteps > 0
-          ? sec.lengthInSteps / 4
-          : 4;
+  const notesVal = song.notes ?? song.sections ?? root.notes ?? root.sections;
+  const strumLines = Array.isArray(song.strumLines)
+    ? song.strumLines
+    : Array.isArray(root.strumLines)
+      ? root.strumLines
+      : null;
 
-    sections.push({
-      mustHitSection: mustHit,
-      sectionBeats,
-      bpm: secBpm,
-      changeBpm,
-      altAnim: Boolean(sec?.altAnim ?? false),
-      gfSection: Boolean(sec?.gfSection ?? false),
+  const pushFlatNoteObject = (item: Record<string, unknown>, playerFirstGroup: boolean) => {
+    const timeMs = Math.max(0, asFiniteNumber(item.t ?? item.time ?? item.strumTime) ?? 0);
+    const rawLane = asFiniteNumber(item.d ?? item.lane ?? item.noteData ?? item.id);
+    if (rawLane === null || rawLane < 0) return;
+    const lane = Math.floor(rawLane) % 8;
+    const sustainMs = Math.max(
+      0,
+      asFiniteNumber(item.l ?? item.sustain ?? item.sustainLength ?? item.sLen) ?? 0,
+    );
+    const explicitPlayer =
+      typeof item.mustPress === 'boolean'
+        ? item.mustPress
+        : typeof item.isPlayer === 'boolean'
+          ? item.isPlayer
+          : null;
+    const isFirstGroup = lane < 4;
+    const isPlayer = explicitPlayer ?? (playerFirstGroup ? isFirstGroup : !isFirstGroup);
+    notes.push({
+      timeMs,
+      direction: DIRECTIONS[lane % 4],
+      isPlayer,
+      sustainMs,
     });
+  };
 
-    const secNotes = Array.isArray(sec?.sectionNotes) ? sec.sectionNotes : [];
-    for (const item of secNotes) {
-      if (!Array.isArray(item) || item.length < 2) continue;
-      const timeMs = Math.max(0, Number(item[0]) || 0);
-      const rawLane = Number(item[1]);
-      if (!Number.isFinite(rawLane)) continue;
+  if (Array.isArray(notesVal)) {
+    const looksLikeSections =
+      notesVal.length === 0 ||
+      notesVal.some(
+        (el) =>
+          el &&
+          typeof el === 'object' &&
+          !Array.isArray(el) &&
+          ('sectionNotes' in el ||
+            'notes' in el ||
+            'mustHitSection' in el ||
+            'mustHit' in el ||
+            'lengthInSteps' in el ||
+            'sectionBeats' in el),
+      );
 
-      // Eventos inline clásicos con carril -1
-      if (rawLane < 0) {
-        if (typeof item[2] === 'string') {
-          events.push({
-            timeMs,
-            name: item[2],
-            value1: item[3] !== undefined ? String(item[3]) : '',
-            value2: item[4] !== undefined ? String(item[4]) : '',
-          });
+    if (looksLikeSections) {
+      let runningBpm = bpm;
+      for (const rawSec of notesVal) {
+        const sec = (rawSec ?? {}) as Record<string, unknown>;
+        const mustHit = Boolean(sec.mustHitSection ?? sec.mustHit ?? true);
+        const changeBpm = Boolean(sec.changeBPM ?? false);
+        const parsedSecBpm = firstValidNumber([sec.bpm, sec.BPM], 10);
+        const secBpm = parsedSecBpm ?? runningBpm;
+        if (changeBpm) {
+          runningBpm = secBpm;
         }
-        continue;
-      }
+        const beatsNum = asFiniteNumber(sec.sectionBeats);
+        const stepsNum = asFiniteNumber(sec.lengthInSteps);
+        const sectionBeats =
+          beatsNum !== null && beatsNum > 0
+            ? beatsNum
+            : stepsNum !== null && stepsNum > 0
+              ? stepsNum / 4
+              : 4;
 
-      const lane = Math.floor(rawLane) % 8;
-      const sustainMs = Math.max(0, Number(item[2]) || 0);
-      const isFirstGroup = lane < 4;
-      const isPlayer = mustHit ? isFirstGroup : !isFirstGroup;
-      notes.push({
-        timeMs,
-        direction: DIRECTIONS[lane % 4],
-        isPlayer,
-        sustainMs,
-      });
+        sections.push({
+          mustHitSection: mustHit,
+          sectionBeats,
+          bpm: secBpm,
+          changeBpm,
+          altAnim: Boolean(sec.altAnim ?? false),
+          gfSection: Boolean(sec.gfSection ?? false),
+        });
+
+        const secNotes = Array.isArray(sec.sectionNotes)
+          ? sec.sectionNotes
+          : Array.isArray(sec.notes)
+            ? sec.notes
+            : [];
+        for (const item of secNotes) {
+          if (Array.isArray(item) && item.length >= 2) {
+            const timeMs = Math.max(0, asFiniteNumber(item[0]) ?? 0);
+            const rawLane = asFiniteNumber(item[1]);
+            if (rawLane === null) continue;
+
+            // Eventos inline clásicos con carril -1
+            if (rawLane < 0) {
+              if (typeof item[2] === 'string' && item[2]) {
+                events.push({
+                  timeMs,
+                  name: item[2],
+                  value1: item[3] !== undefined ? String(item[3]) : '',
+                  value2: item[4] !== undefined ? String(item[4]) : '',
+                });
+              }
+              continue;
+            }
+
+            const lane = Math.floor(rawLane) % 8;
+            const sustainMs = Math.max(0, asFiniteNumber(item[2]) ?? 0);
+            const isFirstGroup = lane < 4;
+            const isPlayer = mustHit ? isFirstGroup : !isFirstGroup;
+            notes.push({
+              timeMs,
+              direction: DIRECTIONS[lane % 4],
+              isPlayer,
+              sustainMs,
+            });
+          } else if (item && typeof item === 'object') {
+            pushFlatNoteObject(item as Record<string, unknown>, mustHit);
+          }
+        }
+      }
+    } else {
+      for (const item of notesVal) {
+        if (Array.isArray(item) && item.length >= 2) {
+          const timeMs = Math.max(0, asFiniteNumber(item[0]) ?? 0);
+          const rawLane = asFiniteNumber(item[1]);
+          if (rawLane === null || rawLane < 0) continue;
+          const lane = Math.floor(rawLane) % 8;
+          const sustainMs = Math.max(0, asFiniteNumber(item[2]) ?? 0);
+          notes.push({
+            timeMs,
+            direction: DIRECTIONS[lane % 4],
+            isPlayer: lane < 4,
+            sustainMs,
+          });
+        } else if (item && typeof item === 'object') {
+          pushFlatNoteObject(item as Record<string, unknown>, true);
+        }
+      }
+      sections = buildSyntheticSections(bpm, notes, events);
     }
+  } else if (notesVal && typeof notesVal === 'object' && !Array.isArray(notesVal)) {
+    const diffNotes = pickVSliceDifficultyArray(notesVal as Record<string, unknown>);
+    if (diffNotes) {
+      for (const item of diffNotes) {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          pushFlatNoteObject(item as Record<string, unknown>, true);
+        }
+      }
+    }
+    if (notes.length > 0 || events.length > 0) {
+      sections = buildSyntheticSections(bpm, notes, events);
+    }
+  } else if (strumLines) {
+    for (const rawLine of strumLines) {
+      if (!rawLine || typeof rawLine !== 'object') continue;
+      const line = rawLine as Record<string, unknown>;
+      const lineType = asFiniteNumber(line.type);
+      const pos = typeof line.position === 'string' ? line.position.toLowerCase() : '';
+      const isPlayer =
+        lineType === 1
+          ? true
+          : lineType === 0 || lineType === 2
+            ? false
+            : pos === 'boyfriend' || pos === 'bf' || pos === 'player';
+      const lineNotes = Array.isArray(line.notes) ? line.notes : [];
+      for (const rawNote of lineNotes) {
+        if (!rawNote || typeof rawNote !== 'object' || Array.isArray(rawNote)) continue;
+        const n = rawNote as Record<string, unknown>;
+        const timeMs = Math.max(0, asFiniteNumber(n.time ?? n.t) ?? 0);
+        const rawLane = asFiniteNumber(n.id ?? n.d ?? n.lane);
+        if (rawLane === null || rawLane < 0) continue;
+        const sustainMs = Math.max(0, asFiniteNumber(n.sLen ?? n.l ?? n.sustain) ?? 0);
+        notes.push({
+          timeMs,
+          direction: DIRECTIONS[Math.floor(rawLane) % 4],
+          isPlayer,
+          sustainMs,
+        });
+      }
+    }
+    if (notes.length > 0 || events.length > 0 || strumLines.length > 0) {
+      sections = buildSyntheticSections(bpm, notes, events);
+    }
+  } else {
+    throw new Error('Chart JSON inválido: falta arreglo notes');
   }
 
   notes.sort((a, b) => a.timeMs - b.timeMs);

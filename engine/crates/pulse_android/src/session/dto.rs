@@ -1,0 +1,442 @@
+//! Archivo: engine/crates/pulse_android/src/session/dto.rs
+//! Propósito: Modelos de transferencia JSON (`serde::Serialize` camelCase) compartidos entre
+//! Rust y Kotlin Compose, junto con la construcción de `ProjectSnapshotJson` y respuestas estándar.
+
+use super::{EngineSession, anim_kind_key, lang_to_key, role_to_key};
+use pulse_core::hot_compile::CompiledBundle;
+use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_scripting::ModScriptRuntime;
+use serde::Serialize;
+use std::collections::HashMap;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionResultJson<T: Serialize> {
+    pub ok: bool,
+    pub message: String,
+    pub data: Option<T>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSnapshotJson {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub downscroll: bool,
+    pub audio_offset_ms: f64,
+    pub chart: ChartSnapshotJson,
+    pub audio_tracks: Vec<AudioTrackSnapshotJson>,
+    pub stage_entities: Vec<StageEntitySnapshotJson>,
+    pub scripts: Vec<ScriptSnapshotJson>,
+    pub arrow_skin_name: String,
+    pub custom_arrow_paths: HashMap<String, String>,
+    pub last_compile_report: Option<CompileReportJson>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartEventJson {
+    pub time_ms: f64,
+    pub name: String,
+    pub value1: String,
+    pub value2: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartSectionSnapshotJson {
+    pub index: usize,
+    pub start_ms: f64,
+    pub length_in_steps: u32,
+    pub must_hit_section: bool,
+    pub bpm: f64,
+    pub change_bpm: bool,
+    pub alt_anim: bool,
+    pub gf_section: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartSnapshotJson {
+    pub title: String,
+    pub bpm: f64,
+    pub speed: f64,
+    pub needs_voices: bool,
+    pub player1: String,
+    pub player2: String,
+    pub gf_version: String,
+    pub stage: String,
+    pub section_count: usize,
+    pub total_notes: usize,
+    pub player_notes: usize,
+    pub opponent_notes: usize,
+    pub sustain_notes: usize,
+    pub duration_ms: f64,
+    pub density_buckets: Vec<u16>,
+    pub source_path: Option<String>,
+    pub sections: Vec<ChartSectionSnapshotJson>,
+    pub notes: Vec<VisibleNoteJson>,
+    pub events: Vec<ChartEventJson>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTrackSnapshotJson {
+    pub slot_index: usize,
+    pub role_label: String,
+    pub file_name: Option<String>,
+    pub gain: f32,
+    pub muted: bool,
+    pub duck_on_player_miss: bool,
+    pub duration_ms: f64,
+    pub waveform_peaks: Vec<f32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageEntitySnapshotJson {
+    pub id: String,
+    pub display_name: String,
+    pub role: String,
+    pub role_label: String,
+    pub image_path: Option<String>,
+    pub raw_image_path: Option<String>,
+    pub xml_path: Option<String>,
+    pub animate_json_path: Option<String>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub scale: f32,
+    pub opacity: f32,
+    pub flip_x: bool,
+    pub z_index: i32,
+    pub visible: bool,
+    pub animation_prefixes: Vec<String>,
+    pub anim_bindings: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptSnapshotJson {
+    pub id: String,
+    pub name: String,
+    pub language: String,
+    pub language_label: String,
+    pub source_code: String,
+    pub enabled: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompileReportJson {
+    pub elapsed_ms: u64,
+    pub kept_entities: usize,
+    pub discarded_invisible_entities: Vec<String>,
+    pub downscaled_textures: usize,
+    pub estimated_vram_saved_kb: usize,
+    pub compiled_texture_paths: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SparrowFrameJson {
+    pub found: bool,
+    pub raw_name: String,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub frame_x: i32,
+    pub frame_y: i32,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    pub rotated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameplayEntityFrameJson {
+    pub id: String,
+    pub display_name: String,
+    pub role: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub scale: f32,
+    pub opacity: f32,
+    pub flip_x: bool,
+    pub visible: bool,
+    pub texture_path: Option<String>,
+    pub frame: Option<SparrowFrameJson>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibleNoteJson {
+    pub id: u64,
+    pub time_ms: f64,
+    pub direction: u8,
+    pub is_player: bool,
+    pub sustain_ms: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameplayStepJson {
+    pub active: bool,
+    pub song_pos_ms: f64,
+    pub duration_ms: f64,
+    pub scroll_speed: f64,
+    pub active_bpm: f64,
+    pub downscroll: bool,
+    pub countdown_stage: i32,
+    pub countdown_label: String,
+    pub countdown_progress: f32,
+    pub camera_zoom: f32,
+    pub camera_shake: f32,
+    pub camera_x: f32,
+    pub camera_y: f32,
+    pub virtual_width: f32,
+    pub virtual_height: f32,
+    pub score: i64,
+    pub combo: u32,
+    pub max_combo: u32,
+    pub hits: u32,
+    pub misses: u32,
+    pub health: f32,
+    pub last_judgement: String,
+    pub paused: bool,
+    pub finished: bool,
+    pub script_errors: Vec<String>,
+    pub script_logs: Vec<String>,
+    pub entities: Vec<GameplayEntityFrameJson>,
+    pub visible_notes: Vec<VisibleNoteJson>,
+}
+
+pub struct GameplayRuntimeState {
+    pub bundle: CompiledBundle,
+    pub compiled_texture_paths: HashMap<String, String>,
+    pub runtime: ModScriptRuntime,
+    pub script_errors: Vec<String>,
+    pub notes_hit_state: Vec<bool>,
+    pub notes_miss_state: Vec<bool>,
+    pub score: i64,
+    pub combo: u32,
+    pub max_combo: u32,
+    pub hits: u32,
+    pub misses: u32,
+    pub health: f32,
+    pub last_judgement: String,
+    pub last_beat: i32,
+    pub paused: bool,
+    pub finished: bool,
+    pub last_logs: Vec<String>,
+}
+
+impl EngineSession {
+    pub fn snapshot_json_string(&self) -> String {
+        let snap = self.build_snapshot();
+        serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn build_snapshot(&self) -> ProjectSnapshotJson {
+        let audio_tracks = (0..MAX_AUDIO_TRACKS)
+            .map(|slot| {
+                let cfg = &self.project.audio_tracks[slot];
+                let decoded = self.decoded_tracks[slot].as_ref();
+                AudioTrackSnapshotJson {
+                    slot_index: slot,
+                    role_label: cfg.role_label.clone(),
+                    file_name: cfg.file_name.clone(),
+                    gain: cfg.gain,
+                    muted: cfg.muted,
+                    duck_on_player_miss: cfg.duck_on_player_miss,
+                    duration_ms: decoded.map(|d| d.duration_ms()).unwrap_or(0.0),
+                    waveform_peaks: decoded.map(|d| d.waveform_peaks.clone()).unwrap_or_default(),
+                }
+            })
+            .collect();
+
+        let stage_entities = self
+            .project
+            .stage
+            .entities
+            .iter()
+            .map(|ent| {
+                let prefixes = ent
+                    .atlas
+                    .as_ref()
+                    .map(|a| a.animations.keys().cloned().collect())
+                    .unwrap_or_default();
+                let mut bindings = HashMap::new();
+                if let Some(atlas) = &ent.atlas {
+                    for (kind, pref) in &atlas.bindings {
+                        bindings.insert(anim_kind_key(*kind).to_string(), pref.clone());
+                    }
+                }
+                StageEntitySnapshotJson {
+                    id: ent.id.clone(),
+                    display_name: ent.display_name.clone(),
+                    role: role_to_key(ent.role).to_string(),
+                    role_label: ent.role.label_es().to_string(),
+                    image_path: ent
+                        .image_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    raw_image_path: ent
+                        .raw_image_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    xml_path: ent
+                        .xml_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    animate_json_path: ent
+                        .animate_json_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    x: ent.x,
+                    y: ent.y,
+                    width: ent.width,
+                    height: ent.height,
+                    scale: ent.scale,
+                    opacity: ent.opacity,
+                    flip_x: ent.flip_x,
+                    z_index: ent.z_index,
+                    visible: ent.visible,
+                    animation_prefixes: prefixes,
+                    anim_bindings: bindings,
+                }
+            })
+            .collect();
+
+        let scripts = self
+            .project
+            .scripts
+            .iter()
+            .map(|s| ScriptSnapshotJson {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                language: lang_to_key(s.language).to_string(),
+                language_label: s.language.label().to_string(),
+                source_code: s.source_code.clone(),
+                enabled: s.enabled,
+            })
+            .collect();
+
+        let mut custom_arrow_paths = HashMap::new();
+        for (dir, path) in &self.project.arrow_skin.custom_svg_paths {
+            custom_arrow_paths.insert(
+                format!("{}", *dir as u8),
+                path.to_string_lossy().into_owned(),
+            );
+        }
+
+        let last_compile_report = self.last_compile_report.as_ref().map(|r| CompileReportJson {
+            elapsed_ms: r.elapsed_ms,
+            kept_entities: r.kept_entities,
+            discarded_invisible_entities: r.discarded_invisible_entities.clone(),
+            downscaled_textures: r.downscaled_textures,
+            estimated_vram_saved_kb: r.estimated_vram_saved_kb,
+            compiled_texture_paths: self.compiled_texture_paths.clone(),
+        });
+
+        ProjectSnapshotJson {
+            id: self.project.id.clone(),
+            name: self.project.name.clone(),
+            author: self.project.author.clone(),
+            downscroll: self.project.downscroll,
+            audio_offset_ms: self.project.audio_offset_ms,
+            chart: ChartSnapshotJson {
+                title: self.project.chart.title.clone(),
+                bpm: self.project.chart.bpm,
+                speed: self.project.chart.speed,
+                needs_voices: self.project.chart.needs_voices,
+                player1: self.project.chart.player1.clone(),
+                player2: self.project.chart.player2.clone(),
+                gf_version: self.project.chart.gf_version.clone(),
+                stage: self.project.chart.stage.clone(),
+                section_count: self.project.chart.sections.len(),
+                total_notes: self.project.chart.stats.total_notes,
+                player_notes: self.project.chart.stats.player_notes,
+                opponent_notes: self.project.chart.stats.opponent_notes,
+                sustain_notes: self.project.chart.stats.sustain_notes,
+                duration_ms: self.project.chart.stats.duration_ms,
+                density_buckets: self.project.chart.stats.density_buckets.clone(),
+                source_path: self
+                    .project
+                    .chart_source_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                sections: self
+                    .project
+                    .chart
+                    .sections
+                    .iter()
+                    .map(|s| ChartSectionSnapshotJson {
+                        index: s.index,
+                        start_ms: s.start_ms,
+                        length_in_steps: s.length_in_steps,
+                        must_hit_section: s.must_hit_section,
+                        bpm: s.bpm,
+                        change_bpm: s.change_bpm,
+                        alt_anim: s.alt_anim,
+                        gf_section: s.gf_section,
+                    })
+                    .collect(),
+                notes: self
+                    .project
+                    .chart
+                    .notes
+                    .iter()
+                    .map(|n| VisibleNoteJson {
+                        id: n.id,
+                        time_ms: n.time_ms,
+                        direction: n.direction as u8,
+                        is_player: n.is_player,
+                        sustain_ms: n.sustain_ms,
+                    })
+                    .collect(),
+                events: self
+                    .project
+                    .chart
+                    .events
+                    .iter()
+                    .map(|e| ChartEventJson {
+                        time_ms: e.time_ms,
+                        name: e.name.clone(),
+                        value1: e.value1.clone(),
+                        value2: e.value2.clone(),
+                    })
+                    .collect(),
+            },
+            audio_tracks,
+            stage_entities,
+            scripts,
+            arrow_skin_name: self.project.arrow_skin.skin_name.clone(),
+            custom_arrow_paths,
+            last_compile_report,
+        }
+    }
+
+    pub fn ok_response(&self, message: impl Into<String>) -> String {
+        let res = ActionResultJson {
+            ok: true,
+            message: message.into(),
+            data: Some(self.build_snapshot()),
+        };
+        serde_json::to_string(&res).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn err_response(&self, message: impl Into<String>) -> String {
+        let res = ActionResultJson {
+            ok: false,
+            message: message.into(),
+            data: Some(self.build_snapshot()),
+        };
+        serde_json::to_string(&res).unwrap_or_else(|_| "{}".to_string())
+    }
+}

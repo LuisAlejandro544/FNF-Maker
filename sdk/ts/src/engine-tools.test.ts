@@ -302,3 +302,68 @@ test('computeUniformCharacterDrawBox preserves character aspect ratio and bottom
   assert.ok(Math.abs(res.boxTop - 210) < 0.01);
 });
 
+test('parseChartJson supports V-Slice difficulty map, UTF-8 BOM, double-wrapped song.song and Codename strumLines', () => {
+  const vslice = `\uFEFF${JSON.stringify({
+    version: '2.0.0',
+    songName: 'V-Slice Track',
+    bpm: 150,
+    scrollSpeed: { hard: 2.8, normal: 2.2 },
+    events: [{ t: 1200, e: 'FocusCamera', v: { char: 1 } }],
+    notes: {
+      hard: [
+        { t: 500, d: 0, l: 0, k: '' },
+        { t: 1000, d: 5, l: 200, k: 'alt' },
+      ],
+    },
+  })}`;
+  const parsedV = parseChartJson(vslice);
+  assert.equal(parsedV.title, 'V-Slice Track');
+  assert.equal(parsedV.bpm, 150);
+  assert.equal(parsedV.speed, 2.8);
+  assert.equal(parsedV.notes.length, 2);
+  assert.equal(parsedV.notes[0].isPlayer, true);
+  assert.equal(parsedV.notes[0].direction, 'left');
+  assert.equal(parsedV.notes[1].isPlayer, false);
+  assert.equal(parsedV.notes[1].direction, 'down');
+  assert.equal(parsedV.notes[1].sustainMs, 200);
+  assert.equal(parsedV.events.length, 1);
+  assert.ok(parsedV.sections.length >= 4);
+
+  const doubleWrapped = JSON.stringify({
+    song: {
+      song: {
+        song: 'Double Wrapped',
+        bpm: '140',
+        notes: [{ mustHit: true, sectionNotes: [[400, 2, 0]] }],
+      },
+    },
+  });
+  const parsedDw = parseChartJson(doubleWrapped);
+  assert.equal(parsedDw.title, 'Double Wrapped');
+  assert.equal(parsedDw.bpm, 140);
+  assert.equal(parsedDw.notes.length, 1);
+  assert.equal(parsedDw.notes[0].isPlayer, true);
+
+  const codename = JSON.stringify({
+    codenameChart: true,
+    bpm: 132,
+    scrollSpeed: 2.4,
+    events: [{ name: 'Camera Movement', time: 800, params: [1] }],
+    strumLines: [
+      { type: 0, position: 'dad', notes: [{ time: 500, id: 1, sLen: 0 }] },
+      { type: 1, position: 'boyfriend', notes: [{ time: 1000, id: 3, sLen: 150 }] },
+    ],
+  });
+  const parsedCn = parseChartJson(codename);
+  assert.equal(parsedCn.bpm, 132);
+  assert.equal(parsedCn.speed, 2.4);
+  assert.equal(parsedCn.notes.length, 2);
+  assert.equal(parsedCn.notes[0].isPlayer, false);
+  assert.equal(parsedCn.notes[0].direction, 'down');
+  assert.equal(parsedCn.notes[1].isPlayer, true);
+  assert.equal(parsedCn.notes[1].direction, 'right');
+  assert.equal(parsedCn.notes[1].sustainMs, 150);
+  assert.equal(parsedCn.events.length, 1);
+});
+
+
