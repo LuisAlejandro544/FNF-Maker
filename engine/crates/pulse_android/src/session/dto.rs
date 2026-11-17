@@ -2,9 +2,11 @@
 //! Propósito: Modelos de transferencia JSON (`serde::Serialize` camelCase) compartidos entre
 //! Rust y Kotlin Compose, junto con la construcción de `ProjectSnapshotJson` y respuestas estándar.
 
-use super::{EngineSession, anim_kind_key, lang_to_key, role_to_key};
+use super::{EngineSession, anim_kind_key, control_mode_to_key, lang_to_key, role_to_key};
+use pulse_core::frame_memory::{FrameBumpArena, FrameVisibleNote, NoteSlidingWindow};
 use pulse_core::hot_compile::CompiledBundle;
 use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_core::sparrow::CharacterAnimKind;
 use pulse_scripting::ModScriptRuntime;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -24,6 +26,7 @@ pub struct ProjectSnapshotJson {
     pub name: String,
     pub author: String,
     pub downscroll: bool,
+    pub control_mode: String,
     pub audio_offset_ms: f64,
     pub chart: ChartSnapshotJson,
     pub audio_tracks: Vec<AudioTrackSnapshotJson>,
@@ -115,6 +118,7 @@ pub struct StageEntitySnapshotJson {
     pub visible: bool,
     pub animation_prefixes: Vec<String>,
     pub anim_bindings: HashMap<String, String>,
+    pub preview_frame: Option<SparrowFrameJson>,
 }
 
 #[derive(Serialize)]
@@ -135,6 +139,9 @@ pub struct CompileReportJson {
     pub kept_entities: usize,
     pub discarded_invisible_entities: Vec<String>,
     pub downscaled_textures: usize,
+    pub skipped_optimal_textures: usize,
+    pub discarded_heavy_loops: usize,
+    pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
     pub compiled_texture_paths: HashMap<String, String>,
 }
@@ -181,6 +188,7 @@ pub struct VisibleNoteJson {
     pub direction: u8,
     pub is_player: bool,
     pub sustain_ms: f64,
+    pub head_hit: bool,
 }
 
 #[derive(Serialize)]
@@ -192,6 +200,9 @@ pub struct GameplayStepJson {
     pub scroll_speed: f64,
     pub active_bpm: f64,
     pub downscroll: bool,
+    pub control_mode: String,
+    pub holding_lanes_mask: u8,
+    pub opponent_holding_lanes_mask: u8,
     pub countdown_stage: i32,
     pub countdown_label: String,
     pub countdown_progress: f32,
@@ -221,8 +232,11 @@ pub struct GameplayRuntimeState {
     pub compiled_texture_paths: HashMap<String, String>,
     pub runtime: ModScriptRuntime,
     pub script_errors: Vec<String>,
-    pub notes_hit_state: Vec<bool>,
-    pub notes_miss_state: Vec<bool>,
+    pub note_window: NoteSlidingWindow,
+    pub frame_arena: FrameBumpArena,
+    pub visible_note_scratch: Vec<FrameVisibleNote>,
+    pub step_entities_scratch: Vec<GameplayEntityFrameJson>,
+    pub step_notes_scratch: Vec<VisibleNoteJson>,
     pub score: i64,
     pub combo: u32,
     pub max_combo: u32,
@@ -277,6 +291,27 @@ impl EngineSession {
                         bindings.insert(anim_kind_key(*kind).to_string(), pref.clone());
                     }
                 }
+                let preview_frame = ent
+                    .atlas
+                    .as_ref()
+                    .and_then(|a| {
+                        a.frame_at(CharacterAnimKind::Idle, 0.0).or_else(|| {
+                            a.animations.values().next().and_then(|anim| anim.frames.first())
+                        })
+                    })
+                    .map(|f| SparrowFrameJson {
+                        found: true,
+                        raw_name: f.raw_name.clone(),
+                        x: f.x,
+                        y: f.y,
+                        width: f.width,
+                        height: f.height,
+                        frame_x: f.frame_x,
+                        frame_y: f.frame_y,
+                        frame_width: f.frame_width,
+                        frame_height: f.frame_height,
+                        rotated: f.rotated,
+                    });
                 StageEntitySnapshotJson {
                     id: ent.id.clone(),
                     display_name: ent.display_name.clone(),
@@ -309,6 +344,7 @@ impl EngineSession {
                     visible: ent.visible,
                     animation_prefixes: prefixes,
                     anim_bindings: bindings,
+                    preview_frame,
                 }
             })
             .collect();
@@ -340,6 +376,9 @@ impl EngineSession {
             kept_entities: r.kept_entities,
             discarded_invisible_entities: r.discarded_invisible_entities.clone(),
             downscaled_textures: r.downscaled_textures,
+            skipped_optimal_textures: r.skipped_optimal_textures,
+            discarded_heavy_loops: r.discarded_heavy_loops,
+            neutralized_unbounded_loops: r.neutralized_unbounded_loops,
             estimated_vram_saved_kb: r.estimated_vram_saved_kb,
             compiled_texture_paths: self.compiled_texture_paths.clone(),
         });
@@ -349,6 +388,7 @@ impl EngineSession {
             name: self.project.name.clone(),
             author: self.project.author.clone(),
             downscroll: self.project.downscroll,
+            control_mode: control_mode_to_key(self.project.control_mode).to_string(),
             audio_offset_ms: self.project.audio_offset_ms,
             chart: ChartSnapshotJson {
                 title: self.project.chart.title.clone(),
@@ -398,6 +438,7 @@ impl EngineSession {
                         direction: n.direction as u8,
                         is_player: n.is_player,
                         sustain_ms: n.sustain_ms,
+                        head_hit: false,
                     })
                     .collect(),
                 events: self

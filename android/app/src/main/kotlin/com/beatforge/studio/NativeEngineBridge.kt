@@ -33,6 +33,7 @@ object NativeEngineBridge {
         name: String,
         author: String,
         downscroll: Boolean,
+        controlMode: String,
         audioOffsetMs: Double,
         scrollSpeed: Double
     ): String
@@ -171,6 +172,9 @@ object NativeEngineBridge {
 
     @JvmStatic
     external fun nativeGetArrowPngBytes(direction: Int): ByteArray
+
+    @JvmStatic
+    external fun nativeGetReceptorPngBytes(direction: Int): ByteArray
 
     @JvmStatic
     external fun nativeHotCompile(tierCode: Int): String

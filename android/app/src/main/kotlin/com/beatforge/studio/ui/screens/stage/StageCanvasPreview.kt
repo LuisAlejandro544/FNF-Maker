@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
@@ -43,6 +44,7 @@ import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.ui.theme.StudioColors
 import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 @Composable
@@ -166,14 +168,65 @@ fun StageCanvasPreview(
                         }
                     }) {
                         if (loaded != null) {
-                            drawImage(
-                                image = loaded.bitmap,
-                                srcOffset = IntOffset.Zero,
-                                srcSize = IntSize(loaded.bitmap.width, loaded.bitmap.height),
-                                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                                dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
-                                alpha = ent.opacity.coerceIn(0f, 1f)
-                            )
+                            val bmp = loaded.bitmap
+                            val f = ent.previewFrame
+                            if (f != null && f.found && f.width > 0 && f.height > 0) {
+                                val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.toFloat()
+                                val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.toFloat()
+                                val srcX = (f.x * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
+                                val srcY = (f.y * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
+                                val srcW = (f.width * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
+                                val srcH = (f.height * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
+
+                                val visW = if (f.rotated) f.height else f.width
+                                val visH = if (f.rotated) f.width else f.height
+                                val logicalW = f.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                                val logicalH = f.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                                val fit = min(w / logicalW, h / logicalH)
+
+                                val boxW = logicalW * fit
+                                val boxH = logicalH * fit
+                                val boxLeft = cx - boxW / 2f
+                                val boxTop = (top + h) - boxH
+
+                                val visDrawW = visW * fit
+                                val visDrawH = visH * fit
+                                val visLeft = boxLeft + (-f.frameX * fit)
+                                val visTop = boxTop + (-f.frameY * fit)
+                                val frameCenterX = visLeft + visDrawW / 2f
+                                val frameCenterY = visTop + visDrawH / 2f
+
+                                val dstW = (f.width * fit).roundToInt().coerceAtLeast(2)
+                                val dstH = (f.height * fit).roundToInt().coerceAtLeast(2)
+                                val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
+                                val dstTop = (frameCenterY - dstH / 2f).roundToInt()
+
+                                withTransform({
+                                    if (f.rotated) {
+                                        rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
+                                    }
+                                }) {
+                                    drawImage(
+                                        image = bmp,
+                                        srcOffset = IntOffset(srcX, srcY),
+                                        srcSize = IntSize(srcW, srcH),
+                                        dstOffset = IntOffset(dstLeft, dstTop),
+                                        dstSize = IntSize(dstW, dstH),
+                                        alpha = ent.opacity.coerceIn(0f, 1f),
+                                        filterQuality = FilterQuality.Medium
+                                    )
+                                }
+                            } else {
+                                drawImage(
+                                    image = bmp,
+                                    srcOffset = IntOffset.Zero,
+                                    srcSize = IntSize(bmp.width, bmp.height),
+                                    dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                                    dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
+                                    alpha = ent.opacity.coerceIn(0f, 1f),
+                                    filterQuality = FilterQuality.Medium
+                                )
+                            }
                         } else {
                             val fallbackColor = when (ent.role) {
                                 "background" -> StudioColors.AccentIndigo

@@ -916,3 +916,333 @@ export function computeUniformCharacterDrawBox(
   };
 }
 
+export type ScriptLang = 'lua' | 'js' | 'ts';
+
+export interface ScriptLoopOptResult {
+  optimizedSource: string;
+  discardedLoops: number;
+  neutralizedLoops: number;
+}
+
+const NECESSARY_ENGINE_APIS = [
+  'setEntityProp',
+  'setCameraZoom',
+  'shakeCamera',
+  'playAnim',
+  'getSongPosMs',
+] as const;
+
+function stripCommentsForApiScan(body: string): string {
+  return body
+    .replace(/--\[\[[\s\S]*?\]\]/g, '')
+    .replace(/--[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+}
+
+function hasNecessaryEngineLogic(body: string): boolean {
+  const clean = stripCommentsForApiScan(body);
+  return NECESSARY_ENGINE_APIS.some((api) => clean.includes(api));
+}
+
+export function optimizeScriptLoops(language: ScriptLang, source: string): ScriptLoopOptResult {
+  let discardedLoops = 0;
+  let neutralizedLoops = 0;
+
+  if (language === 'lua') {
+    const out = source.replace(
+      /\b(while\s+(?:true|1)\s+do\b([\s\S]*?)\bend\b|for\s+([^=\n]+=\s*[^,\n]+,\s*)(\d[\d_]*)(?:\s*,\s*[^\n]+)?\s+do\b([\s\S]*?)\bend\b)/g,
+      (full, _all, whileBody, forHead, rawLimit, forBody) => {
+        if (whileBody !== undefined) {
+          if (/\bbreak\b/.test(whileBody)) return full;
+          if (!hasNecessaryEngineLogic(whileBody)) {
+            discardedLoops += 1;
+            return '-- [HotCompile] Bucle pesado Lua sin lógica necesaria descartado';
+          }
+          neutralizedLoops += 1;
+          return `-- [HotCompile] Bucle infinito Lua neutralizado\nfor _bf_once = 1, 1 do${whileBody}end`;
+        }
+        const limit = Number(String(rawLimit).replace(/_/g, ''));
+        const safeCap = /\bonUpdate\b/.test(source) ? 64 : 256;
+        if (!Number.isFinite(limit) || limit <= safeCap) return full;
+        if (!hasNecessaryEngineLogic(forBody)) {
+          discardedLoops += 1;
+          return '-- [HotCompile] Bucle for pesado Lua descartado';
+        }
+        neutralizedLoops += 1;
+        return `for ${forHead}${safeCap} do${forBody}end`;
+      },
+    );
+    return { optimizedSource: out, discardedLoops, neutralizedLoops };
+  }
+
+  const out = source.replace(
+    /\b(while\s*\(\s*(?:true|1|!0|!false)\s*\)\s*\{([\s\S]*?)\}|for\s*\(([^;]*;[^;]*;[^)]*)\)\s*\{([\s\S]*?)\})/g,
+    (full, _all, whileBody, forHeader, forBody) => {
+      if (whileBody !== undefined) {
+        if (/\bbreak\b/.test(whileBody)) return full;
+        if (!hasNecessaryEngineLogic(whileBody)) {
+          discardedLoops += 1;
+          return '/* [HotCompile] Bucle pesado sin lógica necesaria descartado */';
+        }
+        neutralizedLoops += 1;
+        return `/* [HotCompile] Bucle infinito neutralizado */ for (let _bf_once = 0; _bf_once < 1; _bf_once++) {${whileBody}}`;
+      }
+      const parts = String(forHeader).split(';');
+      if (parts.length !== 3) return full;
+      const cond = parts[1];
+      const match = cond.match(/^(.*?[<>]=?\s*)(\d[\d_]*)\s*$/);
+      if (!match) return full;
+      const limit = Number(match[2].replace(/_/g, ''));
+      const safeCap = /\bonUpdate\b/.test(source) ? 64 : 256;
+      if (!Number.isFinite(limit) || limit <= safeCap) return full;
+      if (!hasNecessaryEngineLogic(forBody)) {
+        discardedLoops += 1;
+        return '/* [HotCompile] Bucle pesado sin lógica necesaria descartado */';
+      }
+      neutralizedLoops += 1;
+      return `for (${parts[0]};${match[1]}${safeCap};${parts[2]}) {${forBody}}`;
+    },
+  );
+  return { optimizedSource: out, discardedLoops, neutralizedLoops };
+}
+
+export type DeviceResourceTier = 'low_32bit' | 'balanced' | 'high';
+
+export function computeSmartTextureScale(params: {
+  origWidth: number;
+  origHeight: number;
+  entityWidth: number;
+  entityHeight: number;
+  entityScale: number;
+  hasAtlas: boolean;
+  maxFrameSide?: number;
+  tier: DeviceResourceTier;
+}): number {
+  const { origWidth, origHeight, entityWidth, entityHeight, entityScale, hasAtlas, maxFrameSide = 0, tier } = params;
+  if (origWidth <= 0 || origHeight <= 0) return 1.0;
+
+  const largest = Math.max(origWidth, origHeight);
+  const tierCap = hasAtlas
+    ? tier === 'low_32bit'
+      ? 3072
+      : 4096
+    : tier === 'low_32bit'
+      ? 2048
+      : tier === 'balanced'
+        ? 2560
+        : 4096;
+
+  let targetRatio = largest > tierCap ? tierCap / largest : 1.0;
+  const displayMax = Math.max(128, Math.max(entityWidth, entityHeight) * entityScale);
+
+  if (hasAtlas) {
+    if (maxFrameSide > 0) {
+      const idealFrameMax = Math.max(512, displayMax * 2.2);
+      if (maxFrameSide > idealFrameMax * 1.15 && largest > 1536) {
+        const frameRatio = Math.max(0.45, Math.min(1.0, idealFrameMax / maxFrameSide));
+        targetRatio = Math.min(targetRatio, frameRatio);
+      }
+    }
+  } else {
+    const idealStaticMax = Math.max(960, displayMax * 1.5);
+    if (largest > idealStaticMax * 1.2) {
+      const staticRatio = Math.max(0.4, Math.min(1.0, idealStaticMax / largest));
+      targetRatio = Math.min(targetRatio, staticRatio);
+    }
+  }
+
+  if (targetRatio >= 0.92 && largest <= tierCap) {
+    return 1.0;
+  }
+  return Math.max(0.25, Math.min(1.0, targetRatio));
+}
+
+export type NoteWindowState = 'pending' | 'hit' | 'missed';
+
+export function advanceNoteSlidingWindow(
+  notes: Array<{ timeMs: number; sustainMs: number }>,
+  states: NoteWindowState[],
+  activeStartIdx: number,
+  songPosMs: number,
+  lookbackMs = 240,
+): { nextStartIdx: number; newlyDiscarded: number } {
+  const len = Math.min(notes.length, states.length);
+  let idx = activeStartIdx;
+  let newlyDiscarded = 0;
+  while (idx < len) {
+    if (states[idx] === 'pending') break;
+    const endMs = notes[idx].timeMs + notes[idx].sustainMs;
+    if (endMs < songPosMs - lookbackMs) {
+      idx += 1;
+      newlyDiscarded += 1;
+    } else {
+      break;
+    }
+  }
+  return { nextStartIdx: idx, newlyDiscarded };
+}
+
+export class LruResourceCache<T> {
+  private entries = new Map<string, { value: T; bytes: number; tick: number }>();
+  private currentBytes = 0;
+  private tick = 0;
+
+  constructor(
+    private readonly maxBytes: number,
+    private readonly maxEntries = 64,
+  ) {}
+
+  get(key: string): T | undefined {
+    const slot = this.entries.get(key);
+    if (!slot) return undefined;
+    this.tick += 1;
+    slot.tick = this.tick;
+    return slot.value;
+  }
+
+  insert(key: string, value: T, sizeBytes: number): string[] {
+    const prev = this.entries.get(key);
+    if (prev) {
+      this.currentBytes -= prev.bytes;
+      this.entries.delete(key);
+    }
+    this.tick += 1;
+    this.currentBytes += sizeBytes;
+    this.entries.set(key, { value, bytes: sizeBytes, tick: this.tick });
+
+    const evicted: string[] = [];
+    while ((this.currentBytes > this.maxBytes || this.entries.size > this.maxEntries) && this.entries.size > 1) {
+      let oldestKey: string | null = null;
+      let oldestTick = Infinity;
+      for (const [k, slot] of this.entries.entries()) {
+        if (slot.tick < oldestTick) {
+          oldestTick = slot.tick;
+          oldestKey = k;
+        }
+      }
+      if (!oldestKey) break;
+      const removed = this.entries.get(oldestKey)!;
+      this.entries.delete(oldestKey);
+      this.currentBytes -= removed.bytes;
+      evicted.push(oldestKey);
+    }
+    return evicted;
+  }
+
+  get bytesUsed(): number {
+    return this.currentBytes;
+  }
+
+  has(key: string): boolean {
+    return this.entries.has(key);
+  }
+}
+
+export type MobileControlMode = 'tap_arrows' | 'classic_hitbox';
+
+export function desaturateToNeutralRgba(rgba: Uint8ClampedArray | number[]): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(rgba.length);
+  for (let i = 0; i + 3 < rgba.length; i += 4) {
+    const a = rgba[i + 3];
+    if (a > 0) {
+      const luma = Math.min(212, Math.max(92, Math.round(0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2])));
+      out[i] = luma;
+      out[i + 1] = luma;
+      out[i + 2] = Math.min(255, luma + 6);
+      out[i + 3] = Math.min(255, Math.round(a * 0.85));
+    }
+  }
+  return out;
+}
+
+export interface SustainTailSpan {
+  headVisible: boolean;
+  tailTop: number;
+  tailBottom: number;
+  tailLength: number;
+}
+
+export function computeSustainTailSpan(params: {
+  noteTimeMs: number;
+  sustainMs: number;
+  songPosMs: number;
+  headHit: boolean;
+  downscroll: boolean;
+  receptorY: number;
+  pxPerMs: number;
+}): SustainTailSpan {
+  const { noteTimeMs, sustainMs, songPosMs, headHit, downscroll, receptorY, pxPerMs } = params;
+  const headDelta = noteTimeMs - songPosMs;
+  const endDelta = noteTimeMs + sustainMs - songPosMs;
+  const headY = downscroll ? receptorY - headDelta * pxPerMs : receptorY + headDelta * pxPerMs;
+  const tailEndY = downscroll ? receptorY - endDelta * pxPerMs : receptorY + endDelta * pxPerMs;
+  const anchorY = headHit ? receptorY : headY;
+  const tailTop = downscroll ? tailEndY : anchorY;
+  const tailBottom = downscroll ? anchorY : tailEndY;
+  return {
+    headVisible: !headHit,
+    tailTop,
+    tailBottom,
+    tailLength: Math.max(0, tailBottom - tailTop),
+  };
+}
+
+export function resolveMobileTouchLanes(params: {
+  controlMode: MobileControlMode;
+  touches: Array<{ x: number; y: number }>;
+  screenWidth: number;
+  screenHeight: number;
+  downscroll: boolean;
+  virtualWidth?: number;
+  virtualHeight?: number;
+}): number {
+  const {
+    controlMode,
+    touches,
+    screenWidth,
+    screenHeight,
+    downscroll,
+    virtualWidth = 1280,
+    virtualHeight = 720,
+  } = params;
+  const w = Math.max(1, screenWidth);
+  const h = Math.max(1, screenHeight);
+  let mask = 0;
+
+  if (controlMode === 'classic_hitbox') {
+    for (const t of touches) {
+      const lane = Math.min(3, Math.max(0, Math.floor((t.x / w) * 4)));
+      mask |= 1 << lane;
+    }
+    return mask;
+  }
+
+  const sx = w / Math.max(1, virtualWidth);
+  const sy = h / Math.max(1, virtualHeight);
+  const receptorY = (downscroll ? 575 : 118) * sy;
+  const notePxSize = 84 * Math.min(sx, sy);
+  const plrStartX = 765 * sx;
+  const laneStep = 105 * sx;
+  const maxHitX = Math.max(laneStep * 0.54, notePxSize * 0.8);
+  const maxHitY = Math.max(notePxSize * 1.25, 92);
+
+  for (const t of touches) {
+    if (Math.abs(t.y - receptorY) > maxHitY) continue;
+    let bestLane = -1;
+    let bestDist = Infinity;
+    for (let dir = 0; dir < 4; dir++) {
+      const cx = plrStartX + dir * laneStep;
+      const dx = Math.abs(t.x - cx);
+      if (dx <= maxHitX && dx < bestDist) {
+        bestDist = dx;
+        bestLane = dir;
+      }
+    }
+    if (bestLane >= 0) {
+      mask |= 1 << bestLane;
+    }
+  }
+  return mask;
+}
+

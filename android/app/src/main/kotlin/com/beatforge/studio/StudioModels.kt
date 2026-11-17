@@ -25,6 +25,25 @@ enum class DeviceTier(val code: Int, val label: String, val subtitle: String) {
     HighQuality(2, "Alta Calidad", "Texturas y atlas hasta 4096px, máxima nitidez HD")
 }
 
+enum class MobileControlMode(val key: String, val label: String, val description: String) {
+    TapArrows(
+        key = "tap_arrows",
+        label = "Tocar Flechas (Por defecto)",
+        description = "Toca directamente las 4 flechas en pantalla como FNF Mobile"
+    ),
+    ClassicHitbox(
+        key = "classic_hitbox",
+        label = "Hitbox Clásico (Psych Mobile)",
+        description = "4 columnas táctiles verticales de pantalla completa"
+    );
+
+    companion object {
+        fun fromKey(raw: String): MobileControlMode {
+            return entries.firstOrNull { it.key == raw } ?: TapArrows
+        }
+    }
+}
+
 sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
     data object Chart : ImportKind("chart", arrayOf("application/json", "text/plain", "*/*"))
     data class AudioTrack(val slot: Int) : ImportKind("audio_$slot", arrayOf("audio/*", "application/ogg", "*/*"))
@@ -104,7 +123,8 @@ data class StageEntitySnapshot(
     val zIndex: Int = 0,
     val visible: Boolean = true,
     val animationPrefixes: List<String> = emptyList(),
-    val animBindings: Map<String, String> = emptyMap()
+    val animBindings: Map<String, String> = emptyMap(),
+    val previewFrame: SparrowFrameInfo? = null
 )
 
 data class ScriptSnapshot(
@@ -121,6 +141,9 @@ data class CompileReportSnapshot(
     val keptEntities: Int = 0,
     val discardedInvisibleEntities: List<String> = emptyList(),
     val downscaledTextures: Int = 0,
+    val skippedOptimalTextures: Int = 0,
+    val discardedHeavyLoops: Int = 0,
+    val neutralizedUnboundedLoops: Int = 0,
     val estimatedVramSavedKb: Int = 0,
     val compiledTexturePaths: Map<String, String> = emptyMap()
 )
@@ -130,6 +153,7 @@ data class ProjectSnapshot(
     val name: String = "Nuevo Mod BeatForge",
     val author: String = "Creador",
     val downscroll: Boolean = false,
+    val controlMode: String = "tap_arrows",
     val audioOffsetMs: Double = 0.0,
     val chart: ChartSnapshot = ChartSnapshot(),
     val audioTracks: List<AudioTrackSnapshot> = emptyList(),
@@ -186,7 +210,8 @@ data class VisibleNote(
     val timeMs: Double,
     val direction: Int,
     val isPlayer: Boolean,
-    val sustainMs: Double
+    val sustainMs: Double,
+    val headHit: Boolean = false
 )
 
 data class GameplayStep(
@@ -196,6 +221,9 @@ data class GameplayStep(
     val scrollSpeed: Double = 1.8,
     val activeBpm: Double = 120.0,
     val downscroll: Boolean = false,
+    val controlMode: String = "tap_arrows",
+    val holdingLanesMask: Int = 0,
+    val opponentHoldingLanesMask: Int = 0,
     val countdownStage: Int = -1,
     val countdownLabel: String = "",
     val countdownProgress: Float = 0f,
@@ -284,7 +312,8 @@ object StudioJsonParser {
                         timeMs = n.optDouble("timeMs", 0.0),
                         direction = n.optInt("direction", 0),
                         isPlayer = n.optBoolean("isPlayer", true),
-                        sustainMs = n.optDouble("sustainMs", 0.0)
+                        sustainMs = n.optDouble("sustainMs", 0.0),
+                        headHit = n.optBoolean("headHit", false)
                     )
                 )
             }
@@ -368,7 +397,8 @@ object StudioJsonParser {
                         zIndex = e.optInt("zIndex", 0),
                         visible = e.optBoolean("visible", true),
                         animationPrefixes = stringList(e.optJSONArray("animationPrefixes")),
-                        animBindings = stringMap(e.optJSONObject("animBindings"))
+                        animBindings = stringMap(e.optJSONObject("animBindings")),
+                        previewFrame = e.optJSONObject("previewFrame")?.let { parseSparrowFrameObject(it) }
                     )
                 )
             }
@@ -398,6 +428,9 @@ object StudioJsonParser {
                 keptEntities = r.optInt("keptEntities", 0),
                 discardedInvisibleEntities = stringList(r.optJSONArray("discardedInvisibleEntities")),
                 downscaledTextures = r.optInt("downscaledTextures", 0),
+                skippedOptimalTextures = r.optInt("skippedOptimalTextures", 0),
+                discardedHeavyLoops = r.optInt("discardedHeavyLoops", 0),
+                neutralizedUnboundedLoops = r.optInt("neutralizedUnboundedLoops", 0),
                 estimatedVramSavedKb = r.optInt("estimatedVramSavedKb", 0),
                 compiledTexturePaths = stringMap(r.optJSONObject("compiledTexturePaths"))
             )
@@ -408,6 +441,7 @@ object StudioJsonParser {
             name = obj.optString("name", "Nuevo Mod"),
             author = obj.optString("author", "Creador"),
             downscroll = obj.optBoolean("downscroll", false),
+            controlMode = obj.optString("controlMode", "tap_arrows"),
             audioOffsetMs = obj.optDouble("audioOffsetMs", 0.0),
             chart = chart,
             audioTracks = tracks,
@@ -481,7 +515,8 @@ object StudioJsonParser {
                             timeMs = n.optDouble("timeMs", 0.0),
                             direction = n.optInt("direction", 0),
                             isPlayer = n.optBoolean("isPlayer", true),
-                            sustainMs = n.optDouble("sustainMs", 0.0)
+                            sustainMs = n.optDouble("sustainMs", 0.0),
+                            headHit = n.optBoolean("headHit", false)
                         )
                     )
                 }
@@ -494,6 +529,9 @@ object StudioJsonParser {
                 scrollSpeed = obj.optDouble("scrollSpeed", 1.8),
                 activeBpm = obj.optDouble("activeBpm", 120.0),
                 downscroll = obj.optBoolean("downscroll", false),
+                controlMode = obj.optString("controlMode", "tap_arrows"),
+                holdingLanesMask = obj.optInt("holdingLanesMask", 0),
+                opponentHoldingLanesMask = obj.optInt("opponentHoldingLanesMask", 0),
                 countdownStage = obj.optInt("countdownStage", -1),
                 countdownLabel = obj.optString("countdownLabel", ""),
                 countdownProgress = obj.optDouble("countdownProgress", 0.0).toFloat(),

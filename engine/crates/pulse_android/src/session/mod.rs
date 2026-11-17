@@ -19,8 +19,9 @@ pub use dto::{
 };
 
 use pulse_audio::{AudioEngineHandle, DecodedTrack};
-use pulse_core::hot_compile::{CompiledBundle, HotCompileReport};
-use pulse_core::project::{MAX_AUDIO_TRACKS, ModProject};
+use pulse_core::frame_memory::LruCache;
+use pulse_core::hot_compile::{CompiledBundle, DeviceResourceTier, HotCompileReport, OptimizedTexture};
+use pulse_core::project::{MAX_AUDIO_TRACKS, MobileControlMode, ModProject};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
 use std::collections::HashMap;
@@ -34,6 +35,7 @@ pub struct EngineSession {
     pub decoded_tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
     pub compiled_bundle: Option<CompiledBundle>,
     pub compiled_texture_paths: HashMap<String, String>,
+    pub texture_lru_cache: LruCache<String, OptimizedTexture>,
     pub last_compile_report: Option<HotCompileReport>,
     pub gameplay: Option<GameplayRuntimeState>,
 }
@@ -47,6 +49,7 @@ impl EngineSession {
             decoded_tracks: [None, None, None],
             compiled_bundle: None,
             compiled_texture_paths: HashMap::new(),
+            texture_lru_cache: LruCache::new(DeviceResourceTier::Balanced.lru_cache_budget_bytes(), 64),
             last_compile_report: None,
             gameplay: None,
         }
@@ -84,6 +87,20 @@ pub(super) fn parse_lang_key(key: &str) -> ScriptLanguage {
         "ts" | "typescript" => ScriptLanguage::TypeScript,
         "js" | "javascript" => ScriptLanguage::JavaScript,
         _ => ScriptLanguage::Lua,
+    }
+}
+
+pub(super) fn control_mode_to_key(mode: MobileControlMode) -> &'static str {
+    match mode {
+        MobileControlMode::TapArrows => "tap_arrows",
+        MobileControlMode::ClassicHitbox => "classic_hitbox",
+    }
+}
+
+pub(super) fn parse_control_mode_key(key: &str) -> MobileControlMode {
+    match key {
+        "classic_hitbox" | "hitbox" | "classic" => MobileControlMode::ClassicHitbox,
+        _ => MobileControlMode::TapArrows,
     }
 }
 
@@ -150,5 +167,8 @@ mod tests {
 
         let arrow_png = session.rasterize_arrow_png_bytes(0);
         assert!(arrow_png.starts_with(&[0x89, b'P', b'N', b'G']));
+
+        let receptor_png = session.rasterize_receptor_png_bytes(0);
+        assert!(receptor_png.starts_with(&[0x89, b'P', b'N', b'G']));
     }
 }

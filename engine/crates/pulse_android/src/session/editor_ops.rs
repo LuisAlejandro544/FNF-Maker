@@ -4,7 +4,7 @@
 //! - Decodificación y configuración de hasta 3 pistas de audio en `pulse_audio`.
 //! - Gestión de entidades del escenario (`StageEntity`), scripts Lua/TS/JS y skins SVG (`resvg`).
 
-use super::{ActionResultJson, EngineSession, parse_lang_key, parse_role_key};
+use super::{ActionResultJson, EngineSession, parse_control_mode_key, parse_lang_key, parse_role_key};
 use image::ImageFormat;
 use pulse_audio::decode_audio_file;
 use pulse_core::project::MAX_AUDIO_TRACKS;
@@ -17,6 +17,24 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 impl EngineSession {
+    pub fn update_project_meta(
+        &mut self,
+        name: String,
+        author: String,
+        downscroll: bool,
+        control_mode_key: &str,
+        audio_offset_ms: f64,
+        scroll_speed: f64,
+    ) -> String {
+        self.project.name = name;
+        self.project.author = author;
+        self.project.downscroll = downscroll;
+        self.project.control_mode = parse_control_mode_key(control_mode_key);
+        self.project.audio_offset_ms = audio_offset_ms.clamp(-500.0, 500.0);
+        self.project.chart.speed = scroll_speed.clamp(0.5, 5.0);
+        self.ok_response("Proyecto actualizado")
+    }
+
     pub fn import_chart(&mut self, path: PathBuf) -> String {
         match std::fs::read_to_string(&path) {
             Ok(raw) => match ChartData::from_json_str(&raw) {
@@ -332,6 +350,25 @@ impl EngineSession {
         let dir = NoteDirection::from_lane(dir_code);
         let svg = self.project.arrow_skin.svg_for(dir);
         let Ok(raster) = rasterize_svg_str(&svg, self.project.arrow_skin.note_size_px) else {
+            return Vec::new();
+        };
+        let Some(rgba_img) = image::RgbaImage::from_raw(raster.width, raster.height, raster.rgba) else {
+            return Vec::new();
+        };
+        let mut png_bytes = Vec::new();
+        if image::DynamicImage::ImageRgba8(rgba_img)
+            .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
+            .is_ok()
+        {
+            png_bytes
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn rasterize_receptor_png_bytes(&self, dir_code: u8) -> Vec<u8> {
+        let dir = NoteDirection::from_lane(dir_code);
+        let Ok(raster) = self.project.arrow_skin.rasterize_neutral_receptor(dir) else {
             return Vec::new();
         };
         let Some(rgba_img) = image::RgbaImage::from_raw(raster.width, raster.height, raster.rgba) else {

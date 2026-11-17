@@ -9,16 +9,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  LruResourceCache,
+  advanceNoteSlidingWindow,
   autoBindSparrowPrefixes,
   compareNaturalFrameNames,
   computeCountdownState,
+  computeSmartTextureScale,
+  computeSustainTailSpan,
   computeTrimmedFramePlacement,
   computeUniformCharacterDrawBox,
+  desaturateToNeutralRgba,
   detectSpriteJsonFormat,
   mapRotatedSpriteSample,
+  optimizeScriptLoops,
   packPosesIntoBoundedAtlas,
   parseAstcHeader,
   parseChartJson,
+  resolveMobileTouchLanes,
   serializeChartJson,
   shouldDiscardInvisibleEntity,
   stripTrailingFrameDigits,
@@ -366,4 +373,157 @@ test('parseChartJson supports V-Slice difficulty map, UTF-8 BOM, double-wrapped 
   assert.equal(parsedCn.events.length, 1);
 });
 
+test('optimizeScriptLoops discards useless heavy loops and preserves/neutralizes necessary logic in Lua, JS and TS', () => {
+  const tsRes = optimizeScriptLoops(
+    'ts',
+    `
+function onUpdate(dt: number) {
+  let acc = 0;
+  for (let i = 0; i < 1000000; i++) { acc += i; }
+  while (true) { setCameraZoom(1.06); }
+}
+`,
+  );
+  assert.equal(tsRes.discardedLoops, 1);
+  assert.equal(tsRes.neutralizedLoops, 1);
+  assert.ok(!tsRes.optimizedSource.includes('1000000'));
+  assert.ok(!tsRes.optimizedSource.includes('while (true)'));
+  assert.ok(tsRes.optimizedSource.includes('setCameraZoom(1.06)'));
 
+  const luaRes = optimizeScriptLoops(
+    'lua',
+    `
+function onUpdate(dt)
+  while true do x = x + 1 end
+  for i = 1, 50000 do
+    setEntityProp("stage_bg", "opacity", 0.9)
+  end
+end
+`,
+  );
+  assert.equal(luaRes.discardedLoops, 1);
+  assert.equal(luaRes.neutralizedLoops, 1);
+  assert.ok(luaRes.optimizedSource.includes('1, 64'));
+  assert.ok(luaRes.optimizedSource.includes('setEntityProp'));
+});
+
+test('computeSmartTextureScale passes through optimal sprites without quality loss and downscales oversized ones', () => {
+  const optimal = computeSmartTextureScale({
+    origWidth: 1920,
+    origHeight: 1080,
+    entityWidth: 1280,
+    entityHeight: 720,
+    entityScale: 1.0,
+    hasAtlas: false,
+    tier: 'balanced',
+  });
+  assert.equal(optimal, 1.0);
+
+  const oversized = computeSmartTextureScale({
+    origWidth: 4096,
+    origHeight: 4096,
+    entityWidth: 200,
+    entityHeight: 200,
+    entityScale: 1.0,
+    hasAtlas: false,
+    tier: 'balanced',
+  });
+  assert.ok(oversized < 0.6);
+});
+
+test('advanceNoteSlidingWindow and LruResourceCache discard resolved notes and evict oldest textures deterministically', () => {
+  const notes = [
+    { timeMs: 400, sustainMs: 0 },
+    { timeMs: 800, sustainMs: 0 },
+    { timeMs: 1600, sustainMs: 0 },
+  ];
+  const win = advanceNoteSlidingWindow(notes, ['hit', 'missed', 'pending'], 0, 1200, 240);
+  assert.equal(win.nextStartIdx, 2);
+  assert.equal(win.newlyDiscarded, 2);
+
+  const cache = new LruResourceCache<string>(1024, 10);
+  cache.insert('a', 'bufA', 500);
+  cache.insert('b', 'bufB', 500);
+  assert.equal(cache.get('a'), 'bufA'); // a es más reciente que b
+  const evicted = cache.insert('c', 'bufC', 500);
+  assert.deepEqual(evicted, ['b']);
+  assert.equal(cache.has('a'), true);
+  assert.equal(cache.has('c'), true);
+  assert.equal(cache.bytesUsed, 1000);
+});
+
+test('desaturateToNeutralRgba removes vivid arrow color for uncolored receptors', () => {
+  // Píxel rosa vibrante (Left) y cian vibrante (Down) -> gris neutro
+  const neutral = desaturateToNeutralRgba([244, 114, 182, 255, 34, 211, 238, 255]);
+  const chroma0 = Math.max(neutral[0], neutral[1], neutral[2]) - Math.min(neutral[0], neutral[1], neutral[2]);
+  const chroma1 = Math.max(neutral[4], neutral[5], neutral[6]) - Math.min(neutral[4], neutral[5], neutral[6]);
+  assert.ok(chroma0 <= 6);
+  assert.ok(chroma1 <= 6);
+});
+
+test('computeSustainTailSpan shrinks tail smoothly into receptorY after head hit without disappearing', () => {
+  // Upscroll: nota larga de 600ms en t=1000ms, estamos en t=1200ms con cabeza ya golpeada
+  const upscrollMid = computeSustainTailSpan({
+    noteTimeMs: 1000,
+    sustainMs: 600,
+    songPosMs: 1200,
+    headHit: true,
+    downscroll: false,
+    receptorY: 118,
+    pxPerMs: 0.5,
+  });
+  assert.equal(upscrollMid.headVisible, false);
+  assert.equal(upscrollMid.tailTop, 118);
+  assert.equal(upscrollMid.tailLength, 200); // 400ms restantes * 0.5
+
+  // Downscroll: misma nota en t=1500ms (quedan 100ms = 50px arriba del receptor)
+  const downscrollEnd = computeSustainTailSpan({
+    noteTimeMs: 1000,
+    sustainMs: 600,
+    songPosMs: 1500,
+    headHit: true,
+    downscroll: true,
+    receptorY: 575,
+    pxPerMs: 0.5,
+  });
+  assert.equal(downscrollEnd.headVisible, false);
+  assert.equal(downscrollEnd.tailBottom, 575);
+  assert.equal(downscrollEnd.tailLength, 50);
+});
+
+test('resolveMobileTouchLanes enforces direct arrow hits in tap_arrows and 4 full columns in classic_hitbox', () => {
+  // En 1280x720 upscroll, las flechas del jugador están en x=765, 870, 975, 1080 y y=118
+  const missOutside = resolveMobileTouchLanes({
+    controlMode: 'tap_arrows',
+    touches: [{ x: 300, y: 500 }],
+    screenWidth: 1280,
+    screenHeight: 720,
+    downscroll: false,
+  });
+  assert.equal(missOutside, 0);
+
+  const hitPlayerArrows = resolveMobileTouchLanes({
+    controlMode: 'tap_arrows',
+    touches: [
+      { x: 765, y: 120 }, // lane 0 (IZQ)
+      { x: 1080, y: 115 }, // lane 3 (DER)
+    ],
+    screenWidth: 1280,
+    screenHeight: 720,
+    downscroll: false,
+  });
+  assert.equal(hitPlayerArrows, (1 << 0) | (1 << 3));
+
+  // Hitbox clásico (Psych Mobile): 4 columnas verticales completas sin importar Y
+  const hitboxTouch = resolveMobileTouchLanes({
+    controlMode: 'classic_hitbox',
+    touches: [
+      { x: 400, y: 600 }, // 2do cuarto -> lane 1 (ABA)
+      { x: 1150, y: 200 }, // 4to cuarto -> lane 3 (DER)
+    ],
+    screenWidth: 1280,
+    screenHeight: 720,
+    downscroll: false,
+  });
+  assert.equal(hitboxTouch, (1 << 1) | (1 << 3));
+});

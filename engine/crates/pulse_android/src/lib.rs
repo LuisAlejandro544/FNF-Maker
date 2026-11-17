@@ -71,20 +71,21 @@ mod jni_exports {
         name: JString<'local>,
         author: JString<'local>,
         downscroll: jboolean,
+        control_mode: JString<'local>,
         audio_offset_ms: jdouble,
         scroll_speed: jdouble,
     ) -> JString<'local> {
         let name_s = read_str(&mut env, &name);
         let author_s = read_str(&mut env, &author);
-        let json = {
-            let mut guard = session().lock();
-            guard.project.name = name_s;
-            guard.project.author = author_s;
-            guard.project.downscroll = downscroll != 0;
-            guard.project.audio_offset_ms = audio_offset_ms.clamp(-500.0, 500.0);
-            guard.project.chart.speed = scroll_speed.clamp(0.5, 5.0);
-            guard.ok_response("Proyecto actualizado")
-        };
+        let mode_s = read_str(&mut env, &control_mode);
+        let json = session().lock().update_project_meta(
+            name_s,
+            author_s,
+            downscroll != 0,
+            &mode_s,
+            audio_offset_ms,
+            scroll_speed,
+        );
         to_jstr(&mut env, &json)
     }
 
@@ -511,6 +512,18 @@ mod jni_exports {
         let bytes = session()
             .lock()
             .rasterize_arrow_png_bytes((direction.clamp(0, 3)) as u8);
+        env.byte_array_from_slice(&bytes).unwrap_or_default()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetReceptorPngBytes<'local>(
+        env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        direction: jint,
+    ) -> JByteArray<'local> {
+        let bytes = session()
+            .lock()
+            .rasterize_receptor_png_bytes((direction.clamp(0, 3)) as u8);
         env.byte_array_from_slice(&bytes).unwrap_or_default()
     }
 

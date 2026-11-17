@@ -54,7 +54,7 @@ impl ArrowSkinSet {
 }
 
 /// Genera nuestra skin de flechas SVG original y libre de derechos de autor
-/// con colores cómodos y contrastados (Cian, Coral, Índigo, Esmeralda).
+/// para las notas con color vibrante (Rosa, Cian, Esmeralda, Índigo).
 pub fn default_arrow_svg_bundle(dir: NoteDirection) -> &'static str {
     match dir {
         NoteDirection::Left => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
@@ -97,6 +97,64 @@ pub fn default_arrow_svg_bundle(dir: NoteDirection) -> &'static str {
   <path d="M112 64 L64 110 L64 86 L18 86 L18 42 L64 42 L64 18 Z" fill="url(#gRight)" stroke="#F8FAFC" stroke-width="6" stroke-linejoin="round"/>
   <path d="M96 64 L72 86 L72 74 L34 74 L34 54 L72 54 L72 42 Z" fill="#EEF2FF" fill-opacity="0.32"/>
 </svg>"##,
+    }
+}
+
+/// Genera los receptores principales sin color (gris neutro estilo FNF) para la barra fija.
+pub fn default_receptor_svg_bundle(dir: NoteDirection) -> &'static str {
+    match dir {
+        NoteDirection::Left => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <path d="M16 64 L64 18 L64 42 L110 42 L110 86 L64 86 L64 110 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M32 64 L56 42 L56 54 L94 54 L94 74 L56 74 L56 86 Z" fill="#94A3B8" fill-opacity="0.35"/>
+</svg>"##,
+        NoteDirection::Down => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <path d="M64 112 L18 64 L42 64 L42 18 L86 18 L86 64 L110 64 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M64 96 L42 72 L54 72 L54 34 L74 34 L74 72 L86 72 Z" fill="#94A3B8" fill-opacity="0.35"/>
+</svg>"##,
+        NoteDirection::Up => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <path d="M64 16 L110 64 L86 64 L86 110 L42 110 L42 64 L18 64 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M64 32 L86 56 L74 56 L74 94 L54 94 L54 56 L42 56 Z" fill="#94A3B8" fill-opacity="0.35"/>
+</svg>"##,
+        NoteDirection::Right => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <path d="M112 64 L64 110 L64 86 L18 86 L18 42 L64 42 L64 18 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M96 64 L72 86 L72 74 L34 74 L34 54 L72 54 L72 42 Z" fill="#94A3B8" fill-opacity="0.35"/>
+</svg>"##,
+    }
+}
+
+/// Convierte cualquier flecha rasterizada (incluyendo `.svg` personalizados) a un receptor gris sin color.
+pub fn desaturate_to_neutral_receptor(arrow: &RasterizedArrow) -> RasterizedArrow {
+    let mut rgba = arrow.rgba.clone();
+    for px in rgba.chunks_exact_mut(4) {
+        if px[3] > 0 {
+            let luma = (0.299 * (px[0] as f32) + 0.587 * (px[1] as f32) + 0.114 * (px[2] as f32))
+                .round()
+                .clamp(92.0, 212.0) as u8;
+            px[0] = luma;
+            px[1] = luma;
+            px[2] = luma.saturating_add(6);
+            px[3] = ((px[3] as f32) * 0.85).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    RasterizedArrow {
+        width: arrow.width,
+        height: arrow.height,
+        rgba,
+    }
+}
+
+impl ArrowSkinSet {
+    /// Rasteriza la versión sin color (receptor gris neutro) respetando SVGs personalizados.
+    pub fn rasterize_neutral_receptor(
+        &self,
+        dir: NoteDirection,
+    ) -> Result<RasterizedArrow, SvgSkinError> {
+        if let Some(custom) = self.custom_svg_sources.get(&dir) {
+            let colored = rasterize_svg_str(custom, self.note_size_px)?;
+            Ok(desaturate_to_neutral_receptor(&colored))
+        } else {
+            rasterize_svg_str(default_receptor_svg_bundle(dir), self.note_size_px)
+        }
     }
 }
 
@@ -147,4 +205,34 @@ pub fn rasterize_arrow_skin(
         out.insert(dir, img);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neutral_receptor_is_uncolored_while_note_arrow_is_colored() {
+        let skin = ArrowSkinSet::bundled_default();
+        let receptor = skin.rasterize_neutral_receptor(NoteDirection::Down).unwrap();
+        let note = rasterize_svg_str(&skin.svg_for(NoteDirection::Down), 128).unwrap();
+
+        let rec_max_chroma = receptor
+            .rgba
+            .chunks_exact(4)
+            .filter(|px| px[3] > 20)
+            .map(|px| px[0].max(px[1]).max(px[2]) - px[0].min(px[1]).min(px[2]))
+            .max()
+            .unwrap_or(0);
+        let note_max_chroma = note
+            .rgba
+            .chunks_exact(4)
+            .filter(|px| px[3] > 20)
+            .map(|px| px[0].max(px[1]).max(px[2]) - px[0].min(px[1]).min(px[2]))
+            .max()
+            .unwrap_or(0);
+
+        assert!(rec_max_chroma <= 25);
+        assert!(note_max_chroma >= 100);
+    }
 }

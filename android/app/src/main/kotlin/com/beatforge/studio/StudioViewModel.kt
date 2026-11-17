@@ -43,6 +43,7 @@ data class StudioUiState(
     val scriptValidationMsg: String? = null,
     val scriptValidationOk: Boolean = true,
     val arrowBitmaps: Map<Int, ImageBitmap> = emptyMap(),
+    val receptorBitmaps: Map<Int, ImageBitmap> = emptyMap(),
     val entityBitmaps: Map<String, LoadedEntityBitmap> = emptyMap(),
     val compiledBitmaps: Map<String, LoadedEntityBitmap> = emptyMap(),
     val gameplayStep: GameplayStep = GameplayStep()
@@ -171,6 +172,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val rawSnapshot = NativeEngineBridge.nativeInit(cacheDir)
             val snap = StudioJsonParser.parseProjectSnapshot(rawSnapshot)
             val arrows = loadArrowBitmapsInternal()
+            val receptors = loadReceptorBitmapsInternal()
             val entBmps = loadEntityBitmapsInternal(snap.stageEntities)
             _uiState.update { state ->
                 state.copy(
@@ -179,6 +181,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     selectedEntityId = snap.stageEntities.firstOrNull()?.id ?: "",
                     selectedScriptId = snap.scripts.firstOrNull()?.id ?: "",
                     arrowBitmaps = arrows,
+                    receptorBitmaps = receptors,
                     entityBitmaps = entBmps
                 )
             }
@@ -218,6 +221,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         name: String,
         author: String,
         downscroll: Boolean,
+        controlMode: String = _uiState.value.snapshot.controlMode,
         audioOffsetMs: Double,
         scrollSpeed: Double
     ) {
@@ -226,11 +230,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 name,
                 author,
                 downscroll,
+                controlMode,
                 audioOffsetMs,
                 scrollSpeed
             )
             applyActionJson(raw, silentOk = true)
         }
+    }
+
+    fun updateControlMode(mode: MobileControlMode) {
+        val snap = _uiState.value.snapshot
+        updateProjectMeta(
+            name = snap.name,
+            author = snap.author,
+            downscroll = snap.downscroll,
+            controlMode = mode.key,
+            audioOffsetMs = snap.audioOffsetMs,
+            scrollSpeed = snap.chart.speed
+        )
     }
 
     fun restoreDemoChart() {
@@ -463,6 +480,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 snap.stageEntities
             )
             val arrows = loadArrowBitmapsInternal()
+            val receptors = loadReceptorBitmapsInternal()
 
             val gpRaw = NativeEngineBridge.nativeStartGameplay()
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
@@ -473,6 +491,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     snapshot = snap,
                     compiledBitmaps = compiledMap,
                     arrowBitmaps = arrows,
+                    receptorBitmaps = receptors,
                     gameplayStep = gpStep,
                     currentScreen = StudioScreen.Gameplay
                 )
@@ -544,7 +563,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun reloadArrowBitmaps() {
         val arrows = loadArrowBitmapsInternal()
-        _uiState.update { it.copy(arrowBitmaps = arrows) }
+        val receptors = loadReceptorBitmapsInternal()
+        _uiState.update { it.copy(arrowBitmaps = arrows, receptorBitmaps = receptors) }
     }
 
     private fun reloadEntityBitmaps(entities: List<StageEntitySnapshot>) {
@@ -556,6 +576,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val out = linkedMapOf<Int, ImageBitmap>()
         for (dir in 0..3) {
             val bytes = NativeEngineBridge.nativeGetArrowPngBytes(dir)
+            if (bytes.isNotEmpty()) {
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { bmp ->
+                    out[dir] = bmp.asImageBitmap()
+                }
+            }
+        }
+        return out
+    }
+
+    private fun loadReceptorBitmapsInternal(): Map<Int, ImageBitmap> {
+        val out = linkedMapOf<Int, ImageBitmap>()
+        for (dir in 0..3) {
+            val bytes = NativeEngineBridge.nativeGetReceptorPngBytes(dir)
             if (bytes.isNotEmpty()) {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { bmp ->
                     out[dir] = bmp.asImageBitmap()

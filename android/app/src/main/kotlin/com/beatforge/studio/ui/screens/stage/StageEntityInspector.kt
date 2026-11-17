@@ -176,6 +176,13 @@ fun StageEntityInspector(
         }
 
         Text(
+            text = "Para sprites animados con .xml o 1–2 archivos .json, ármalos en la pestaña Sprites.",
+            color = StudioColors.TextMuted,
+            fontSize = 10.sp,
+            lineHeight = 13.sp
+        )
+
+        Text(
             text = "Posición (${entity.x.roundToInt()}, ${entity.y.roundToInt()}) · Paso ${stepPx}px",
             color = StudioColors.TextMuted,
             fontSize = 11.sp

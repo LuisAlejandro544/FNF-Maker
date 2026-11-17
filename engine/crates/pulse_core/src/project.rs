@@ -16,6 +16,16 @@ use std::path::PathBuf;
 /// Máximo absoluto de pistas de música permitidas por proyecto según la especificación.
 pub const MAX_AUDIO_TRACKS: usize = 3;
 
+/// Modo de control táctil en móvil:
+/// - `TapArrows` (Por defecto): 100 % táctil directo tocando las 4 flechas receptoras.
+/// - `ClassicHitbox`: Diseño clásico estilo Psych Engine Mobile (4 columnas hitbox verticales).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MobileControlMode {
+    #[default]
+    TapArrows,
+    ClassicHitbox,
+}
+
 /// Lenguaje de un script comunitario integrado en el mod.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScriptLanguage {
@@ -111,6 +121,7 @@ pub struct ModProject {
     pub arrow_skin: ArrowSkinSet,
     pub scripts: Vec<ScriptAsset>,
     pub downscroll: bool,
+    pub control_mode: MobileControlMode,
     pub audio_offset_ms: f64,
     pub scroll_speed_override: Option<f64>,
 }
@@ -169,6 +180,7 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
                 },
             ],
             downscroll: false,
+            control_mode: MobileControlMode::TapArrows,
             audio_offset_ms: 0.0,
             scroll_speed_override: None,
         }

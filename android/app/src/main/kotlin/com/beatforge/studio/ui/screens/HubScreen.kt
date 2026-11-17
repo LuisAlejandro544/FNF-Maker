@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.beatforge.studio.MobileControlMode
 import com.beatforge.studio.ProjectSnapshot
 import com.beatforge.studio.StudioScreen
 import com.beatforge.studio.ui.theme.StudioColors
@@ -63,7 +64,14 @@ import kotlin.math.roundToInt
 @Composable
 fun HubScreen(
     snapshot: ProjectSnapshot,
-    onUpdateMeta: (name: String, author: String, downscroll: Boolean, offsetMs: Double, speed: Double) -> Unit,
+    onUpdateMeta: (
+        name: String,
+        author: String,
+        downscroll: Boolean,
+        controlMode: String,
+        offsetMs: Double,
+        speed: Double
+    ) -> Unit,
     onNavigate: (StudioScreen) -> Unit,
     onOpenArrowSkin: () -> Unit,
     onCompileAndPlay: () -> Unit
@@ -71,13 +79,22 @@ fun HubScreen(
     var name by remember(snapshot.id) { mutableStateOf(snapshot.name) }
     var author by remember(snapshot.id) { mutableStateOf(snapshot.author) }
     var downscroll by remember(snapshot.id, snapshot.downscroll) { mutableStateOf(snapshot.downscroll) }
+    var controlMode by remember(snapshot.id, snapshot.controlMode) { mutableStateOf(snapshot.controlMode) }
     var offsetMs by remember(snapshot.id, snapshot.audioOffsetMs) { mutableDoubleStateOf(snapshot.audioOffsetMs) }
     var scrollSpeed by remember(snapshot.id, snapshot.chart.speed) { mutableDoubleStateOf(snapshot.chart.speed) }
 
-    LaunchedEffect(snapshot.name, snapshot.author, snapshot.downscroll, snapshot.audioOffsetMs, snapshot.chart.speed) {
+    LaunchedEffect(
+        snapshot.name,
+        snapshot.author,
+        snapshot.downscroll,
+        snapshot.controlMode,
+        snapshot.audioOffsetMs,
+        snapshot.chart.speed
+    ) {
         if (name != snapshot.name) name = snapshot.name
         if (author != snapshot.author) author = snapshot.author
         downscroll = snapshot.downscroll
+        controlMode = snapshot.controlMode
         offsetMs = snapshot.audioOffsetMs
         scrollSpeed = snapshot.chart.speed
     }
@@ -123,7 +140,7 @@ fun HubScreen(
                             value = name,
                             onValueChange = {
                                 name = it
-                                onUpdateMeta(it, author, downscroll, offsetMs, scrollSpeed)
+                                onUpdateMeta(it, author, downscroll, controlMode, offsetMs, scrollSpeed)
                             },
                             label = { Text("Nombre del Mod", fontSize = 11.sp) },
                             singleLine = true,
@@ -133,7 +150,7 @@ fun HubScreen(
                             value = author,
                             onValueChange = {
                                 author = it
-                                onUpdateMeta(name, it, downscroll, offsetMs, scrollSpeed)
+                                onUpdateMeta(name, it, downscroll, controlMode, offsetMs, scrollSpeed)
                             },
                             label = { Text("Autor", fontSize = 11.sp) },
                             singleLine = true,
@@ -154,10 +171,54 @@ fun HubScreen(
                             checked = downscroll,
                             onCheckedChange = {
                                 downscroll = it
-                                onUpdateMeta(name, author, it, offsetMs, scrollSpeed)
+                                onUpdateMeta(name, author, it, controlMode, offsetMs, scrollSpeed)
                             },
                             colors = SwitchDefaults.colors(checkedThumbColor = StudioColors.AccentCyan)
                         )
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Controles Táctiles en Partida",
+                            color = StudioColors.TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            MobileControlMode.entries.forEach { mode ->
+                                val selected = controlMode == mode.key
+                                Surface(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            controlMode = mode.key
+                                            onUpdateMeta(name, author, downscroll, mode.key, offsetMs, scrollSpeed)
+                                        },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (selected) StudioColors.AccentCyan.copy(alpha = 0.14f) else StudioColors.BgCard,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (selected) StudioColors.AccentCyan else StudioColors.BorderSubtle
+                                    )
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Text(
+                                            text = mode.label,
+                                            color = if (selected) StudioColors.AccentCyan else StudioColors.TextPrimary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            text = mode.description,
+                                            color = StudioColors.TextMuted,
+                                            fontSize = 10.sp,
+                                            lineHeight = 13.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Column {
@@ -177,7 +238,7 @@ fun HubScreen(
                             value = scrollSpeed.toFloat(),
                             onValueChange = { scrollSpeed = it.toDouble() },
                             onValueChangeFinished = {
-                                onUpdateMeta(name, author, downscroll, offsetMs, scrollSpeed)
+                                onUpdateMeta(name, author, downscroll, controlMode, offsetMs, scrollSpeed)
                             },
                             valueRange = 0.8f..4.2f,
                             colors = SliderDefaults.colors(
@@ -204,7 +265,7 @@ fun HubScreen(
                             value = offsetMs.toFloat(),
                             onValueChange = { offsetMs = it.toDouble() },
                             onValueChangeFinished = {
-                                onUpdateMeta(name, author, downscroll, offsetMs, scrollSpeed)
+                                onUpdateMeta(name, author, downscroll, controlMode, offsetMs, scrollSpeed)
                             },
                             valueRange = -250f..250f,
                             colors = SliderDefaults.colors(

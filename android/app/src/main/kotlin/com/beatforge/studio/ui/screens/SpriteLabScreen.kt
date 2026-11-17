@@ -194,30 +194,42 @@ fun SpriteLabScreen(
                         border = BorderStroke(1.dp, StudioColors.BorderSubtle)
                     ) {
                         val texDisplay = entity.rawImagePath ?: entity.imagePath
-                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        val xmlIsJson = entity.xmlPath?.endsWith(".json", ignoreCase = true) == true
+                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
                                 text = "Textura: ${texDisplay?.substringAfterLast('/') ?: "No asignada"}",
                                 color = if (texDisplay != null) StudioColors.AccentEmerald else StudioColors.TextMuted,
                                 fontSize = 11.sp
                             )
                             Text(
-                                text = "Atlas XML/Spritemap: ${entity.xmlPath?.substringAfterLast('/') ?: "No asignado"} (${entity.animationPrefixes.size} anims)",
+                                text = if (entity.xmlPath != null) {
+                                    "Atlas XML/JSON: ${entity.xmlPath.substringAfterLast('/')} (${entity.animationPrefixes.size} anims)"
+                                } else if (entity.animateJsonPath != null) {
+                                    "Atlas XML/JSON: Falta subir spritemap1.json en XML / JSON"
+                                } else {
+                                    "Atlas XML/JSON: No asignado (${entity.animationPrefixes.size} anims)"
+                                },
                                 color = if (entity.xmlPath != null) StudioColors.AccentCyan else StudioColors.TextMuted,
                                 fontSize = 11.sp
                             )
-                            val xmlIsJson = entity.xmlPath?.endsWith(".json", ignoreCase = true) == true
                             if (entity.animateJsonPath != null || xmlIsJson) {
                                 Text(
-                                    text = "Animate Rig: ${entity.animateJsonPath?.substringAfterLast('/') ?: "Falta importar Animation.json"}",
+                                    text = if (entity.animateJsonPath != null) {
+                                        "Animate Rig (2.º JSON): ${entity.animateJsonPath.substringAfterLast('/')}"
+                                    } else {
+                                        "2.º JSON (opcional Animate): Sube Animation.json en XML / JSON"
+                                    },
                                     color = if (entity.animateJsonPath != null) StudioColors.AccentAmber else StudioColors.TextMuted,
                                     fontSize = 11.sp
                                 )
                             }
                             Text(
-                                text = "Compatible con .xml Sparrow, .json y 3 archivos Animate (Animation.json + spritemap1.json + PNG/.astc)",
+                                text = "¿Dónde poner tus archivos para armar el sprite?\n" +
+                                    "• Botón PNG / ASTC: sube la imagen (.png, .webp o .astc).\n" +
+                                    "• Botón XML / JSON: sube 1 archivo (.xml Sparrow o .json TexturePacker/Aseprite) o 2 archivos .json (spritemap1.json + Animation.json en cualquier orden).",
                                 color = StudioColors.TextMuted,
                                 fontSize = 10.sp,
-                                lineHeight = 13.sp
+                                lineHeight = 14.sp
                             )
                         }
                     }

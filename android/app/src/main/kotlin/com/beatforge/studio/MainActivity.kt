@@ -208,8 +208,8 @@ private fun BeatForgeRootContent(
                 when (state.currentScreen) {
                     StudioScreen.Hub -> HubScreen(
                         snapshot = state.snapshot,
-                        onUpdateMeta = { name, author, downscroll, offset, speed ->
-                            viewModel.updateProjectMeta(name, author, downscroll, offset, speed)
+                        onUpdateMeta = { name, author, downscroll, controlMode, offset, speed ->
+                            viewModel.updateProjectMeta(name, author, downscroll, controlMode, offset, speed)
                         },
                         onNavigate = { viewModel.navigateTo(it) },
                         onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
@@ -302,10 +302,12 @@ private fun BeatForgeRootContent(
                     StudioScreen.Gameplay -> GameplayScreen(
                         step = state.gameplayStep,
                         arrowBitmaps = state.arrowBitmaps,
+                        receptorBitmaps = state.receptorBitmaps,
                         compiledBitmaps = state.compiledBitmaps,
                         onStepFrame = { dt, pressed, justPressed ->
                             viewModel.stepGameplayFrame(dt, pressed, justPressed)
                         },
+                        onChangeControlMode = { mode -> viewModel.updateControlMode(mode) },
                         onSetPaused = { viewModel.setGameplayPaused(it) },
                         onRestart = { viewModel.restartGameplay() },
                         onExitToStudio = { viewModel.stopGameplayAndNavigate(StudioScreen.Hub) }

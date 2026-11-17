@@ -1,14 +1,19 @@
 //! Archivo: engine/crates/pulse_android/src/session/gameplay_ops.rs
-//! Propósito: Compilación en caliente (`rayon`) y simulación de gameplay en tiempo real
-//! sincronizada con el reloj maestro de `pulse_audio` (cuenta regresiva BPM, juicio de notas,
-//! ejecución de scripts Lua/TS/JS y actualización de cámara/entidades por frame).
+//! Propósito: Compilación en caliente inteligente (`rayon`) y simulación de gameplay en tiempo real
+//! sincronizada con el reloj maestro de `pulse_audio`, usando:
+//! - Arena temporal por frame (`FrameBumpArena`) con reinicio O(1) en cada tick.
+//! - Descarte progresivo por ventana deslizante (`NoteSlidingWindow`) para no recorrer todo el chart.
+//! - Caché LRU (`LruCache`) con presupuesto de memoria adaptado al teléfono.
+//! - Scripts optimizados por el analizador de bucles en `hot_compile`.
 
 use super::{
     EngineSession, GameplayEntityFrameJson, GameplayRuntimeState, GameplayStepJson,
-    SparrowFrameJson, VisibleNoteJson, dir_to_anim, parse_anim_kind, role_to_key, trigger_role_anim,
+    SparrowFrameJson, VisibleNoteJson, control_mode_to_key, dir_to_anim, parse_anim_kind,
+    role_to_key, trigger_role_anim,
 };
 use image::ImageFormat;
 use pulse_core::EntityRole;
+use pulse_core::frame_memory::{FrameBumpArena, NotePlayState, NoteSlidingWindow};
 use pulse_core::hot_compile::{DeviceResourceTier, hot_compile_project};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_scripting::{ModScriptRuntime, ScriptCommand};
@@ -26,12 +31,29 @@ impl EngineSession {
             _ => DeviceResourceTier::Balanced,
         };
 
+        self.texture_lru_cache
+            .set_budget(tier.lru_cache_budget_bytes(), 64);
+
         let bundle = hot_compile_project(&self.project, tier, |_pct, _msg| {});
         let out_dir = self.cache_dir.join("compiled_cache");
         let _ = std::fs::create_dir_all(&out_dir);
 
         let mut texture_paths = HashMap::new();
+
+        // Entidades cuya resolución ya era óptima pasan directo sin recompresión ni escritura extra
+        for (entity_id, orig_path) in &bundle.passthrough_paths {
+            texture_paths.insert(
+                entity_id.clone(),
+                orig_path.to_string_lossy().into_owned(),
+            );
+        }
+
+        // Entidades optimizadas o decodificadas de .astc se guardan en caché disco + caché LRU en RAM
         for (entity_id, tex) in &bundle.textures {
+            let byte_size = tex.rgba.len();
+            self.texture_lru_cache
+                .insert(entity_id.clone(), tex.clone(), byte_size);
+
             if let Some(rgba_img) = image::RgbaImage::from_raw(tex.width, tex.height, tex.rgba.clone()) {
                 let target_file = out_dir.join(format!("{}.png", entity_id));
                 if image::DynamicImage::ImageRgba8(rgba_img)
@@ -49,7 +71,7 @@ impl EngineSession {
         self.compiled_texture_paths = texture_paths;
         self.last_compile_report = Some(bundle.report.clone());
         self.compiled_bundle = Some(bundle);
-        self.ok_response("Compilación en caliente completada")
+        self.ok_response("Compilación en caliente inteligente completada")
     }
 
     pub fn start_gameplay(&mut self) -> String {
@@ -59,7 +81,14 @@ impl EngineSession {
             .take()
             .unwrap_or_else(|| hot_compile_project(&self.project, DeviceResourceTier::Balanced, |_, _| {}));
 
-        let (mut runtime, script_errors) = ModScriptRuntime::load_from_scripts(&self.project.scripts);
+        // Asegurar orden cronológico para el descarte progresivo por ventana deslizante
+        self.project
+            .chart
+            .notes
+            .sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+
+        let (mut runtime, script_errors) =
+            ModScriptRuntime::load_from_scripts(&bundle.optimized_scripts);
         runtime.call_on_create();
 
         self.audio_engine.ensure_started();
@@ -92,8 +121,11 @@ impl EngineSession {
             compiled_texture_paths: self.compiled_texture_paths.clone(),
             runtime,
             script_errors,
-            notes_hit_state: vec![false; note_len],
-            notes_miss_state: vec![false; note_len],
+            note_window: NoteSlidingWindow::new(note_len),
+            frame_arena: FrameBumpArena::new(16 * 1024),
+            visible_note_scratch: Vec::with_capacity(128),
+            step_entities_scratch: Vec::with_capacity(16),
+            step_notes_scratch: Vec::with_capacity(128),
             score: 0,
             combo: 0,
             max_combo: 0,
@@ -113,9 +145,10 @@ impl EngineSession {
     pub fn step_gameplay(
         &mut self,
         dt_sec: f32,
-        _lane_pressed_mask: i32,
+        lane_pressed_mask: i32,
         lane_just_pressed_mask: i32,
     ) -> String {
+        let control_mode_str = control_mode_to_key(self.project.control_mode).to_string();
         let Some(session) = self.gameplay.as_mut() else {
             return serde_json::to_string(&GameplayStepJson {
                 active: false,
@@ -124,6 +157,9 @@ impl EngineSession {
                 scroll_speed: 1.8,
                 active_bpm: 120.0,
                 downscroll: false,
+                control_mode: control_mode_str,
+                holding_lanes_mask: 0,
+                opponent_holding_lanes_mask: 0,
                 countdown_stage: -1,
                 countdown_label: String::new(),
                 countdown_progress: 0.0,
@@ -149,6 +185,9 @@ impl EngineSession {
             })
             .unwrap_or_default();
         };
+
+        // Reinicio O(1) de la arena temporal al empezar el frame
+        session.frame_arena.reset();
 
         let dt = dt_sec.clamp(0.0, 0.05);
         let raw_mixer_ms = self.audio_engine.mixer.position_ms();
@@ -185,6 +224,8 @@ impl EngineSession {
             (lane_just_pressed_mask & 4) != 0,
             (lane_just_pressed_mask & 8) != 0,
         ];
+        let mut player_holding_mask: u8 = 0;
+        let mut opp_holding_mask: u8 = 0;
 
         if !session.paused && !session.finished {
             *session.runtime.state.song_pos_ms.lock() = song_pos_ms;
@@ -251,59 +292,135 @@ impl EngineSession {
             self.project.stage.camera_shake *= (1.0 - dt * 10.0).max(0.0);
 
             let mut any_recent_miss = false;
-            for (idx, note) in self.project.chart.notes.iter().enumerate() {
-                if session.notes_hit_state[idx] || session.notes_miss_state[idx] {
+            let note_len = self.project.chart.notes.len();
+            let start_idx = session.note_window.active_start_idx.min(note_len);
+
+            // Evaluación por ventana deslizante: soporta notas cortas y notas largas (Holding) hasta que terminen
+            for idx in start_idx..note_len {
+                let state = session.note_window.state(idx);
+                if matches!(state, NotePlayState::Hit | NotePlayState::Missed) {
                     continue;
                 }
-                if !note.is_player {
-                    if song_pos_ms >= note.time_ms {
-                        session.notes_hit_state[idx] = true;
-                        let dir_anim = dir_to_anim(note.direction);
-                        trigger_role_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Opponent,
-                            dir_anim,
-                        );
-                        session.runtime.call_on_note_hit(note.direction as i32, false);
-                    }
-                } else {
-                    let diff = note.time_ms - song_pos_ms;
-                    let lane_idx = note.direction as usize;
-                    if just_pressed[lane_idx] && diff.abs() <= HIT_WINDOW_GOOD_MS {
-                        session.notes_hit_state[idx] = true;
-                        just_pressed[lane_idx] = false;
+                let note = &self.project.chart.notes[idx];
+                if note.time_ms > song_pos_ms + HIT_WINDOW_GOOD_MS + 10.0 {
+                    break;
+                }
 
-                        let pts = if diff.abs() <= HIT_WINDOW_PERFECT_MS {
-                            session.last_judgement = "¡Perfecto!".to_string();
-                            350
+                match state {
+                    NotePlayState::Holding => {
+                        let end_ms = note.time_ms + note.sustain_ms;
+                        let lane_idx = note.direction as usize;
+                        if !note.is_player {
+                            if song_pos_ms >= end_ms {
+                                session.note_window.mark_hit(idx);
+                            } else {
+                                opp_holding_mask |= 1u8 << (lane_idx as u8);
+                                trigger_role_anim(
+                                    &mut session.bundle.active_entities,
+                                    EntityRole::Opponent,
+                                    dir_to_anim(note.direction),
+                                );
+                            }
                         } else {
-                            session.last_judgement = "¡Bien!".to_string();
-                            200
-                        };
-                        session.score += pts;
-                        session.combo += 1;
-                        session.max_combo = session.max_combo.max(session.combo);
-                        session.hits += 1;
-                        session.health = (session.health + 0.035).min(1.0);
-
-                        trigger_role_anim(
-                            &mut session.bundle.active_entities,
-                            EntityRole::Player,
-                            dir_to_anim(note.direction),
-                        );
-                        session.runtime.call_on_note_hit(lane_idx as i32, true);
-                    } else if song_pos_ms > note.time_ms + HIT_WINDOW_GOOD_MS {
-                        session.notes_miss_state[idx] = true;
-                        session.combo = 0;
-                        session.misses += 1;
-                        session.score -= 50;
-                        session.health = (session.health - 0.06).max(0.0);
-                        session.last_judgement = "Fallo".to_string();
-                        any_recent_miss = true;
-                        session.runtime.call_on_note_miss(lane_idx as i32, true);
+                            let is_held = (lane_pressed_mask & (1 << lane_idx)) != 0;
+                            if song_pos_ms >= end_ms {
+                                session.note_window.mark_hit(idx);
+                                session.score += 100;
+                                session.health = (session.health + 0.02).min(1.0);
+                            } else if is_held {
+                                player_holding_mask |= 1u8 << (lane_idx as u8);
+                                session.score += ((dt * 220.0).round() as i64).max(1);
+                                session.health = (session.health + 0.05 * dt).min(1.0);
+                                trigger_role_anim(
+                                    &mut session.bundle.active_entities,
+                                    EntityRole::Player,
+                                    dir_to_anim(note.direction),
+                                );
+                            } else if song_pos_ms > note.time_ms + 130.0 {
+                                if song_pos_ms >= end_ms - 140.0 {
+                                    session.note_window.mark_hit(idx);
+                                } else {
+                                    session.note_window.mark_missed(idx);
+                                    session.combo = 0;
+                                    session.misses += 1;
+                                    session.score -= 25;
+                                    session.health = (session.health - 0.03).max(0.0);
+                                    session.last_judgement = "Soltada".to_string();
+                                    any_recent_miss = true;
+                                    session.runtime.call_on_note_miss(lane_idx as i32, true);
+                                }
+                            }
+                        }
                     }
+                    NotePlayState::Pending => {
+                        if !note.is_player {
+                            if song_pos_ms >= note.time_ms {
+                                let lane_idx = note.direction as u8;
+                                if note.sustain_ms > 45.0 {
+                                    session.note_window.mark_holding(idx);
+                                    opp_holding_mask |= 1u8 << lane_idx;
+                                } else {
+                                    session.note_window.mark_hit(idx);
+                                }
+                                let dir_anim = dir_to_anim(note.direction);
+                                trigger_role_anim(
+                                    &mut session.bundle.active_entities,
+                                    EntityRole::Opponent,
+                                    dir_anim,
+                                );
+                                session.runtime.call_on_note_hit(note.direction as i32, false);
+                            }
+                        } else {
+                            let diff = note.time_ms - song_pos_ms;
+                            let lane_idx = note.direction as usize;
+                            if just_pressed[lane_idx] && diff.abs() <= HIT_WINDOW_GOOD_MS {
+                                if note.sustain_ms > 45.0 {
+                                    session.note_window.mark_holding(idx);
+                                    player_holding_mask |= 1u8 << (lane_idx as u8);
+                                } else {
+                                    session.note_window.mark_hit(idx);
+                                }
+                                just_pressed[lane_idx] = false;
+
+                                let pts = if diff.abs() <= HIT_WINDOW_PERFECT_MS {
+                                    session.last_judgement = "¡Perfecto!".to_string();
+                                    350
+                                } else {
+                                    session.last_judgement = "¡Bien!".to_string();
+                                    200
+                                };
+                                session.score += pts;
+                                session.combo += 1;
+                                session.max_combo = session.max_combo.max(session.combo);
+                                session.hits += 1;
+                                session.health = (session.health + 0.035).min(1.0);
+
+                                trigger_role_anim(
+                                    &mut session.bundle.active_entities,
+                                    EntityRole::Player,
+                                    dir_to_anim(note.direction),
+                                );
+                                session.runtime.call_on_note_hit(lane_idx as i32, true);
+                            } else if song_pos_ms > note.time_ms + HIT_WINDOW_GOOD_MS {
+                                session.note_window.mark_missed(idx);
+                                session.combo = 0;
+                                session.misses += 1;
+                                session.score -= 50;
+                                session.health = (session.health - 0.06).max(0.0);
+                                session.last_judgement = "Fallo".to_string();
+                                any_recent_miss = true;
+                                session.runtime.call_on_note_miss(lane_idx as i32, true);
+                            }
+                        }
+                    }
+                    NotePlayState::Hit | NotePlayState::Missed => {}
                 }
             }
+
+            // Descarta progresivamente las notas ya resueltas que salieron de la ventana
+            session
+                .note_window
+                .advance_and_discard(&self.project.chart.notes, song_pos_ms, 240.0);
 
             self.audio_engine
                 .mixer
@@ -324,82 +441,84 @@ impl EngineSession {
             }
         }
 
-        let entities = session
-            .bundle
-            .active_entities
-            .iter()
-            .map(|ent| {
-                let tex_path = session
-                    .compiled_texture_paths
-                    .get(&ent.id)
-                    .cloned()
-                    .or_else(|| ent.image_path.as_ref().map(|p| p.to_string_lossy().into_owned()));
-                let frame = ent
-                    .atlas
-                    .as_ref()
-                    .and_then(|a| a.frame_at(ent.active_anim, ent.anim_timer_sec))
-                    .map(|f| SparrowFrameJson {
-                        found: true,
-                        raw_name: f.raw_name.clone(),
-                        x: f.x,
-                        y: f.y,
-                        width: f.width,
-                        height: f.height,
-                        frame_x: f.frame_x,
-                        frame_y: f.frame_y,
-                        frame_width: f.frame_width,
-                        frame_height: f.frame_height,
-                        rotated: f.rotated,
-                    });
-                GameplayEntityFrameJson {
-                    id: ent.id.clone(),
-                    display_name: ent.display_name.clone(),
-                    role: role_to_key(ent.role).to_string(),
-                    x: ent.x,
-                    y: ent.y,
-                    width: ent.width,
-                    height: ent.height,
-                    scale: ent.scale,
-                    opacity: ent.opacity,
-                    flip_x: ent.flip_x,
-                    visible: ent.visible,
-                    texture_path: tex_path,
-                    frame,
-                }
-            })
-            .collect();
+        // Recopilar notas visibles en la arena temporal del frame actual
+        let visible_span = session.note_window.collect_visible_into_arena(
+            &self.project.chart.notes,
+            song_pos_ms,
+            240.0,
+            1800.0,
+            &mut session.frame_arena,
+            &mut session.visible_note_scratch,
+        );
 
-        let visible_notes = self
-            .project
-            .chart
-            .notes
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, note)| {
-                if session.notes_hit_state[idx] {
-                    return None;
-                }
-                let delta = note.time_ms - song_pos_ms;
-                if !(-240.0..=1800.0).contains(&delta) {
-                    return None;
-                }
-                Some(VisibleNoteJson {
-                    id: note.id,
-                    time_ms: note.time_ms,
-                    direction: note.direction as u8,
-                    is_player: note.is_player,
-                    sustain_ms: note.sustain_ms,
-                })
-            })
-            .collect();
+        let mut entities = std::mem::take(&mut session.step_entities_scratch);
+        entities.clear();
+        for ent in &session.bundle.active_entities {
+            // Tocar el caché LRU si la entidad reside en él para mantener frescura de uso
+            let _ = self.texture_lru_cache.get(&ent.id);
 
-        serde_json::to_string(&GameplayStepJson {
+            let tex_path = session
+                .compiled_texture_paths
+                .get(&ent.id)
+                .cloned()
+                .or_else(|| ent.image_path.as_ref().map(|p| p.to_string_lossy().into_owned()));
+            let frame = ent
+                .atlas
+                .as_ref()
+                .and_then(|a| a.frame_at(ent.active_anim, ent.anim_timer_sec))
+                .map(|f| SparrowFrameJson {
+                    found: true,
+                    raw_name: f.raw_name.clone(),
+                    x: f.x,
+                    y: f.y,
+                    width: f.width,
+                    height: f.height,
+                    frame_x: f.frame_x,
+                    frame_y: f.frame_y,
+                    frame_width: f.frame_width,
+                    frame_height: f.frame_height,
+                    rotated: f.rotated,
+                });
+            entities.push(GameplayEntityFrameJson {
+                id: ent.id.clone(),
+                display_name: ent.display_name.clone(),
+                role: role_to_key(ent.role).to_string(),
+                x: ent.x,
+                y: ent.y,
+                width: ent.width,
+                height: ent.height,
+                scale: ent.scale,
+                opacity: ent.opacity,
+                flip_x: ent.flip_x,
+                visible: ent.visible,
+                texture_path: tex_path,
+                frame,
+            });
+        }
+
+        let mut visible_notes = std::mem::take(&mut session.step_notes_scratch);
+        visible_notes.clear();
+        for n in session.frame_arena.get_slice(visible_span) {
+            visible_notes.push(VisibleNoteJson {
+                id: n.id,
+                time_ms: n.time_ms,
+                direction: n.direction,
+                is_player: n.is_player,
+                sustain_ms: n.sustain_ms,
+                head_hit: n.is_holding,
+            });
+        }
+
+        let step_dto = GameplayStepJson {
             active: true,
             song_pos_ms,
             duration_ms: self.project.chart.stats.duration_ms,
             scroll_speed: self.project.chart.speed,
             active_bpm,
             downscroll: self.project.downscroll,
+            control_mode: control_mode_str,
+            holding_lanes_mask: player_holding_mask,
+            opponent_holding_lanes_mask: opp_holding_mask,
             countdown_stage,
             countdown_label,
             countdown_progress,
@@ -422,8 +541,15 @@ impl EngineSession {
             script_logs: session.last_logs.clone(),
             entities,
             visible_notes,
-        })
-        .unwrap_or_else(|_| "{}".to_string())
+        };
+
+        let out_json = serde_json::to_string(&step_dto).unwrap_or_else(|_| "{}".to_string());
+
+        // Devolver los buffers scratch a `session` para evitar nuevas asignaciones en el próximo frame
+        session.step_entities_scratch = step_dto.entities;
+        session.step_notes_scratch = step_dto.visible_notes;
+
+        out_json
     }
 
     pub fn set_gameplay_paused(&mut self, paused: bool) -> String {
