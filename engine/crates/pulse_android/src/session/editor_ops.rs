@@ -503,11 +503,10 @@ impl EngineSession {
     }
 
     pub fn rasterize_health_bar_png_bytes(&self) -> Vec<u8> {
-        let svg = self
-            .project
-            .health_bar_svg_source
-            .as_deref()
-            .unwrap_or_else(pulse_core::svg_skin::default_health_bar_frame_svg);
+        let svg: &str = match self.project.health_bar_svg_source.as_deref() {
+            Some(custom) => custom,
+            None => pulse_core::svg_skin::default_health_bar_frame_svg(),
+        };
         let Ok(raster) = pulse_core::svg_skin::rasterize_svg_rect(svg, 600, 36) else {
             return Vec::new();
         };
