@@ -673,6 +673,107 @@ impl LuaScriptVm {
             )?;
         }
 
+        // --- Flashes, Precarga IO, Swaps de Escenario y Personajes Activos ---
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "flashCamera",
+                lua.create_function(move |_, (color, duration_sec): (String, f32)| {
+                    h.push_command(ScriptCommand::FlashEffect {
+                        color_argb: parse_color_argb(&color),
+                        duration_sec: duration_sec.max(0.02),
+                        start_alpha: 1.0,
+                        over_hud: false,
+                    });
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "flashHud",
+                lua.create_function(move |_, (color, duration_sec): (String, f32)| {
+                    h.push_command(ScriptCommand::FlashEffect {
+                        color_argb: parse_color_argb(&color),
+                        duration_sec: duration_sec.max(0.02),
+                        start_alpha: 1.0,
+                        over_hud: true,
+                    });
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "flashEffect",
+                lua.create_function(
+                    move |_, (color, duration_sec, start_alpha, over_hud): (String, f32, f32, bool)| {
+                        h.push_command(ScriptCommand::FlashEffect {
+                            color_argb: parse_color_argb(&color),
+                            duration_sec: duration_sec.max(0.02),
+                            start_alpha: start_alpha.clamp(0.0, 1.0),
+                            over_hud,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "preloadEntity",
+                lua.create_function(move |_, entity_id: String| {
+                    h.push_command(ScriptCommand::PreloadEntity(entity_id));
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "retireEntity",
+                lua.create_function(move |_, entity_id: String| {
+                    h.push_command(ScriptCommand::RetireEntity(entity_id));
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "swapEntity",
+                lua.create_function(
+                    move |_, (old_id, new_id, dispose_old): (String, String, bool)| {
+                        h.push_command(ScriptCommand::SwapEntity {
+                            old_id,
+                            new_id,
+                            dispose_old,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setActiveCharacter",
+                lua.create_function(
+                    move |_, (role, entity_id, dispose_old): (String, String, bool)| {
+                        h.push_command(ScriptCommand::SetActiveCharacter {
+                            role,
+                            entity_id,
+                            dispose_old,
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+
         Self::arm_deadline(
             &watchdog_origin,
             &watchdog_deadline_us,

@@ -6,8 +6,10 @@
 
 package com.beatforge.studio.viewmodel
 
+import androidx.compose.ui.graphics.asAndroidBitmap
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.HotCompileProgress
+import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.NativeEngineBridge
 import com.beatforge.studio.StudioJsonParser
 import com.beatforge.studio.StudioScreen
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Collections
 
 internal class StudioGameplayCoordinator(
     private val scope: CoroutineScope,
@@ -29,8 +32,13 @@ internal class StudioGameplayCoordinator(
     private val gameplayFrameState: GameplayFrameState,
     private val bitmapLoader: StudioBitmapLoader
 ) {
+    private val loadingEntityIds: MutableSet<String> = Collections.synchronizedSet(HashSet())
+    private val recycleLock = Any()
+    private val pendingRecycleQueue = ArrayDeque<Pair<Long, LoadedEntityBitmap>>()
+
     fun startCompileAndPlay() {
         scope.launch(engineIoDispatcher) {
+            clearRecycleState(recycleImmediately = true)
             NativeEngineBridge.nativeFlushSave()
             if (uiState.value.audioPreviewPlaying) {
                 NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
@@ -89,8 +97,8 @@ internal class StudioGameplayCoordinator(
                     hotCompileProgress = HotCompileProgress(
                         active = true,
                         progress = 0.92f,
-                        phase = "Cargando sprites WebP en memoria",
-                        detail = "Decodificando hojas compiladas e íconos HUD"
+                        phase = "Cargando sprites visibles en RAM",
+                        detail = "Omitiendo sprites ocultos (se precargan al vuelo desde .webp)"
                     )
                 )
             }
@@ -98,7 +106,8 @@ internal class StudioGameplayCoordinator(
             val compiledMap = bitmapLoader.loadCompiledEntityBitmaps(
                 snap.lastCompileReport?.compiledTexturePaths ?: emptyMap(),
                 snap.stageEntities,
-                tier
+                tier,
+                onlyInitiallyVisible = true
             )
             val arrows = bitmapLoader.loadArrowBitmaps()
             val receptors = bitmapLoader.loadReceptorBitmaps()
@@ -177,6 +186,122 @@ internal class StudioGameplayCoordinator(
         }
         if (written > 0) {
             gameplayFrameState.decodeFromDirectBuffer(written)
+            reconcileLazyBitmaps()
+        }
+    }
+
+    private fun reconcileLazyBitmaps() {
+        val ids = gameplayFrameState.entityIdsByIndex
+        if (ids.isEmpty()) return
+
+        val st = uiState.value
+        val currentMap = st.compiledBitmaps
+        val count = minOf(gameplayFrameState.entityCount, ids.size)
+        var retiredMap: LinkedHashMap<String, LoadedEntityBitmap>? = null
+
+        for (i in 0 until count) {
+            val entId = ids[i]
+            val ent = gameplayFrameState.entitiesPool[i]
+            val existing = currentMap[entId]
+
+            if (ent.retired && existing != null) {
+                if (retiredMap == null) {
+                    retiredMap = LinkedHashMap(currentMap)
+                }
+                retiredMap.remove(entId)
+                synchronized(recycleLock) {
+                    pendingRecycleQueue.addLast(gameplayFrameState.drawTick to existing)
+                }
+            } else if (ent.preloadRequested && !ent.retired && existing == null && loadingEntityIds.add(entId)) {
+                val compiledPaths = st.snapshot.lastCompileReport?.compiledTexturePaths ?: emptyMap()
+                val stageEntities = st.snapshot.stageEntities
+                val tier = st.selectedTier
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val decoded = bitmapLoader.decodeSingleCompiledEntityBitmap(
+                            entityId = entId,
+                            compiledPaths = compiledPaths,
+                            entities = stageEntities,
+                            tier = tier
+                        )
+                        if (decoded != null && gameplayFrameState.active) {
+                            var droppedEarly = false
+                            uiState.update { prev ->
+                                val idxNow = gameplayFrameState.entityIdsByIndex.indexOf(entId)
+                                val stillRetired = idxNow >= 0 &&
+                                    idxNow < gameplayFrameState.entityCount &&
+                                    gameplayFrameState.entitiesPool[idxNow].retired
+                                if (stillRetired || !gameplayFrameState.active) {
+                                    droppedEarly = true
+                                    prev
+                                } else {
+                                    val nextMap = LinkedHashMap(prev.compiledBitmaps).apply {
+                                        put(entId, decoded)
+                                    }
+                                    val nextByIdx = gameplayFrameState.entityIdsByIndex.map { nextMap[it] }
+                                    prev.copy(
+                                        compiledBitmaps = nextMap,
+                                        compiledBitmapsByIndex = nextByIdx
+                                    )
+                                }
+                            }
+                            if (droppedEarly) {
+                                val ab = decoded.bitmap.asAndroidBitmap()
+                                if (!ab.isRecycled) ab.recycle()
+                            }
+                        } else if (decoded != null) {
+                            val ab = decoded.bitmap.asAndroidBitmap()
+                            if (!ab.isRecycled) ab.recycle()
+                        }
+                    } finally {
+                        loadingEntityIds.remove(entId)
+                    }
+                }
+            }
+        }
+
+        if (retiredMap != null) {
+            val finalizedMap = retiredMap
+            val finalizedByIdx = ids.map { finalizedMap[it] }
+            uiState.update { prev ->
+                prev.copy(
+                    compiledBitmaps = finalizedMap,
+                    compiledBitmapsByIndex = finalizedByIdx
+                )
+            }
+        }
+
+        drainSafeRecycles(gameplayFrameState.drawTick)
+    }
+
+    private fun drainSafeRecycles(currentTick: Long) {
+        synchronized(recycleLock) {
+            while (pendingRecycleQueue.isNotEmpty()) {
+                val (dropTick, bmp) = pendingRecycleQueue.first()
+                if (currentTick - dropTick < 3L) {
+                    break
+                }
+                pendingRecycleQueue.removeFirst()
+                val ab = bmp.bitmap.asAndroidBitmap()
+                if (!ab.isRecycled) {
+                    ab.recycle()
+                }
+            }
+        }
+    }
+
+    private fun clearRecycleState(recycleImmediately: Boolean) {
+        loadingEntityIds.clear()
+        synchronized(recycleLock) {
+            while (pendingRecycleQueue.isNotEmpty()) {
+                val (_, bmp) = pendingRecycleQueue.removeFirst()
+                if (recycleImmediately) {
+                    val ab = bmp.bitmap.asAndroidBitmap()
+                    if (!ab.isRecycled) {
+                        ab.recycle()
+                    }
+                }
+            }
         }
     }
 
@@ -192,14 +317,40 @@ internal class StudioGameplayCoordinator(
 
     fun restartGameplay() {
         scope.launch(engineIoDispatcher) {
+            clearRecycleState(recycleImmediately = true)
+            val st = uiState.value
+            val compiledPaths = st.snapshot.lastCompileReport?.compiledTexturePaths ?: emptyMap()
+            val tier = st.selectedTier
+
+            // Re-decodificar desde `compiled_cache/*.webp` cualquier sprite inicial que haya sido reciclado en el intento anterior
+            val restoredMap = LinkedHashMap(st.compiledBitmaps)
+            withContext(Dispatchers.IO) {
+                for (ent in st.snapshot.stageEntities) {
+                    if (ent.visible && ent.opacity > 0.005f && !restoredMap.containsKey(ent.id)) {
+                        bitmapLoader.decodeSingleCompiledEntityBitmap(
+                            entityId = ent.id,
+                            compiledPaths = compiledPaths,
+                            entities = st.snapshot.stageEntities,
+                            tier = tier
+                        )?.let { decoded ->
+                            restoredMap[ent.id] = decoded
+                        }
+                    }
+                }
+            }
+
             val gpRaw = NativeEngineBridge.nativeStartGameplay()
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
-            val compiledMap = uiState.value.compiledBitmaps
-            val compiledByIndex = gpStep.entities.map { compiledMap[it.id] }
+            val compiledByIndex = gpStep.entities.map { restoredMap[it.id] }
             withContext(Dispatchers.Main) {
                 gameplayFrameState.seedFromJsonStep(gpStep)
             }
-            uiState.update { it.copy(compiledBitmapsByIndex = compiledByIndex) }
+            uiState.update {
+                it.copy(
+                    compiledBitmaps = restoredMap,
+                    compiledBitmapsByIndex = compiledByIndex
+                )
+            }
         }
     }
 
@@ -208,15 +359,23 @@ internal class StudioGameplayCoordinator(
             val raw = NativeEngineBridge.nativeStopGameplay()
             val res = StudioJsonParser.parseActionResult(raw)
             val nextSnap = res.snapshot ?: uiState.value.snapshot
+            val bitmapsToFree = uiState.value.compiledBitmaps.values.toList()
             withContext(Dispatchers.Main) {
                 gameplayFrameState.reset()
             }
-            // Liberar primero los bitmaps compilados de gameplay antes de recargar previews del editor
+            // Liberar primero referencias en Compose UI antes de reciclar los bitmaps
             uiState.update {
                 it.copy(
                     compiledBitmaps = emptyMap(),
                     compiledBitmapsByIndex = emptyList()
                 )
+            }
+            clearRecycleState(recycleImmediately = true)
+            for (bmp in bitmapsToFree) {
+                val ab = bmp.bitmap.asAndroidBitmap()
+                if (!ab.isRecycled) {
+                    ab.recycle()
+                }
             }
             val restoredEditorBitmaps = bitmapLoader.loadEditorEntityBitmaps(
                 nextSnap.stageEntities,

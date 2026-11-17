@@ -977,6 +977,13 @@ const NECESSARY_ENGINE_APIS = [
   'setTrackVolume',
   'setTrackMute',
   'getSongPosMs',
+  'flashCamera',
+  'flashHud',
+  'flashEffect',
+  'preloadEntity',
+  'retireEntity',
+  'swapEntity',
+  'setActiveCharacter',
 ] as const;
 
 function stripCommentsForApiScan(body: string): string {
@@ -1347,7 +1354,7 @@ export function resolveMobileTouchLanes(params: {
 }
 
 export const BINARY_GAMEPLAY_MAGIC = 0x42464750; // "BFGP"
-export const BINARY_GAMEPLAY_HEADER_BYTES = 140;
+export const BINARY_GAMEPLAY_HEADER_BYTES = 152;
 export const BINARY_GAMEPLAY_ENTITY_BYTES = 64;
 export const BINARY_GAMEPLAY_NOTE_BYTES = 28;
 export const BINARY_GAMEPLAY_STRUM_BYTES = 20;
@@ -1365,6 +1372,8 @@ export interface DecodedBinaryEntity {
   hasFrame: boolean;
   frameRotated: boolean;
   roleCode: number;
+  preloadRequested: boolean;
+  retired: boolean;
   atlasX: number;
   atlasY: number;
   atlasW: number;
@@ -1414,6 +1423,7 @@ export interface DecodedBinaryGameplayFrame {
   controlMode: MobileControlMode;
   hasHudStrings: boolean;
   hudVisible: boolean;
+  flashOverHud: boolean;
   hudRevision: number;
   holdingLanesMask: number;
   opponentHoldingLanesMask: number;
@@ -1426,6 +1436,10 @@ export interface DecodedBinaryGameplayFrame {
   scrollSpeed: number;
   activeBpm: number;
   beatPhase: number;
+  flashColorArgb: number;
+  flashAlpha: number;
+  activePlayerIdx: number;
+  activeOpponentIdx: number;
   cameraZoom: number;
   cameraShake: number;
   cameraX: number;
@@ -1497,10 +1511,14 @@ export function decodeBinaryGameplayFrame(
   const ratingEventId = view.getUint32(120, true);
   const splashEventId = view.getUint32(124, true);
   const beatPhase = view.getFloat32(128, true);
-  const entityCount = view.getUint16(132, true);
-  const noteCount = view.getUint16(134, true);
-  const strumCount = view.getUint16(136, true);
-  const dynCount = view.getUint16(138, true);
+  const flashColorArgb = view.getUint32(132, true);
+  const flashAlpha = view.getFloat32(136, true);
+  const activePlayerIdx = view.getInt16(140, true);
+  const activeOpponentIdx = view.getInt16(142, true);
+  const entityCount = view.getUint16(144, true);
+  const noteCount = view.getUint16(146, true);
+  const strumCount = view.getUint16(148, true);
+  const dynCount = view.getUint16(150, true);
 
   let cursor = BINARY_GAMEPLAY_HEADER_BYTES;
   const requiredMin =
@@ -1545,6 +1563,8 @@ export function decodeBinaryGameplayFrame(
       hasFrame: (entFlags & (1 << 2)) !== 0,
       frameRotated: (entFlags & (1 << 3)) !== 0,
       roleCode: (entFlags >> 4) & 3,
+      preloadRequested: (entFlags & (1 << 6)) !== 0,
+      retired: (entFlags & (1 << 7)) !== 0,
       atlasX,
       atlasY,
       atlasW,
@@ -1639,6 +1659,7 @@ export function decodeBinaryGameplayFrame(
     controlMode: (flags & (1 << 4)) !== 0 ? 'classic_hitbox' : 'tap_arrows',
     hasHudStrings,
     hudVisible: (flags & (1 << 6)) !== 0,
+    flashOverHud: (flags & (1 << 7)) !== 0,
     hudRevision,
     holdingLanesMask: masks & 0xff,
     opponentHoldingLanesMask: (masks >> 8) & 0xff,
@@ -1651,6 +1672,10 @@ export function decodeBinaryGameplayFrame(
     scrollSpeed,
     activeBpm,
     beatPhase,
+    flashColorArgb,
+    flashAlpha,
+    activePlayerIdx,
+    activeOpponentIdx,
     cameraZoom,
     cameraShake,
     cameraX,
@@ -2112,4 +2137,262 @@ export function evaluateWatchdogExecution(params: {
     quarantined: tripCount >= maxTrips,
     skippedDueToQuarantine: false,
   };
+}
+
+export type ChartGridSustainKind = 'head' | 'body' | 'tail';
+
+export interface ChartGridStepSustain {
+  globalStep: number;
+  sectionIndex: number;
+  stepInSection: number;
+  col: number;
+  kind: ChartGridSustainKind;
+}
+
+/**
+ * Calcula los segmentos continuos (head -> body -> tail) de una nota sostenida en la rejilla
+ * del Chart Editor, propagándose incluso cuando cruza límites entre secciones.
+ */
+export function computeChartSustainGridCells(params: {
+  sections: Array<{ bpm: number; lengthInSteps: number; startMs: number }>;
+  notes: Array<{ timeMs: number; direction: number; isPlayer: boolean; sustainMs: number }>;
+}): ChartGridStepSustain[] {
+  const steps: Array<{ secIdx: number; stepInSec: number; timeMs: number; stepMs: number }> = [];
+  params.sections.forEach((sec, secIdx) => {
+    const stepMs = 60_000 / Math.max(40, sec.bpm) / 4;
+    for (let s = 0; s < sec.lengthInSteps; s++) {
+      steps.push({ secIdx, stepInSec: s, timeMs: sec.startMs + s * stepMs, stepMs });
+    }
+  });
+  if (steps.length === 0) return [];
+
+  const findClosest = (timeMs: number) => {
+    let best = 0;
+    let bestDiff = Math.abs(steps[0].timeMs - timeMs);
+    for (let i = 1; i < steps.length; i++) {
+      const diff = Math.abs(steps[i].timeMs - timeMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = i;
+      }
+    }
+    return best;
+  };
+
+  const out: ChartGridStepSustain[] = [];
+  for (const n of params.notes) {
+    const originIdx = findClosest(n.timeMs);
+    const origin = steps[originIdx];
+    if (n.sustainMs <= origin.stepMs * 0.4) continue;
+    const endIdx = Math.min(steps.length - 1, Math.max(originIdx + 1, findClosest(n.timeMs + n.sustainMs)));
+    const col = (n.isPlayer ? 4 : 0) + Math.max(0, Math.min(3, n.direction));
+
+    out.push({
+      globalStep: originIdx,
+      sectionIndex: origin.secIdx,
+      stepInSection: origin.stepInSec,
+      col,
+      kind: 'head',
+    });
+    for (let k = originIdx + 1; k <= endIdx; k++) {
+      out.push({
+        globalStep: k,
+        sectionIndex: steps[k].secIdx,
+        stepInSection: steps[k].stepInSec,
+        col,
+        kind: k === endIdx ? 'tail' : 'body',
+      });
+    }
+  }
+  return out;
+}
+
+export interface StageRamLifecycleReport {
+  preservedIds: string[];
+  reusedLaterIds: string[];
+  preloadWindows: Array<{ entityId: string; preloadAtMs: number; cueAtMs: number }>;
+}
+
+/**
+ * Analiza eventos cronológicos (`Stage Swap`, `Change Character`, `Preload Sprite`) para preservar
+ * sprites ocultos al inicio en disco `.webp`, programar precarga anticipada 4s antes y detectar
+ * sprites retirados que vuelven a aparecer más adelante.
+ */
+export function analyzeStageEventRamLifecycle(
+  events: ChartEventSpec[],
+  lookaheadMs = 4000,
+): StageRamLifecycleReport {
+  const sorted = [...events].sort((a, b) => a.timeMs - b.timeMs);
+  const preservedSet = new Set<string>();
+  const retiredAt = new Map<string, number>();
+  const reusedSet = new Set<string>();
+  const preloadWindows: Array<{ entityId: string; preloadAtMs: number; cueAtMs: number }> = [];
+
+  for (const ev of sorted) {
+    const lower = ev.name.trim().toLowerCase();
+    if (lower !== 'stage swap' && lower !== 'swap stage' && lower !== 'change character' && lower !== 'preload sprite') {
+      continue;
+    }
+    const kv = new Map<string, string>();
+    for (const part of `${ev.value1};${ev.value2}`.split(';')) {
+      const idx = part.indexOf('=');
+      if (idx > 0) {
+        kv.set(part.slice(0, idx).trim().toLowerCase(), part.slice(idx + 1).trim());
+      }
+    }
+
+    const showIds: string[] = [];
+    const hideIds: string[] = [];
+    if (lower === 'preload sprite') {
+      showIds.push(...ev.value1.split(',').map((s) => s.trim()).filter(Boolean));
+    } else {
+      for (const k of ['show', 'mostrar', 'player', 'jugador', 'opp', 'opponent', 'enemigo', 'rival']) {
+        const val = kv.get(k);
+        if (val) showIds.push(...val.split(',').map((s) => s.trim()).filter(Boolean));
+      }
+      for (const k of ['hide', 'ocultar']) {
+        const val = kv.get(k);
+        if (val) hideIds.push(...val.split(',').map((s) => s.trim()).filter(Boolean));
+      }
+    }
+
+    for (const id of showIds) {
+      preservedSet.add(id);
+      preloadWindows.push({
+        entityId: id,
+        preloadAtMs: Math.max(0, ev.timeMs - lookaheadMs),
+        cueAtMs: ev.timeMs,
+      });
+      const prevRetire = retiredAt.get(id);
+      if (prevRetire !== undefined && ev.timeMs > prevRetire) {
+        reusedSet.add(id);
+      }
+    }
+    for (const id of hideIds) {
+      preservedSet.add(id);
+      retiredAt.set(id, ev.timeMs);
+    }
+  }
+
+  return {
+    preservedIds: Array.from(preservedSet),
+    reusedLaterIds: Array.from(reusedSet),
+    preloadWindows,
+  };
+}
+
+export function buildStageSwapEventParams(params: {
+  showIds?: string[];
+  hideIds?: string[];
+  playerId?: string;
+  opponentId?: string;
+  disposeOld?: boolean;
+}): { value1: string; value2: string } {
+  const parts: string[] = [];
+  if (params.showIds && params.showIds.length > 0) {
+    parts.push(`show=${params.showIds.join(',')}`);
+  }
+  if (params.hideIds && params.hideIds.length > 0) {
+    parts.push(`hide=${params.hideIds.join(',')}`);
+  }
+  if (params.playerId) parts.push(`player=${params.playerId}`);
+  if (params.opponentId) parts.push(`opp=${params.opponentId}`);
+  parts.push(`dispose=${params.disposeOld ? 1 : 0}`);
+  return { value1: parts.join(';'), value2: '' };
+}
+
+export function buildFlashEffectEventParams(params: {
+  colorHex?: string;
+  startMs: number;
+  endMs: number;
+  alpha?: number;
+  overHud?: boolean;
+}): { value1: string; value2: string } {
+  const durSec = Math.max(0.04, (params.endMs - params.startMs) / 1000);
+  const alpha = Math.min(1, Math.max(0.05, params.alpha ?? 0.85));
+  return {
+    value1: params.colorHex?.trim() || '#FFFFFF',
+    value2: `dur=${durSec.toFixed(3)};endMs=${params.endMs.toFixed(2)};alpha=${alpha.toFixed(2)};hud=${params.overHud ? 1 : 0}`,
+  };
+}
+
+export interface ChartPlayheadStepMatch {
+  globalStep: number;
+  sectionIndex: number;
+  stepInSection: number;
+  stepTimeMs: number;
+  stepMs: number;
+  stepFraction: number;
+}
+
+/**
+ * Resuelve en qué paso `#` y fracción sub-paso (`0..1`) descansa el hilo reproductor
+ * del Chart Editor respetando cambios de BPM entre secciones.
+ */
+export function resolveChartPlayheadStep(params: {
+  sections: Array<{ bpm: number; lengthInSteps: number; startMs: number }>;
+  songPosMs: number;
+}): ChartPlayheadStepMatch | null {
+  const steps: Array<{
+    globalStep: number;
+    sectionIndex: number;
+    stepInSection: number;
+    stepTimeMs: number;
+    stepMs: number;
+  }> = [];
+
+  let globalStep = 0;
+  params.sections.forEach((sec, sectionIndex) => {
+    const stepMs = 60_000 / Math.max(40, sec.bpm) / 4;
+    for (let s = 0; s < sec.lengthInSteps; s++) {
+      steps.push({
+        globalStep,
+        sectionIndex,
+        stepInSection: s,
+        stepTimeMs: sec.startMs + s * stepMs,
+        stepMs,
+      });
+      globalStep += 1;
+    }
+  });
+
+  if (steps.length === 0) return null;
+  const clampedMs = Math.max(0, params.songPosMs);
+  let lo = 0;
+  let hi = steps.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (steps[mid].stepTimeMs <= clampedMs) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const entry = steps[lo];
+  const stepFraction = Math.min(1, Math.max(0, (clampedMs - entry.stepTimeMs) / Math.max(1, entry.stepMs)));
+  return {
+    ...entry,
+    stepFraction,
+  };
+}
+
+export function computeChartPlayheadFollowAction(params: {
+  followThread: boolean;
+  threadVisible: boolean;
+  threadY: number;
+  viewportStart: number;
+  viewportEnd: number;
+}): { action: 'none' | 'scroll_by' | 'snap_to_row'; deltaY: number } {
+  if (!params.followThread) {
+    return { action: 'none', deltaY: 0 };
+  }
+  if (!params.threadVisible || params.threadY < params.viewportStart) {
+    return { action: 'snap_to_row', deltaY: 0 };
+  }
+  const viewportH = Math.max(1, params.viewportEnd - params.viewportStart);
+  const anchorY = viewportH * 0.4;
+  if (params.threadY > anchorY) {
+    return { action: 'scroll_by', deltaY: params.threadY - anchorY };
+  }
+  return { action: 'none', deltaY: 0 };
 }

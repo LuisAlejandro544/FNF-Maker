@@ -69,7 +69,7 @@ pub fn session() -> &'static Mutex<EngineSession> {
 mod jni_exports {
     use super::*;
     use jni::JNIEnv;
-    use jni::objects::{JByteArray, JByteBuffer, JClass, JString};
+    use jni::objects::{JByteArray, JByteBuffer, JClass, JDoubleArray, JString};
     use jni::sys::{jboolean, jdouble, jfloat, jint};
 
     fn read_str(env: &mut JNIEnv, input: &JString) -> String {
@@ -223,6 +223,7 @@ mod jni_exports {
             let mut guard = session().lock();
             guard.project.chart = pulse_core::ChartData::bundled_demo_chart();
             guard.project.chart_source_path = None;
+            guard.project.sync_stage_events_script();
             guard.save_active_project_now();
             guard.ok_response("Chart demo restaurado")
         };
@@ -424,6 +425,80 @@ mod jni_exports {
             1
         } else {
             guard.audio_engine.mixer.pause();
+            0
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetAudioPreviewTransport(
+        _env: JNIEnv,
+        _cls: JClass,
+        play: jboolean,
+        seek_ms: jdouble,
+    ) -> jboolean {
+        let mut guard = session().lock();
+        let any_audio = guard.project.active_audio_count() > 0;
+        let demo_bpm = guard.project.chart.bpm as f32;
+        if seek_ms >= 0.0 {
+            guard.audio_engine.mixer.seek_ms(seek_ms);
+        }
+        if play != 0 {
+            guard.audio_engine.ensure_started();
+            guard
+                .audio_engine
+                .mixer
+                .use_demo_synth
+                .store(!any_audio, std::sync::atomic::Ordering::Relaxed);
+            guard
+                .audio_engine
+                .mixer
+                .demo_bpm_bits
+                .store(demo_bpm.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            guard.audio_engine.mixer.play();
+            1
+        } else {
+            guard.audio_engine.mixer.pause();
+            0
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeReadAudioPreviewState<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        out_state: JDoubleArray<'local>,
+    ) -> jboolean {
+        let guard = session().lock();
+        let track_dur_ms = guard.audio_engine.mixer.max_track_duration_ms();
+        let chart_dur_ms = guard
+            .project
+            .chart
+            .sections
+            .last()
+            .map(|sec| {
+                let step_ms = (60_000.0 / sec.bpm.max(40.0)) / 4.0;
+                sec.start_ms + (sec.length_in_steps as f64) * step_ms
+            })
+            .unwrap_or(0.0);
+        let duration_ms = track_dur_ms.max(chart_dur_ms);
+        let mut pos_ms = guard.audio_engine.mixer.position_ms().max(0.0);
+        let mut is_playing = guard
+            .audio_engine
+            .mixer
+            .is_playing
+            .load(std::sync::atomic::Ordering::Acquire);
+
+        if is_playing && duration_ms > 0.0 && pos_ms >= duration_ms {
+            guard.audio_engine.mixer.pause();
+            guard.audio_engine.mixer.seek_ms(duration_ms);
+            pos_ms = duration_ms;
+            is_playing = false;
+        }
+
+        let buf = [pos_ms, if is_playing { 1.0 } else { 0.0 }, duration_ms];
+        if env.set_double_array_region(&out_state, 0, &buf).is_ok() {
+            1
+        } else {
             0
         }
     }

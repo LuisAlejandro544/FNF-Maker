@@ -192,6 +192,8 @@ pub(super) fn sync_script_host_state(
     state: &ScriptHostState,
     stage: &StageScene,
     entities: &[StageEntity],
+    active_player_id: &str,
+    active_opponent_id: &str,
     strums: &[StrumOverrideState; 8],
     song_pos_ms: f64,
     active_bpm: f64,
@@ -258,23 +260,33 @@ pub(super) fn sync_script_host_state(
             scroll_factor: ent.scroll_factor,
         };
         prop_map.insert(ent.id.clone(), snap);
+        if !active_player_id.is_empty() && ent.id == active_player_id {
+            pos_map.insert("player".to_string(), (ent.x, ent.y));
+            prop_map.insert("player".to_string(), snap);
+            has_player_alias = true;
+        }
+        if !active_opponent_id.is_empty() && ent.id == active_opponent_id {
+            pos_map.insert("opponent".to_string(), (ent.x, ent.y));
+            prop_map.insert("opponent".to_string(), snap);
+            has_opp_alias = true;
+        }
         match ent.role {
-            EntityRole::Opponent if !has_opp_alias => {
+            EntityRole::Opponent if !has_opp_alias && ent.visible => {
                 pos_map.insert("opponent".to_string(), (ent.x, ent.y));
                 prop_map.insert("opponent".to_string(), snap);
                 has_opp_alias = true;
             }
-            EntityRole::Player if !has_player_alias => {
+            EntityRole::Player if !has_player_alias && ent.visible => {
                 pos_map.insert("player".to_string(), (ent.x, ent.y));
                 prop_map.insert("player".to_string(), snap);
                 has_player_alias = true;
             }
-            EntityRole::Background if !has_bg_alias => {
+            EntityRole::Background if !has_bg_alias && ent.visible => {
                 pos_map.insert("background".to_string(), (ent.x, ent.y));
                 prop_map.insert("background".to_string(), snap);
                 has_bg_alias = true;
             }
-            EntityRole::Decoration if !has_deco_alias => {
+            EntityRole::Decoration if !has_deco_alias && ent.visible => {
                 pos_map.insert("decoration".to_string(), (ent.x, ent.y));
                 prop_map.insert("decoration".to_string(), snap);
                 has_deco_alias = true;
@@ -665,6 +677,116 @@ pub(super) fn drain_and_apply_script_commands(
                     audio_engine.mixer.configs[slot]
                         .muted
                         .store(muted, Ordering::Relaxed);
+                }
+            }
+            ScriptCommand::FlashEffect {
+                color_argb,
+                duration_sec,
+                start_alpha,
+                over_hud,
+            } => {
+                let dur = duration_sec.max(0.02);
+                let alpha = start_alpha.clamp(0.0, 1.0);
+                session.flash_color_argb = color_argb;
+                session.flash_alpha = alpha;
+                session.flash_decay_per_sec = alpha / dur;
+                session.flash_over_hud = over_hud;
+            }
+            ScriptCommand::PreloadEntity(entity_id) => {
+                if !entity_id.trim().is_empty() {
+                    session.retired_entities.remove(&entity_id);
+                    session.preload_requested_entities.insert(entity_id);
+                }
+            }
+            ScriptCommand::RetireEntity(entity_id) => {
+                if !entity_id.trim().is_empty() {
+                    if let Some(ent) = session
+                        .bundle
+                        .active_entities
+                        .iter_mut()
+                        .find(|e| e.id == entity_id)
+                    {
+                        ent.visible = false;
+                    }
+                    session.preload_requested_entities.remove(&entity_id);
+                    session.retired_entities.insert(entity_id);
+                }
+            }
+            ScriptCommand::SwapEntity {
+                old_id,
+                new_id,
+                dispose_old,
+            } => {
+                if !old_id.trim().is_empty() && old_id != new_id {
+                    if let Some(old_ent) = session
+                        .bundle
+                        .active_entities
+                        .iter_mut()
+                        .find(|e| e.id == old_id)
+                    {
+                        old_ent.visible = false;
+                    }
+                    if dispose_old {
+                        session.preload_requested_entities.remove(&old_id);
+                        session.retired_entities.insert(old_id.clone());
+                    }
+                }
+                if !new_id.trim().is_empty() {
+                    session.retired_entities.remove(&new_id);
+                    session.preload_requested_entities.insert(new_id.clone());
+                    if let Some(new_ent) = session
+                        .bundle
+                        .active_entities
+                        .iter_mut()
+                        .find(|e| e.id == new_id)
+                    {
+                        new_ent.visible = true;
+                        if new_ent.opacity <= 0.01 {
+                            new_ent.set_opacity(1.0);
+                        }
+                    }
+                }
+            }
+            ScriptCommand::SetActiveCharacter {
+                role,
+                entity_id,
+                dispose_old,
+            } => {
+                let lower = role.trim().to_ascii_lowercase();
+                let is_player = matches!(lower.as_str(), "player" | "jugador" | "bf" | "boyfriend");
+                let prev_id = if is_player {
+                    std::mem::replace(&mut session.active_player_id, entity_id.clone())
+                } else {
+                    std::mem::replace(&mut session.active_opponent_id, entity_id.clone())
+                };
+                if !prev_id.is_empty() && prev_id != entity_id {
+                    if let Some(prev_ent) = session
+                        .bundle
+                        .active_entities
+                        .iter_mut()
+                        .find(|e| e.id == prev_id)
+                    {
+                        prev_ent.visible = false;
+                    }
+                    if dispose_old {
+                        session.preload_requested_entities.remove(&prev_id);
+                        session.retired_entities.insert(prev_id);
+                    }
+                }
+                if !entity_id.trim().is_empty() {
+                    session.retired_entities.remove(&entity_id);
+                    session.preload_requested_entities.insert(entity_id.clone());
+                    if let Some(next_ent) = session
+                        .bundle
+                        .active_entities
+                        .iter_mut()
+                        .find(|e| e.id == entity_id)
+                    {
+                        next_ent.visible = true;
+                        if next_ent.opacity <= 0.01 {
+                            next_ent.set_opacity(1.0);
+                        }
+                    }
                 }
             }
             ScriptCommand::Log(msg) => {

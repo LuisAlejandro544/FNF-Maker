@@ -127,6 +127,12 @@ object NativeEngineBridge {
     external fun nativeToggleAudioPreview(play: Boolean, startMs: Double): Boolean
 
     @JvmStatic
+    external fun nativeSetAudioPreviewTransport(play: Boolean, seekMs: Double): Boolean
+
+    @JvmStatic
+    external fun nativeReadAudioPreviewState(outState: DoubleArray): Boolean
+
+    @JvmStatic
     external fun nativeImportSpriteSheetPng(entityId: String, path: String): String
 
     @JvmStatic

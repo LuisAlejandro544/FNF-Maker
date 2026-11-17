@@ -9,7 +9,7 @@ use pulse_core::project::MAX_AUDIO_TRACKS;
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_scripting::ModScriptRuntime;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +219,8 @@ pub struct GameplayEntityFrameJson {
     pub rotation_deg: f32,
     pub flip_x: bool,
     pub visible: bool,
+    pub preload_requested: bool,
+    pub retired: bool,
     pub texture_path: Option<String>,
     pub frame: Option<SparrowFrameJson>,
 }
@@ -298,6 +300,11 @@ pub struct GameplayStepJson {
     pub hud_visible: bool,
     pub hud_opacity: f32,
     pub hud_zoom: f32,
+    pub flash_color_argb: u32,
+    pub flash_alpha: f32,
+    pub flash_over_hud: bool,
+    pub active_player_idx: i32,
+    pub active_opponent_idx: i32,
     pub paused: bool,
     pub finished: bool,
     pub script_errors: Vec<String>,
@@ -402,11 +409,21 @@ pub struct GameplayRuntimeState {
     pub hud_visible: bool,
     pub hud_opacity: f32,
     pub hud_zoom: f32,
+    pub active_player_id: String,
+    pub active_opponent_id: String,
+    pub flash_color_argb: u32,
+    pub flash_alpha: f32,
+    pub flash_decay_per_sec: f32,
+    pub flash_over_hud: bool,
+    pub preload_requested_entities: HashSet<String>,
+    pub retired_entities: HashSet<String>,
+    pub reused_later_entities: HashSet<String>,
     pub active_scroll_speed: f64,
     pub active_downscroll: bool,
     pub last_beat: i32,
     pub last_step: i32,
     pub next_event_idx: usize,
+    pub next_preload_event_idx: usize,
     pub paused: bool,
     pub finished: bool,
     pub last_logs: Vec<String>,

@@ -254,12 +254,16 @@ private fun BeatForgeRootContent(
                             viewModel.addChartEvent(timeMs, name, v1, v2)
                         },
                         onRemoveChartEvent = { idx -> viewModel.removeChartEvent(idx) },
+                        onOpenStageEventsScript = { viewModel.openStageEventsScriptInStudio() },
                         onAddSection = { viewModel.addChartSection(it) },
                         onToggleSectionMustHit = { viewModel.toggleSectionMustHit(it) },
                         onToggleChartNote = { sec, step, col, sustain ->
                             viewModel.toggleChartNote(sec, step, col, sustain)
                         },
-                        onToggleAudioPreviewAtMs = { ms -> viewModel.toggleAudioPreview(ms) }
+                        onSetAudioPreviewTransport = { play, seekMs ->
+                            viewModel.setAudioPreviewTransport(play, seekMs)
+                        },
+                        onReadAudioPreviewState = { viewModel.readAudioPreviewState() }
                     )
 
                     StudioScreen.Audio -> AudioScreen(
@@ -343,10 +347,14 @@ private fun BeatForgeRootContent(
                             healthBarBitmap = state.healthBarBitmap,
                             ratingBitmaps = state.ratingBitmaps,
                             noteSplashBitmap = state.noteSplashBitmap,
-                            playerNormalIcon = playerEntId?.let { state.entityNormalIcons[it] } ?: state.defaultPlayerNormalIcon,
-                            playerLosingIcon = playerEntId?.let { state.entityLosingIcons[it] } ?: state.defaultPlayerLosingIcon,
-                            opponentNormalIcon = oppEntId?.let { state.entityNormalIcons[it] } ?: state.defaultOpponentNormalIcon,
-                            opponentLosingIcon = oppEntId?.let { state.entityLosingIcons[it] } ?: state.defaultOpponentLosingIcon,
+                            fallbackPlayerId = playerEntId,
+                            fallbackOpponentId = oppEntId,
+                            entityNormalIcons = state.entityNormalIcons,
+                            entityLosingIcons = state.entityLosingIcons,
+                            defaultPlayerNormalIcon = state.defaultPlayerNormalIcon,
+                            defaultPlayerLosingIcon = state.defaultPlayerLosingIcon,
+                            defaultOpponentNormalIcon = state.defaultOpponentNormalIcon,
+                            defaultOpponentLosingIcon = state.defaultOpponentLosingIcon,
                             compiledBitmapsByIndex = state.compiledBitmapsByIndex,
                             onStepFrame = { dt, pressed, justPressed ->
                                 viewModel.stepGameplayFrame(dt, pressed, justPressed)

@@ -14,14 +14,18 @@ mod simulation;
 use super::{EngineSession, GameplayRuntimeState, StrumOverrideState};
 use pulse_audio::StreamingAudioSource;
 use pulse_core::frame_memory::{FrameBumpArena, NoteSlidingWindow};
-use pulse_core::hot_compile::{DeviceResourceTier, hot_compile_project_to_dir};
+use pulse_core::hot_compile::{
+    DeviceResourceTier, analyze_reused_entity_ids, hot_compile_project_to_dir,
+};
 use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_core::EntityRole;
 use pulse_scripting::ModScriptRuntime;
 use script_sync::sync_script_host_state;
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
 pub const BINARY_FRAME_MAGIC: u32 = 0x4246_4750; // "BFGP"
-pub const BINARY_HEADER_SIZE: usize = 140;
+pub const BINARY_HEADER_SIZE: usize = 152;
 pub const BINARY_ENTITY_SIZE: usize = 64;
 pub const BINARY_NOTE_SIZE: usize = 28;
 pub const BINARY_STRUM_SIZE: usize = 20;
@@ -32,6 +36,7 @@ impl EngineSession {
     pub fn start_gameplay(&mut self) -> String {
         self.gameplay = None;
         self.project.ensure_camera_script();
+        self.project.ensure_stage_events_script();
         self.project
             .stage
             .apply_camera_config(self.project.stage.camera.clone());
@@ -56,6 +61,34 @@ impl EngineSession {
             .events
             .sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
 
+        let active_player_id = bundle
+            .active_entities
+            .iter()
+            .find(|e| e.role == EntityRole::Player && e.visible)
+            .or_else(|| {
+                bundle
+                    .active_entities
+                    .iter()
+                    .find(|e| e.role == EntityRole::Player)
+            })
+            .map(|e| e.id.clone())
+            .unwrap_or_default();
+
+        let active_opponent_id = bundle
+            .active_entities
+            .iter()
+            .find(|e| e.role == EntityRole::Opponent && e.visible)
+            .or_else(|| {
+                bundle
+                    .active_entities
+                    .iter()
+                    .find(|e| e.role == EntityRole::Opponent)
+            })
+            .map(|e| e.id.clone())
+            .unwrap_or_default();
+
+        let reused_later_entities = analyze_reused_entity_ids(&self.project);
+
         let (mut runtime, script_errors) =
             ModScriptRuntime::load_from_scripts(&bundle.optimized_scripts);
         let initial_must_hit = self.project.chart.must_hit_at_ms(0.0);
@@ -64,6 +97,8 @@ impl EngineSession {
             &runtime.state,
             &self.project.stage,
             &bundle.active_entities,
+            &active_player_id,
+            &active_opponent_id,
             &default_strums,
             0.0,
             self.project.chart.bpm.max(40.0),
@@ -156,11 +191,21 @@ impl EngineSession {
             hud_visible: true,
             hud_opacity: 1.0,
             hud_zoom: 1.0,
+            active_player_id,
+            active_opponent_id,
+            flash_color_argb: 0xFFFFFFFF,
+            flash_alpha: 0.0,
+            flash_decay_per_sec: 1.0,
+            flash_over_hud: false,
+            preload_requested_entities: HashSet::new(),
+            retired_entities: HashSet::new(),
+            reused_later_entities,
             active_scroll_speed: self.project.chart.speed.max(0.5),
             active_downscroll: self.project.downscroll,
             last_beat: -10,
             last_step: -40,
             next_event_idx: 0,
+            next_preload_event_idx: 0,
             paused: false,
             finished: false,
             last_logs: Vec::new(),

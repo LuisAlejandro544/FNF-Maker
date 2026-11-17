@@ -8,13 +8,49 @@ use super::script_sync::{
     update_active_tweens,
 };
 use crate::session::{
-    EngineSession, GameplayRuntimeState, dir_to_anim, dir_to_miss_anim, trigger_role_anim,
+    EngineSession, GameplayRuntimeState, dir_to_anim, dir_to_miss_anim, trigger_character_anim,
 };
-use pulse_core::chart::ChartNote;
+use pulse_core::chart::{ChartEvent, ChartNote};
 use pulse_core::frame_memory::{ArenaSpan, FrameVisibleNote, NotePlayState};
 use pulse_core::sparrow::CharacterAnimKind;
-use pulse_core::EntityRole;
+use pulse_core::{EntityRole, StageEntity};
 use std::sync::atomic::Ordering;
+
+const PRELOAD_LOOKAHEAD_MS: f64 = 4000.0;
+
+fn collect_preload_targets_from_event(ev: &ChartEvent, entities: &[StageEntity], out: &mut Vec<String>) {
+    let lower_name = ev.name.trim().to_ascii_lowercase();
+    if lower_name == "preload sprite" {
+        for id in ev.value1.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            out.push(id.to_string());
+        }
+        return;
+    }
+    if lower_name == "stage swap" || lower_name == "swap stage" || lower_name == "change character" {
+        for part in ev.value1.split(';').chain(ev.value2.split(';')) {
+            if let Some((k, v)) = part.trim().split_once('=') {
+                let key = k.trim().to_ascii_lowercase();
+                if matches!(
+                    key.as_str(),
+                    "show" | "mostrar" | "player" | "jugador" | "opp" | "opponent" | "enemigo" | "rival"
+                ) {
+                    for id in v.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        out.push(id.to_string());
+                    }
+                }
+            }
+        }
+        return;
+    }
+    // Eventos genéricos: precarga entidades ocultas mencionadas en los parámetros
+    for ent in entities {
+        if (!ent.visible || ent.opacity <= 0.005)
+            && (ev.value1.contains(&ent.id) || ev.value2.contains(&ent.id))
+        {
+            out.push(ent.id.clone());
+        }
+    }
+}
 
 const HIT_WINDOW_SICK_MS: f64 = 55.0;
 const HIT_WINDOW_GOOD_MS: f64 = 105.0;
@@ -66,9 +102,10 @@ fn process_chart_notes(
                         session.note_window.mark_hit(idx);
                     } else {
                         opp_holding_mask |= 1u8 << (lane_idx as u8);
-                        trigger_role_anim(
+                        trigger_character_anim(
                             &mut session.bundle.active_entities,
                             EntityRole::Opponent,
+                            &session.active_opponent_id,
                             dir_to_anim(note.direction),
                         );
                     }
@@ -82,9 +119,10 @@ fn process_chart_notes(
                         player_holding_mask |= 1u8 << (lane_idx as u8);
                         session.score += ((dt * 220.0).round() as i64).max(1);
                         session.health = (session.health + 0.05 * dt).min(1.0);
-                        trigger_role_anim(
+                        trigger_character_anim(
                             &mut session.bundle.active_entities,
                             EntityRole::Player,
+                            &session.active_player_id,
                             dir_to_anim(note.direction),
                         );
                     } else if song_pos_ms > note.time_ms + 130.0 {
@@ -105,9 +143,10 @@ fn process_chart_notes(
                             session.last_rating_code = 4;
                             session.rating_event_id = session.rating_event_id.wrapping_add(1);
                             any_recent_miss = true;
-                            trigger_role_anim(
+                            trigger_character_anim(
                                 &mut session.bundle.active_entities,
                                 EntityRole::Player,
+                                &session.active_player_id,
                                 dir_to_miss_anim(note.direction),
                             );
                             session.runtime.call_on_note_miss(lane_idx as i32, true);
@@ -126,9 +165,10 @@ fn process_chart_notes(
                             session.note_window.mark_hit(idx);
                         }
                         let dir_anim = dir_to_anim(note.direction);
-                        trigger_role_anim(
+                        trigger_character_anim(
                             &mut session.bundle.active_entities,
                             EntityRole::Opponent,
+                            &session.active_opponent_id,
                             dir_anim,
                         );
                         session
@@ -174,9 +214,10 @@ fn process_chart_notes(
                         session.hits += 1;
                         session.health = (session.health + 0.035).min(1.0);
 
-                        trigger_role_anim(
+                        trigger_character_anim(
                             &mut session.bundle.active_entities,
                             EntityRole::Player,
+                            &session.active_player_id,
                             dir_to_anim(note.direction),
                         );
                         session.runtime.call_on_note_hit(lane_idx as i32, true);
@@ -195,9 +236,10 @@ fn process_chart_notes(
                         session.last_rating_code = 4;
                         session.rating_event_id = session.rating_event_id.wrapping_add(1);
                         any_recent_miss = true;
-                        trigger_role_anim(
+                        trigger_character_anim(
                             &mut session.bundle.active_entities,
                             EntityRole::Player,
+                            &session.active_player_id,
                             dir_to_miss_anim(note.direction),
                         );
                         session.runtime.call_on_note_miss(lane_idx as i32, true);
@@ -282,13 +324,40 @@ impl EngineSession {
         let mut opp_holding_mask: u8 = 0;
 
         if !session.paused && !session.finished {
+            if session.flash_alpha > 0.0 {
+                session.flash_alpha =
+                    (session.flash_alpha - session.flash_decay_per_sec * dt).max(0.0);
+            }
+
             update_active_timers(session, dt);
             update_active_tweens(session, &mut self.project.stage, dt);
+
+            // Precarga anticipada (4 segundos antes) de sprites ocultos referenciados por eventos futuros
+            let mut preload_ids_buf: Vec<String> = Vec::new();
+            while session.next_preload_event_idx < self.project.chart.events.len() {
+                let ev = &self.project.chart.events[session.next_preload_event_idx];
+                if ev.time_ms > song_pos_ms + PRELOAD_LOOKAHEAD_MS {
+                    break;
+                }
+                preload_ids_buf.clear();
+                collect_preload_targets_from_event(
+                    ev,
+                    &session.bundle.active_entities,
+                    &mut preload_ids_buf,
+                );
+                for id in preload_ids_buf.drain(..) {
+                    session.retired_entities.remove(&id);
+                    session.preload_requested_entities.insert(id);
+                }
+                session.next_preload_event_idx += 1;
+            }
 
             sync_script_host_state(
                 &session.runtime.state,
                 &self.project.stage,
                 &session.bundle.active_entities,
+                &session.active_player_id,
+                &session.active_opponent_id,
                 &session.strum_overrides,
                 song_pos_ms,
                 active_bpm,

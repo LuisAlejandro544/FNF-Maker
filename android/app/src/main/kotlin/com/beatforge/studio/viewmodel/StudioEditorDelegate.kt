@@ -7,6 +7,7 @@ package com.beatforge.studio.viewmodel
 
 import android.app.Application
 import android.net.Uri
+import com.beatforge.studio.AudioPreviewTransportState
 import com.beatforge.studio.CAMERA_SELECTION_ID
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.ImportKind
@@ -34,6 +35,8 @@ internal class StudioEditorDelegate(
     private val gameplayFrameState: GameplayFrameState,
     private val bitmapLoader: StudioBitmapLoader
 ) {
+    private val audioStateBuf = DoubleArray(3)
+
     fun initializeEngine() {
         scope.launch(engineIoDispatcher) {
             NativeEngineBridge.ensureLoaded()
@@ -354,6 +357,34 @@ internal class StudioEditorDelegate(
             val nextPlay = !uiState.value.audioPreviewPlaying
             val playing = NativeEngineBridge.nativeToggleAudioPreview(nextPlay, startMs)
             uiState.update { it.copy(audioPreviewPlaying = playing) }
+        }
+    }
+
+    fun setAudioPreviewTransport(play: Boolean, seekMs: Double = -1.0) {
+        scope.launch(engineIoDispatcher) {
+            val playing = NativeEngineBridge.nativeSetAudioPreviewTransport(play, seekMs)
+            uiState.update { it.copy(audioPreviewPlaying = playing) }
+        }
+    }
+
+    suspend fun readAudioPreviewState(): AudioPreviewTransportState {
+        return withContext(engineIoDispatcher) {
+            val ok = NativeEngineBridge.nativeReadAudioPreviewState(audioStateBuf)
+            if (!ok) {
+                AudioPreviewTransportState()
+            } else {
+                val posMs = audioStateBuf[0].coerceAtLeast(0.0)
+                val playing = audioStateBuf[1] >= 0.5
+                val durationMs = audioStateBuf[2].coerceAtLeast(0.0)
+                if (uiState.value.audioPreviewPlaying != playing) {
+                    uiState.update { it.copy(audioPreviewPlaying = playing) }
+                }
+                AudioPreviewTransportState(
+                    posMs = posMs,
+                    isPlaying = playing,
+                    durationMs = durationMs
+                )
+            }
         }
     }
 

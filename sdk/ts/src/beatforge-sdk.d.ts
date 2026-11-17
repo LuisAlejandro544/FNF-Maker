@@ -51,8 +51,15 @@ declare function getCameraBaseZoom(): number;
 declare function shakeCamera(intensity: number): void;
 declare function tweenCameraPos(tag: string, targetX: number, targetY: number, durationSec: number, ease?: EaseName): void;
 declare function tweenCameraZoom(tag: string, targetZoom: number, durationSec: number, ease?: EaseName): void;
+declare function flashCamera(colorHex?: string, durationSec?: number, alpha?: number): void;
+declare function flashHud(colorHex?: string, durationSec?: number, alpha?: number): void;
+declare function flashEffect(colorHex?: string, durationSec?: number, alpha?: number, overHud?: boolean): void;
 
-// Entidades y Animaciones
+// Entidades, Swaps de Escenario, Memoria RAM y Animaciones
+declare function preloadEntity(entityId: string): void;
+declare function retireEntity(entityId: string): void;
+declare function swapEntity(hideId: string, showId: string, disposeOld?: boolean): void;
+declare function setActiveCharacter(role: 'player' | 'opponent', entityId: string, disposeOld?: boolean): void;
 declare function setEntityProp(entityId: string, prop: EntityPropName, value: number | boolean | string): void;
 declare function getEntityProp(entityId: string, prop: EntityPropName): number;
 declare function getEntityX(entityIdOrRole: string): number | null;

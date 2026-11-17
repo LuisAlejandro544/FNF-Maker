@@ -135,6 +135,7 @@ impl EngineSession {
 
         if let Some(mut proj) = latest {
             proj.ensure_camera_script();
+            proj.ensure_stage_events_script();
             self.project = proj;
             let _ = std::fs::write(
                 self.active_project_marker(),
@@ -153,6 +154,7 @@ impl EngineSession {
         let mut proj = serde_json::from_str::<ModProject>(&raw)
             .map_err(|e| format!("Proyecto con formato inválido: {}", e))?;
         proj.ensure_camera_script();
+        proj.ensure_stage_events_script();
         self.project = proj;
         Ok(())
     }
@@ -350,6 +352,8 @@ impl EngineSession {
         cloned.id = new_id.clone();
         cloned.name = format!("{} (Copia)", cloned.name);
         cloned.updated_at_ms = current_epoch_ms();
+        cloned.ensure_camera_script();
+        cloned.ensure_stage_events_script();
 
         self.gameplay = None;
         self.compiled_bundle = None;

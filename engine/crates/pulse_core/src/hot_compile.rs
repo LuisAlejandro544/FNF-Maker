@@ -409,8 +409,8 @@ pub struct CompiledBundle {
     pub report: HotCompileReport,
 }
 
-/// Recorre las fuentes de todos los scripts activos para saber qué IDs de entidad
-/// podrían volverse visibles o moverse dinámicamente durante la canción.
+/// Recorre las fuentes de todos los scripts activos Y los eventos del chart (`chart.events`)
+/// para saber qué IDs de entidad podrían revelarse, intercambiarse o animarse durante la canción.
 pub fn collect_script_referenced_ids(project: &ModProject) -> HashSet<String> {
     let mut referenced = HashSet::new();
     for script in project.scripts.iter().filter(|s| s.enabled) {
@@ -420,7 +420,77 @@ pub fn collect_script_referenced_ids(project: &ModProject) -> HashSet<String> {
             }
         }
     }
+    for ev in &project.chart.events {
+        for entity in &project.stage.entities {
+            if ev.value1.contains(&entity.id)
+                || ev.value2.contains(&entity.id)
+                || ev.name.contains(&entity.id)
+            {
+                referenced.insert(entity.id.clone());
+            }
+        }
+    }
     referenced
+}
+
+/// Analiza los eventos del chart (`Stage Swap`, `Preload Sprite`, etc.) para detectar qué sprites
+/// que se ocultan/desactivan en un punto de la canción vuelven a aparecer más adelante.
+/// Estos sprites siguen pudiendo precargarse bajo demanda en el segundo uso aunque hayan salido de RAM.
+pub fn analyze_reused_entity_ids(project: &ModProject) -> HashSet<String> {
+    let mut sorted_events = project.chart.events.clone();
+    sorted_events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+
+    let mut hidden_at_some_point: HashSet<String> = HashSet::new();
+    let mut reused_later: HashSet<String> = HashSet::new();
+
+    for ev in &sorted_events {
+        let lower_name = ev.name.trim().to_ascii_lowercase();
+        if lower_name != "stage swap"
+            && lower_name != "swap stage"
+            && lower_name != "change character"
+            && lower_name != "preload sprite"
+        {
+            continue;
+        }
+        let mut shown: Vec<String> = Vec::new();
+        let mut hidden: Vec<String> = Vec::new();
+
+        for part in ev.value1.split(';').chain(ev.value2.split(';')) {
+            let trimmed = part.trim();
+            if let Some((k, v)) = trimmed.split_once('=') {
+                let key = k.trim().to_ascii_lowercase();
+                let ids: Vec<String> = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                match key.as_str() {
+                    "show" | "mostrar" | "player" | "jugador" | "opp" | "opponent" | "enemigo"
+                    | "rival" => shown.extend(ids),
+                    "hide" | "ocultar" => hidden.extend(ids),
+                    _ => {}
+                }
+            } else if lower_name == "preload sprite" && !trimmed.is_empty() {
+                shown.extend(
+                    trimmed
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
+            }
+        }
+
+        for id in &shown {
+            if hidden_at_some_point.contains(id) {
+                reused_later.insert(id.clone());
+            }
+        }
+        for id in hidden {
+            hidden_at_some_point.insert(id);
+        }
+    }
+
+    reused_later
 }
 
 /// Determina si una entidad está garantizada a ser invisible durante toda la canción.
@@ -995,5 +1065,44 @@ mod tests {
 
         // Limpiar
         let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn chart_events_preserve_hidden_entities_and_detect_reused_later_sprites() {
+        let mut project = ModProject::new_demo();
+        let mut alt_bg = StageEntity::new("bg_night", "Fondo Noche", EntityRole::Background);
+        alt_bg.visible = false;
+        project.stage.entities.push(alt_bg);
+        project.scripts.clear();
+        project.chart.events.push(crate::chart::ChartEvent {
+            time_ms: 10000.0,
+            name: "Stage Swap".to_string(),
+            value1: "show=bg_night;hide=bg_day;dispose=1".to_string(),
+            value2: String::new(),
+        });
+        project.chart.events.push(crate::chart::ChartEvent {
+            time_ms: 25000.0,
+            name: "Stage Swap".to_string(),
+            value1: "show=bg_day;hide=bg_night;dispose=0".to_string(),
+            value2: String::new(),
+        });
+
+        let refs = collect_script_referenced_ids(&project);
+        assert!(refs.contains("bg_night"));
+        assert!(!is_permanently_invisible(
+            project
+                .stage
+                .entities
+                .iter()
+                .find(|e| e.id == "bg_night")
+                .unwrap(),
+            &refs,
+            1280.0,
+            720.0,
+        ));
+
+        let reused = analyze_reused_entity_ids(&project);
+        assert!(reused.contains("bg_day"));
+        assert!(!reused.contains("bg_night"));
     }
 }

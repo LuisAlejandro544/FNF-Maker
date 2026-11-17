@@ -13,6 +13,12 @@ data class LoadedEntityBitmap(
     val origHeight: Int
 )
 
+data class AudioPreviewTransportState(
+    val posMs: Double = 0.0,
+    val isPlaying: Boolean = false,
+    val durationMs: Double = 0.0
+)
+
 data class StudioUiState(
     val initialized: Boolean = false,
     val currentScreen: StudioScreen = StudioScreen.Hub,

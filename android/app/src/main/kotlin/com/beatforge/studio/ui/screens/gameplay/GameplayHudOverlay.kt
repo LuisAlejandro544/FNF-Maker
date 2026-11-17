@@ -68,10 +68,14 @@ internal fun BoxScope.GameplayHealthBarAndStats(
     frameState: GameplayFrameState,
     hud: GameplayHudState,
     healthBarBitmap: ImageBitmap?,
-    playerNormalIcon: ImageBitmap?,
-    playerLosingIcon: ImageBitmap?,
-    opponentNormalIcon: ImageBitmap?,
-    opponentLosingIcon: ImageBitmap?
+    fallbackPlayerId: String?,
+    fallbackOpponentId: String?,
+    entityNormalIcons: Map<String, ImageBitmap>,
+    entityLosingIcons: Map<String, ImageBitmap>,
+    defaultPlayerNormalIcon: ImageBitmap?,
+    defaultPlayerLosingIcon: ImageBitmap?,
+    defaultOpponentNormalIcon: ImageBitmap?,
+    defaultOpponentLosingIcon: ImageBitmap?
 ) {
     if (!hud.hudVisible) return
     val healthBarAlign = if (hud.downscroll) Alignment.TopCenter else Alignment.BottomCenter
@@ -86,7 +90,7 @@ internal fun BoxScope.GameplayHealthBarAndStats(
             .alpha(hud.hudOpacity.coerceIn(0f, 1f)),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Canvas dedicado 60 FPS para la barra rojo/verde + marco SVG + íconos con latido BPM
+        // Canvas dedicado 60 FPS para la barra rojo/verde + marco SVG + íconos dinámicos con latido BPM
         Canvas(
             modifier = Modifier
                 .width(340.dp)
@@ -138,14 +142,24 @@ internal fun BoxScope.GameplayHealthBarAndStats(
                 )
             }
 
+            val activePlayerId = frameState.entityIdsByIndex.getOrNull(frameState.activePlayerIdx)
+                ?: fallbackPlayerId
+            val activeOpponentId = frameState.entityIdsByIndex.getOrNull(frameState.activeOpponentIdx)
+                ?: fallbackOpponentId
+
+            val plrNormal = activePlayerId?.let { entityNormalIcons[it] } ?: defaultPlayerNormalIcon
+            val plrLosing = activePlayerId?.let { entityLosingIcons[it] } ?: defaultPlayerLosingIcon
+            val oppNormal = activeOpponentId?.let { entityNormalIcons[it] } ?: defaultOpponentNormalIcon
+            val oppLosing = activeOpponentId?.let { entityLosingIcons[it] } ?: defaultOpponentLosingIcon
+
             val beatImpact = (1f - frameState.beatPhase).coerceIn(0f, 1f)
             val iconSize = 42.dp.toPx() * (1f + 0.14f * beatImpact * beatImpact)
             val iconCy = barTop + barH * 0.5f
 
             val oppBmp = if (clampedHealth > 0.80f) {
-                opponentLosingIcon ?: opponentNormalIcon
+                oppLosing ?: oppNormal
             } else {
-                opponentNormalIcon
+                oppNormal
             }
             if (oppBmp != null) {
                 val oppCx = (splitX - iconSize * 0.48f).coerceIn(iconSize * 0.45f, size.width - iconSize * 0.9f)
@@ -158,9 +172,9 @@ internal fun BoxScope.GameplayHealthBarAndStats(
             }
 
             val plrBmp = if (clampedHealth < 0.20f) {
-                playerLosingIcon ?: playerNormalIcon
+                plrLosing ?: plrNormal
             } else {
-                playerNormalIcon
+                plrNormal
             }
             if (plrBmp != null) {
                 val plrCx = (splitX + iconSize * 0.48f).coerceIn(iconSize * 0.9f, size.width - iconSize * 0.45f)

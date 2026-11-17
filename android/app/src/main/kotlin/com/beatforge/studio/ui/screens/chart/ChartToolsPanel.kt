@@ -1,7 +1,7 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/chart/ChartToolsPanel.kt
-// Propósito: Panel lateral izquierdo del editor de chart con título, estadísticas,
-// importación/exportación JSON, acceso al modal Config .json, ajuste de BPM, selector
-// de sustain, preescucha de audio y lista de salto rápido por secciones.
+// Propósito: Panel lateral izquierdo mejorado del Editor de Chart con tarjetas modulares para
+// importar/exportar JSON, acceso directo a `stage_events.lua` y `Config .json`, ajuste de BPM,
+// selector de longitud de notas sostenidas, preescucha de audio y lista rápida de secciones.
 
 package com.beatforge.studio.ui.screens.chart
 
@@ -26,10 +26,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.GpsFixed
+import androidx.compose.material.icons.rounded.GpsOff
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.Button
@@ -51,6 +56,7 @@ import com.beatforge.studio.ChartSectionSnapshot
 import com.beatforge.studio.ChartSnapshot
 import com.beatforge.studio.ImportKind
 import com.beatforge.studio.ui.theme.StudioColors
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @Composable
@@ -61,13 +67,19 @@ fun ChartToolsPanel(
     selectedSectionIdx: Int,
     sectionPositions: Map<Int, Int>,
     audioPreviewPlaying: Boolean,
+    playheadState: ChartPlayheadState,
     onRequestImport: (ImportKind) -> Unit,
     onRequestExportJson: () -> Unit,
     onOpenDetailsDialog: () -> Unit,
+    onOpenStageEventsScript: () -> Unit,
     onRestoreDemoChart: () -> Unit,
     onSetChartBpm: (Double) -> Unit,
     onSelectSustainSteps: (Int) -> Unit,
-    onToggleAudioPreviewAtMs: (Double) -> Unit,
+    onPlayOrPausePlayhead: () -> Unit,
+    onPlayFromSection: (Double) -> Unit,
+    onRewindPlayheadToStart: () -> Unit,
+    onToggleFollowPlayhead: () -> Unit,
+    onOpenCueAtPlayhead: () -> Unit,
     onAddSection: (Boolean) -> Unit,
     onSelectSection: (secIndex: Int, rowIdx: Int) -> Unit,
     modifier: Modifier = Modifier
@@ -84,21 +96,29 @@ fun ChartToolsPanel(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = chart.title,
-                color = StudioColors.TextPrimary,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-                maxLines = 1
-            )
+            // Tarjeta resumen de la pista
+            Surface(
+                shape = RoundedCornerShape(9.dp),
+                color = StudioColors.BgCard,
+                border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+            ) {
+                Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        text = chart.title,
+                        color = StudioColors.TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = "${chart.totalNotes} notas (${chart.opponentNotes} Rival · ${chart.playerNotes} Jugador · ${chart.sustainNotes} largas)",
+                        color = StudioColors.TextMuted,
+                        fontSize = 10.sp
+                    )
+                }
+            }
 
-            Text(
-                text = "${chart.totalNotes} notas (${chart.opponentNotes} Rival · ${chart.playerNotes} Jugador)",
-                color = StudioColors.TextMuted,
-                fontSize = 11.sp
-            )
-
-            // Importar / Exportar / Demo
+            // Importar / Exportar JSON
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 Button(
                     onClick = { onRequestImport(ImportKind.Chart) },
@@ -121,7 +141,7 @@ fun ChartToolsPanel(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.AccentIndigo,
-                        contentColor = Color.White
+                        contentColor = Color(0xFF1F1200)
                     ),
                     modifier = Modifier
                         .weight(1f)
@@ -143,7 +163,7 @@ fun ChartToolsPanel(
                 ) {
                     Icon(Icons.Rounded.Tune, null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Config .json (${chart.events.size} ev.)", fontSize = 10.sp, maxLines = 1, softWrap = false)
+                    Text("Config .json (${chart.events.size})", fontSize = 10.sp, maxLines = 1, softWrap = false)
                 }
 
                 OutlinedButton(
@@ -156,6 +176,38 @@ fun ChartToolsPanel(
                     Icon(Icons.Rounded.RestartAlt, null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Demo", fontSize = 10.sp, maxLines = 1, softWrap = false)
+                }
+            }
+
+            // Acceso rápido a stage_events.lua y guía de la columna '#'
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = StudioColors.AccentPurple.copy(alpha = 0.11f),
+                border = BorderStroke(1.dp, StudioColors.AccentPurple.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenStageEventsScript)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(Icons.Rounded.AutoAwesome, null, tint = StudioColors.AccentPurple, modifier = Modifier.size(15.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Toca '#' en la rejilla: Flashes y Swaps",
+                            color = StudioColors.TextPrimary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Sincronizado con stage_events.lua",
+                            color = StudioColors.AccentPurple,
+                            fontSize = 9.sp
+                        )
+                    }
+                    Icon(Icons.Rounded.Code, null, tint = StudioColors.AccentPurple, modifier = Modifier.size(14.dp))
                 }
             }
 
@@ -200,12 +252,12 @@ fun ChartToolsPanel(
             // Duración de nota sostenida (Sustain)
             Text("Sustain al colocar (pasos):", color = StudioColors.TextMuted, fontSize = 11.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                listOf(0, 2, 4, 8).forEach { steps ->
+                listOf(0, 2, 4, 8, 16).forEach { steps ->
                     val isSel = selectedSustainSteps == steps
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(30.dp)
+                            .height(29.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(
                                 if (isSel) StudioColors.AccentAmber.copy(alpha = 0.22f)
@@ -220,9 +272,9 @@ fun ChartToolsPanel(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = if (steps == 0) "Normal" else "${steps}p",
+                            text = if (steps == 0) "1x" else "${steps}p",
                             color = if (isSel) StudioColors.AccentAmber else StudioColors.TextMuted,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
                             maxLines = 1,
                             softWrap = false
@@ -231,33 +283,159 @@ fun ChartToolsPanel(
                 }
             }
 
-            // Botón escuchar audio desde la sección seleccionada
-            Button(
-                onClick = {
-                    onToggleAudioPreviewAtMs(activeSection?.startMs ?: 0.0)
-                },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (audioPreviewPlaying) StudioColors.AccentCoral else StudioColors.AccentEmerald,
-                    contentColor = if (audioPreviewPlaying) Color.White else Color(0xFF042117)
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(36.dp)
+            // Módulo de Reproducción + Hilo descendente + Seguimiento para precisar Flashes y Swaps
+            val currentTarget = playheadState.activeTarget
+            val currentTimeText = formatChartTimeMs(playheadState.posMs)
+            val currentStepLabel = currentTarget?.let {
+                "Sec ${it.stepRow.section.index + 1} · #${it.stepRow.stepInSec}"
+            } ?: "Sec ${(activeSection?.index ?: 0) + 1} · #0"
+
+            Surface(
+                shape = RoundedCornerShape(9.dp),
+                color = StudioColors.BgCard,
+                border = BorderStroke(
+                    1.dp,
+                    if (audioPreviewPlaying) StudioColors.AccentEmerald.copy(alpha = 0.7f)
+                    else StudioColors.BorderSubtle
+                )
             ) {
-                Icon(
-                    imageVector = if (audioPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = if (audioPreviewPlaying) "Detener Audio" else "Escuchar Sec. ${(activeSection?.index ?: 0) + 1}",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    softWrap = false
-                )
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (audioPreviewPlaying) "Hilo bajando" else if (playheadState.posMs > 1.0) "En pausa" else "Reproductor",
+                            color = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.TextPrimary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "$currentTimeText · $currentStepLabel",
+                            color = StudioColors.AccentCyan,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Button(
+                            onClick = onPlayOrPausePlayhead,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (audioPreviewPlaying) StudioColors.AccentAmber else StudioColors.AccentEmerald,
+                                contentColor = Color(0xFF0A1410)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (audioPreviewPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = when {
+                                    audioPreviewPlaying -> "Pausar"
+                                    playheadState.posMs > 1.0 -> "Reanudar"
+                                    else -> "Reproducir"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = onRewindPlayheadToStart,
+                            contentPadding = PaddingValues(0.dp),
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipPrevious,
+                                contentDescription = "Volver a 0:00",
+                                tint = StudioColors.TextMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        OutlinedButton(
+                            onClick = onToggleFollowPlayhead,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.BorderSubtle
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(31.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (playheadState.followThread) Icons.Rounded.GpsFixed else Icons.Rounded.GpsOff,
+                                contentDescription = null,
+                                tint = if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.TextMuted,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = if (playheadState.followThread) "Seguir: ON" else "Seguir: OFF",
+                                color = if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.TextMuted,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = { onPlayFromSection(activeSection?.startMs ?: 0.0) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .weight(0.9f)
+                                .height(31.dp)
+                        ) {
+                            Text(
+                                text = "Desde Sec.${(activeSection?.index ?: 0) + 1}",
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    if (currentTarget != null) {
+                        OutlinedButton(
+                            onClick = onOpenCueAtPlayhead,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            border = BorderStroke(1.dp, StudioColors.AccentPurple.copy(alpha = 0.55f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(29.dp)
+                        ) {
+                            Icon(Icons.Rounded.AutoAwesome, null, tint = StudioColors.AccentPurple, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = "Poner Flash / Swap en #${currentTarget.stepRow.stepInSec}",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
             }
 
             HorizontalDivider(color = StudioColors.BorderSubtle)
@@ -304,7 +482,7 @@ fun ChartToolsPanel(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Sec ${sec.index + 1} · ${(sec.startMs / 1000.0).let { String.format("%.1fs", it) }}",
+                                text = "Sec ${sec.index + 1} · ${String.format(Locale.US, "%.1fs", sec.startMs / 1000.0)}",
                                 color = StudioColors.TextPrimary,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold

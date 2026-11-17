@@ -17,11 +17,16 @@ import {
   LruResourceCache,
   STREAM_RING_BYTES,
   advanceNoteSlidingWindow,
+  analyzeStageEventRamLifecycle,
   autoBindSparrowPrefixes,
+  buildFlashEffectEventParams,
+  buildStageSwapEventParams,
   clampEntityScale,
   compareNaturalFrameNames,
   computeBpmSyncedIdleCadence,
   computeCameraCaptureBox,
+  computeChartPlayheadFollowAction,
+  computeChartSustainGridCells,
   computeCountdownState,
   computeReceptorLayout,
   computeSmartTextureScale,
@@ -43,6 +48,7 @@ import {
   parseCameraConfigFromLua,
   parseChartJson,
   renderCameraLuaConfigBlock,
+  resolveChartPlayheadStep,
   resolveCompiledSpriteTarget,
   resolveMobileTouchLanes,
   serializeChartJson,
@@ -639,9 +645,9 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   const buf = new Uint8Array(totalBytes);
   const view = new DataView(buf.buffer);
 
-  // Header 140B
+  // Header 152B (BFGP v2 con flash + personajes activos)
   view.setUint32(0, BINARY_GAMEPLAY_MAGIC, true);
-  view.setUint32(4, 1 | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6), true); // active + downscroll + classicHitbox + hasHudStrings + hudVisible
+  view.setUint32(4, 1 | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7), true); // + flashOverHud
   view.setUint32(8, 7, true); // hudRevision
   view.setUint32(12, 0b0010_0000_0101 | (1 << 16) | (3 << 20), true); // player=5, opp=2, rating=1(Sick), splashLane=3
   view.setInt32(16, 3, true); // countdownStage
@@ -668,10 +674,14 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   view.setUint32(120, 11, true); // ratingEventId
   view.setUint32(124, 9, true); // splashEventId
   view.setFloat32(128, 0.25, true); // beatPhase
-  view.setUint16(132, 1, true); // entityCount
-  view.setUint16(134, 1, true); // noteCount
-  view.setUint16(136, 8, true); // strumCount
-  view.setUint16(138, 1, true); // dynCount
+  view.setUint32(132, 0xffef4444, true); // flashColorArgb
+  view.setFloat32(136, 0.65, true); // flashAlpha
+  view.setInt16(140, 2, true); // activePlayerIdx
+  view.setInt16(142, 1, true); // activeOpponentIdx
+  view.setUint16(144, 1, true); // entityCount
+  view.setUint16(146, 1, true); // noteCount
+  view.setUint16(148, 8, true); // strumCount
+  view.setUint16(150, 1, true); // dynCount
 
   // Entity 64B
   let off = BINARY_GAMEPLAY_HEADER_BYTES;
@@ -682,7 +692,7 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   view.setFloat32(off + 16, 2.25, true); // scale
   view.setFloat32(off + 20, 0.9, true); // opacity
   view.setFloat32(off + 24, 15.0, true); // rotationDeg
-  view.setUint32(off + 28, 1 | (1 << 2) | (2 << 4), true); // visible + hasFrame + player(2)
+  view.setUint32(off + 28, 1 | (1 << 2) | (2 << 4) | (1 << 6), true); // visible + hasFrame + player(2) + preloadRequested
   view.setUint32(off + 32, 10, true);
   view.setUint32(off + 36, 20, true);
   view.setUint32(off + 40, 120, true);
@@ -739,6 +749,11 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   assert.equal(decoded.active, true);
   assert.equal(decoded.downscroll, true);
   assert.equal(decoded.hudVisible, true);
+  assert.equal(decoded.flashOverHud, true);
+  assert.equal(decoded.flashColorArgb, 0xffef4444);
+  assert.ok(Math.abs(decoded.flashAlpha - 0.65) < 0.01);
+  assert.equal(decoded.activePlayerIdx, 2);
+  assert.equal(decoded.activeOpponentIdx, 1);
   assert.equal(decoded.controlMode, 'classic_hitbox');
   assert.equal(decoded.hasHudStrings, true);
   assert.equal(decoded.hudRevision, 7);
@@ -754,6 +769,8 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   assert.ok(Math.abs(decoded.entities[0].scale - 2.25) < 0.001);
   assert.ok(Math.abs(decoded.entities[0].rotationDeg - 15.0) < 0.001);
   assert.equal(decoded.entities[0].roleCode, 2);
+  assert.equal(decoded.entities[0].preloadRequested, true);
+  assert.equal(decoded.entities[0].retired, false);
   assert.equal(decoded.entities[0].hasFrame, true);
   assert.equal(decoded.entities[0].offX, -8);
   assert.equal(decoded.visibleNotes.length, 1);
@@ -770,8 +787,8 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
 
   // Sin bit 5 (hasHudStrings = false) no lee strings en frames estables
   view.setUint32(4, 1, true);
-  view.setUint16(136, 0, true);
-  view.setUint16(138, 0, true);
+  view.setUint16(148, 0, true);
+  view.setUint16(150, 0, true);
   const fastFrame = decodeBinaryGameplayFrame(
     buf.subarray(0, BINARY_GAMEPLAY_HEADER_BYTES + BINARY_GAMEPLAY_ENTITY_BYTES + BINARY_GAMEPLAY_NOTE_BYTES),
   );
@@ -1036,5 +1053,131 @@ test('evaluateWatchdogExecution enforces 250ms init / 25ms frame budgets and qua
   const skipped = evaluateWatchdogExecution({ phase: 'frame', elapsedMs: 1, previousTrips: 3 });
   assert.equal(skipped.skippedDueToQuarantine, true);
   assert.equal(skipped.quarantined, true);
+});
+
+test('computeChartSustainGridCells propagates continuous head->body->tail across section boundaries', () => {
+  // 120 BPM => 125ms/step, section 0 has 16 steps (0..2000ms), section 1 starts at 2000ms
+  const cells = computeChartSustainGridCells({
+    sections: [
+      { bpm: 120, lengthInSteps: 16, startMs: 0 },
+      { bpm: 120, lengthInSteps: 16, startMs: 2000 },
+    ],
+    notes: [
+      // Nota en paso 14 (1750ms) con sustain de 4 pasos (500ms -> termina en Sec 1 paso 2)
+      { timeMs: 1750, direction: 1, isPlayer: true, sustainMs: 500 },
+    ],
+  });
+
+  assert.equal(cells.length, 5);
+  assert.deepEqual(
+    cells.map((c) => [c.sectionIndex, c.stepInSection, c.col, c.kind]),
+    [
+      [0, 14, 5, 'head'],
+      [0, 15, 5, 'body'],
+      [1, 0, 5, 'body'],
+      [1, 1, 5, 'body'],
+      [1, 2, 5, 'tail'],
+    ],
+  );
+});
+
+test('analyzeStageEventRamLifecycle schedules 4s lookahead preloads, detects reused sprites and formats flash/swap cues', () => {
+  const swap1 = buildStageSwapEventParams({
+    showIds: ['stage_phase2', 'bf_dark'],
+    hideIds: ['stage_phase1', 'bf_main'],
+    playerId: 'bf_dark',
+    disposeOld: true,
+  });
+  const swapReturn = buildStageSwapEventParams({
+    showIds: ['stage_phase1'],
+    hideIds: ['stage_phase2'],
+    playerId: 'bf_main',
+    disposeOld: false,
+  });
+  const flash = buildFlashEffectEventParams({
+    colorHex: '#FF3355',
+    startMs: 10000,
+    endMs: 11000,
+    alpha: 0.9,
+    overHud: true,
+  });
+
+  const report = analyzeStageEventRamLifecycle([
+    { timeMs: 10000, name: 'Flash Effect', ...flash },
+    { timeMs: 10000, name: 'Stage Swap', ...swap1 },
+    { timeMs: 25000, name: 'Stage Swap', ...swapReturn },
+  ]);
+
+  assert.ok(report.preservedIds.includes('stage_phase2'));
+  assert.ok(report.preservedIds.includes('bf_dark'));
+  assert.ok(report.reusedLaterIds.includes('stage_phase1'));
+  assert.ok(report.reusedLaterIds.includes('bf_main'));
+  assert.equal(
+    report.preloadWindows.find((w) => w.entityId === 'stage_phase2')?.preloadAtMs,
+    6000,
+  );
+  assert.ok(flash.value2.includes('dur=1.000;endMs=11000.00;alpha=0.90;hud=1'));
+
+  // El optimizador de bucles conserva las nuevas APIs sin descartarlas
+  const loopRes = optimizeScriptLoops(
+    'lua',
+    'for i = 1, 5000 do\n  flashEffect("#FFFFFF", 0.5, 0.8, true)\n  swapEntity("a", "b", true)\nend',
+  );
+  assert.equal(loopRes.discardedLoops, 0);
+  assert.equal(loopRes.neutralizedLoops, 1);
+  assert.ok(loopRes.optimizedSource.includes('flashEffect'));
+});
+
+test('resolveChartPlayheadStep tracks sub-step position across BPM changes and follow action respects Seguir/Libre toggle', () => {
+  // Sec 0: 120 BPM (125ms/paso, 16 pasos -> 0..2000ms)
+  // Sec 1: 150 BPM (100ms/paso, 16 pasos -> 2000..3600ms)
+  const sections = [
+    { bpm: 120, lengthInSteps: 16, startMs: 0 },
+    { bpm: 150, lengthInSteps: 16, startMs: 2000 },
+  ];
+
+  // Mitad del paso #4 en Sec 0: 4 * 125 + 62.5 = 562.5 ms
+  const m0 = resolveChartPlayheadStep({ sections, songPosMs: 562.5 });
+  assert.ok(m0);
+  assert.equal(m0.sectionIndex, 0);
+  assert.equal(m0.stepInSection, 4);
+  assert.ok(Math.abs(m0.stepFraction - 0.5) < 0.001);
+
+  // Sec 1 paso #2 + 25% (2000 + 2 * 100 + 25 = 2225 ms)
+  const m1 = resolveChartPlayheadStep({ sections, songPosMs: 2225 });
+  assert.ok(m1);
+  assert.equal(m1.sectionIndex, 1);
+  assert.equal(m1.stepInSection, 2);
+  assert.equal(m1.globalStep, 18);
+  assert.ok(Math.abs(m1.stepFraction - 0.25) < 0.001);
+
+  // Auto-seguimiento activo vs pausado ("Libre")
+  const freeMode = computeChartPlayheadFollowAction({
+    followThread: false,
+    threadVisible: true,
+    threadY: 600,
+    viewportStart: 0,
+    viewportEnd: 500,
+  });
+  assert.equal(freeMode.action, 'none');
+
+  const scrollFollow = computeChartPlayheadFollowAction({
+    followThread: true,
+    threadVisible: true,
+    threadY: 260,
+    viewportStart: 0,
+    viewportEnd: 500,
+  });
+  assert.equal(scrollFollow.action, 'scroll_by');
+  assert.equal(scrollFollow.deltaY, 60); // anchorY = 500 * 0.40 = 200
+
+  const offscreenSnap = computeChartPlayheadFollowAction({
+    followThread: true,
+    threadVisible: false,
+    threadY: 0,
+    viewportStart: 0,
+    viewportEnd: 500,
+  });
+  assert.equal(offscreenSnap.action, 'snap_to_row');
 });
 

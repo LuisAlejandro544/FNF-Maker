@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -56,14 +57,19 @@ internal fun DrawScope.drawGameplaySceneLayer(
         val entCount = frameState.entityCount
         for (i in 0 until entCount) {
             val ent = frameState.entitiesPool[i]
-            if (!ent.visible || ent.opacity <= 0.01f) continue
+            if (ent.retired || !ent.visible || ent.opacity <= 0.01f) continue
             val cx = ent.x * sx
             val cy = ent.y * sy
             val w = ent.width * ent.scale * sx
             val h = ent.height * ent.scale * sy
             val left = cx - w / 2f
             val top = cy - h / 2f
-            val loaded = compiledBitmapsByIndex.getOrNull(i)
+            val rawLoaded = compiledBitmapsByIndex.getOrNull(i)
+            val loaded = if (rawLoaded != null && !rawLoaded.bitmap.asAndroidBitmap().isRecycled) {
+                rawLoaded
+            } else {
+                null
+            }
 
             withTransform({
                 if (ent.rotationDeg != 0f) {
@@ -198,6 +204,15 @@ internal fun DrawScope.drawGameplaySceneLayer(
                 }
             }
         }
+    }
+
+    // 1.8 Flash en capa de mundo/escenario (debajo de strums y HUD)
+    if (!frameState.flashOverHud && frameState.flashAlpha > 0.002f) {
+        drawRect(
+            color = Color(frameState.flashColorArgb).copy(alpha = frameState.flashAlpha.coerceIn(0f, 1f)),
+            topLeft = Offset.Zero,
+            size = size
+        )
     }
 }
 

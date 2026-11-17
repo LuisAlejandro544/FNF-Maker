@@ -17,6 +17,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.LoadedEntityBitmap
@@ -44,10 +46,14 @@ fun GameplayScreen(
     healthBarBitmap: ImageBitmap?,
     ratingBitmaps: Map<Int, ImageBitmap>,
     noteSplashBitmap: ImageBitmap?,
-    playerNormalIcon: ImageBitmap?,
-    playerLosingIcon: ImageBitmap?,
-    opponentNormalIcon: ImageBitmap?,
-    opponentLosingIcon: ImageBitmap?,
+    fallbackPlayerId: String?,
+    fallbackOpponentId: String?,
+    entityNormalIcons: Map<String, ImageBitmap>,
+    entityLosingIcons: Map<String, ImageBitmap>,
+    defaultPlayerNormalIcon: ImageBitmap?,
+    defaultPlayerLosingIcon: ImageBitmap?,
+    defaultOpponentNormalIcon: ImageBitmap?,
+    defaultOpponentLosingIcon: ImageBitmap?,
     compiledBitmapsByIndex: List<LoadedEntityBitmap?>,
     onStepFrame: suspend (dtSec: Float, pressedMask: Int, justPressedMask: Int) -> Unit,
     onChangeControlMode: (MobileControlMode) -> Unit,
@@ -104,14 +110,23 @@ fun GameplayScreen(
                     var plrY = 430f
                     var plrW = 240f
                     var plrH = 300f
-                    for (i in 0 until frameState.entityCount) {
-                        val ent = frameState.entitiesPool[i]
-                        if (ent.roleCode == 2) {
-                            plrX = ent.x
-                            plrY = ent.y
-                            plrW = ent.width * ent.scale
-                            plrH = ent.height * ent.scale
-                            break
+                    val activeIdx = frameState.activePlayerIdx
+                    if (activeIdx in 0 until frameState.entityCount) {
+                        val ent = frameState.entitiesPool[activeIdx]
+                        plrX = ent.x
+                        plrY = ent.y
+                        plrW = ent.width * ent.scale
+                        plrH = ent.height * ent.scale
+                    } else {
+                        for (i in 0 until frameState.entityCount) {
+                            val ent = frameState.entitiesPool[i]
+                            if (ent.roleCode == 2) {
+                                plrX = ent.x
+                                plrY = ent.y
+                                plrW = ent.width * ent.scale
+                                plrH = ent.height * ent.scale
+                                break
+                            }
                         }
                     }
                     ratingPopup.active = true
@@ -177,10 +192,14 @@ fun GameplayScreen(
             frameState = frameState,
             hud = hud,
             healthBarBitmap = healthBarBitmap,
-            playerNormalIcon = playerNormalIcon,
-            playerLosingIcon = playerLosingIcon,
-            opponentNormalIcon = opponentNormalIcon,
-            opponentLosingIcon = opponentLosingIcon
+            fallbackPlayerId = fallbackPlayerId,
+            fallbackOpponentId = fallbackOpponentId,
+            entityNormalIcons = entityNormalIcons,
+            entityLosingIcons = entityLosingIcons,
+            defaultPlayerNormalIcon = defaultPlayerNormalIcon,
+            defaultPlayerLosingIcon = defaultPlayerLosingIcon,
+            defaultOpponentNormalIcon = defaultOpponentNormalIcon,
+            defaultOpponentLosingIcon = defaultOpponentLosingIcon
         )
 
         GameplayPauseButton(onPause = { onSetPaused(true) })
@@ -188,6 +207,18 @@ fun GameplayScreen(
         GameplayScriptBanner(hud = hud)
 
         GameplayCountdownOverlay(hud = hud)
+
+        // Capa de flash sobre HUD (debajo de los diálogos de Pausa/Resultados)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            if (frameState.drawTick < 0L) return@Canvas
+            if (frameState.flashOverHud && frameState.flashAlpha > 0.002f) {
+                drawRect(
+                    color = Color(frameState.flashColorArgb).copy(alpha = frameState.flashAlpha.coerceIn(0f, 1f)),
+                    topLeft = Offset.Zero,
+                    size = size
+                )
+            }
+        }
 
         GameplayPauseDialog(
             hud = hud,

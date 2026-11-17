@@ -15,7 +15,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 private const val BINARY_FRAME_MAGIC = 0x42464750 // "BFGP"
-private const val BINARY_HEADER_SIZE = 140
+private const val BINARY_HEADER_SIZE = 152
 
 @Immutable
 data class GameplayHudState(
@@ -39,6 +39,8 @@ data class GameplayHudState(
     val hudVisible: Boolean = true,
     val hudOpacity: Float = 1f,
     val hudZoom: Float = 1f,
+    val activePlayerIdx: Int = -1,
+    val activeOpponentIdx: Int = -1,
     val scriptError: String = "",
     val scriptLog: String = ""
 )
@@ -53,6 +55,8 @@ class MutableGameplayEntity {
     var rotationDeg: Float = 0f
     var visible: Boolean = true
     var flipX: Boolean = false
+    var preloadRequested: Boolean = false
+    var retired: Boolean = false
     var roleCode: Int = 3 // 0=bg, 1=opponent, 2=player, 3=decoration
     var hasFrame: Boolean = false
     var frameRotated: Boolean = false
@@ -144,12 +148,18 @@ class GameplayFrameState {
     var hudVisible: Boolean = true
     var hudOpacity: Float = 1f
     var hudZoom: Float = 1f
+    var flashColorArgb: Int = -1
+    var flashAlpha: Float = 0f
+    var flashOverHud: Boolean = false
+    var activePlayerIdx: Int = -1
+    var activeOpponentIdx: Int = -1
     var lastRatingCode: Int = 0
     var ratingEventId: Int = 0
     var splashEventId: Int = 0
     var splashLane: Int = 0
 
     var entityCount: Int = 0
+    var entityIdsByIndex: List<String> = emptyList()
     val entitiesPool = ArrayList<MutableGameplayEntity>(16)
 
     var visibleNoteCount: Int = 0
@@ -174,6 +184,7 @@ class GameplayFrameState {
     fun reset() {
         active = false
         entityCount = 0
+        entityIdsByIndex = emptyList()
         visibleNoteCount = 0
         dynamicCount = 0
         holdingLanesMask = 0
@@ -183,6 +194,11 @@ class GameplayFrameState {
         hudVisible = true
         hudOpacity = 1f
         hudZoom = 1f
+        flashColorArgb = -1
+        flashAlpha = 0f
+        flashOverHud = false
+        activePlayerIdx = -1
+        activeOpponentIdx = -1
         lastRatingCode = 0
         ratingEventId = 0
         splashEventId = 0
@@ -219,12 +235,18 @@ class GameplayFrameState {
         hudVisible = step.hudVisible
         hudOpacity = step.hudOpacity
         hudZoom = step.hudZoom
+        flashColorArgb = step.flashColorArgb.toInt()
+        flashAlpha = step.flashAlpha
+        flashOverHud = step.flashOverHud
+        activePlayerIdx = step.activePlayerIdx
+        activeOpponentIdx = step.activeOpponentIdx
         lastRatingCode = step.ratingCode
         ratingEventId = step.ratingEventId
         splashEventId = step.splashEventId
         splashLane = step.splashLane
 
         entityCount = step.entities.size
+        entityIdsByIndex = step.entities.map { it.id }
         ensureEntityPool(entityCount)
         for (i in 0 until entityCount) {
             val src = step.entities[i]
@@ -238,6 +260,8 @@ class GameplayFrameState {
             dst.rotationDeg = src.rotationDeg
             dst.visible = src.visible
             dst.flipX = src.flipX
+            dst.preloadRequested = src.preloadRequested
+            dst.retired = src.retired
             dst.roleCode = when (src.role) {
                 "background" -> 0
                 "opponent" -> 1
@@ -332,6 +356,8 @@ class GameplayFrameState {
             hudVisible = step.hudVisible,
             hudOpacity = step.hudOpacity,
             hudZoom = step.hudZoom,
+            activePlayerIdx = step.activePlayerIdx,
+            activeOpponentIdx = step.activeOpponentIdx,
             scriptError = cachedScriptError,
             scriptLog = cachedScriptLog
         )
@@ -378,6 +404,10 @@ class GameplayFrameState {
         ratingEventId = buf.int
         splashEventId = buf.int
         beatPhase = buf.float
+        flashColorArgb = buf.int
+        flashAlpha = buf.float
+        activePlayerIdx = buf.short.toInt()
+        activeOpponentIdx = buf.short.toInt()
         val entCount = buf.short.toInt() and 0xFFFF
         val noteCount = buf.short.toInt() and 0xFFFF
         val strumCount = buf.short.toInt() and 0xFFFF
@@ -390,6 +420,7 @@ class GameplayFrameState {
         val classicMode = (flags and (1 shl 4)) != 0
         val hasHudStrings = (flags and (1 shl 5)) != 0
         hudVisible = (flags and (1 shl 6)) != 0
+        flashOverHud = (flags and (1 shl 7)) != 0
         hudOpacity = hudOpVal
         hudZoom = hudZoomVal
         health = healthVal
@@ -422,6 +453,8 @@ class GameplayFrameState {
             dst.hasFrame = (ef and (1 shl 2)) != 0
             dst.frameRotated = (ef and (1 shl 3)) != 0
             dst.roleCode = (ef ushr 4) and 0x3
+            dst.preloadRequested = (ef and (1 shl 6)) != 0
+            dst.retired = (ef and (1 shl 7)) != 0
             dst.atlasX = buf.int
             dst.atlasY = buf.int
             dst.atlasW = buf.int
@@ -510,6 +543,8 @@ class GameplayFrameState {
             prev.misses != missesVal ||
             prev.hits != hitsVal ||
             prev.hudVisible != hudVisible ||
+            prev.activePlayerIdx != activePlayerIdx ||
+            prev.activeOpponentIdx != activeOpponentIdx ||
             prevHealth != quantizedHealth ||
             prevAcc != quantizedAcc ||
             prevHudOp != quantizedHudOp ||
@@ -538,6 +573,8 @@ class GameplayFrameState {
                 hudVisible = hudVisible,
                 hudOpacity = hudOpVal,
                 hudZoom = hudZoomVal,
+                activePlayerIdx = activePlayerIdx,
+                activeOpponentIdx = activeOpponentIdx,
                 scriptError = cachedScriptError,
                 scriptLog = cachedScriptLog
             )

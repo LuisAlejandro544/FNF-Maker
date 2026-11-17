@@ -264,6 +264,24 @@ pub enum ScriptCommand {
         slot: usize,
         muted: bool,
     },
+    FlashEffect {
+        color_argb: u32,
+        duration_sec: f32,
+        start_alpha: f32,
+        over_hud: bool,
+    },
+    PreloadEntity(String),
+    RetireEntity(String),
+    SwapEntity {
+        old_id: String,
+        new_id: String,
+        dispose_old: bool,
+    },
+    SetActiveCharacter {
+        role: String,
+        entity_id: String,
+        dispose_old: bool,
+    },
 }
 
 /// Estado compartido accesible por todas las funciones nativas registradas en Lua y JS.

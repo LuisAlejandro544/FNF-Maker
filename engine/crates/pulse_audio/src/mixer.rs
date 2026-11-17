@@ -142,6 +142,19 @@ impl AudioMixerState {
         }
     }
 
+    /// Devuelve la duración máxima (en ms) de las pistas cargadas en modo estudio.
+    pub fn max_track_duration_ms(&self) -> f64 {
+        let sr = self.sample_rate.load(Ordering::Relaxed).max(1) as f64;
+        let guard = self.tracks.read();
+        let max_frames = guard
+            .iter()
+            .flatten()
+            .map(|track| track.frame_count())
+            .max()
+            .unwrap_or(0);
+        (max_frames as f64 / sr) * 1000.0
+    }
+
     /// Devuelve el tiempo actual en milisegundos (negativo durante la cuenta regresiva 3-2-1-¡YA!).
     pub fn position_ms(&self) -> f64 {
         let sr = self.sample_rate.load(Ordering::Relaxed).max(1) as f64;
@@ -340,5 +353,32 @@ mod tests {
         let mut buf2 = vec![0.0_f32; (48_000 + 240) * 2];
         mixer.render_audio_frames(&mut buf2);
         assert!((mixer.position_ms() - 5.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn preview_pause_preserves_cursor_for_resume_and_reports_track_duration() {
+        let mixer = AudioMixerState::new(48_000);
+        let track = Arc::new(DecodedTrack {
+            sample_rate: 48_000,
+            stereo_samples: vec![1000_i16; 96_000 * 2], // 2000 ms
+        });
+        mixer.set_track(0, Some(track));
+        assert!((mixer.max_track_duration_ms() - 2000.0).abs() < 0.1);
+
+        mixer.seek_ms(500.0);
+        mixer.play();
+        let mut buf = vec![0.0_f32; 24_000 * 2]; // +500 ms
+        mixer.render_audio_frames(&mut buf);
+        assert!((mixer.position_ms() - 1000.0).abs() < 0.1);
+
+        // Pausar no debe perder la posición ni avanzar mientras está en pausa
+        mixer.pause();
+        mixer.render_audio_frames(&mut buf);
+        assert!((mixer.position_ms() - 1000.0).abs() < 0.1);
+
+        // Reanudar continúa exactamente desde 1000 ms
+        mixer.play();
+        mixer.render_audio_frames(&mut buf);
+        assert!((mixer.position_ms() - 1500.0).abs() < 0.1);
     }
 }

@@ -169,15 +169,28 @@ pub(super) fn dir_to_miss_anim(dir: NoteDirection) -> CharacterAnimKind {
     }
 }
 
-pub(super) fn trigger_role_anim(
+pub(super) fn trigger_character_anim(
     entities: &mut [StageEntity],
     role: EntityRole,
+    active_id: &str,
     anim: CharacterAnimKind,
 ) {
-    for ent in entities.iter_mut() {
-        if ent.role == role {
-            ent.active_anim = anim;
-            ent.anim_timer_sec = 0.0;
+    let mut matched_active = false;
+    if !active_id.is_empty() {
+        for ent in entities.iter_mut() {
+            if ent.id == active_id {
+                ent.active_anim = anim;
+                ent.anim_timer_sec = 0.0;
+                matched_active = true;
+            }
+        }
+    }
+    if !matched_active {
+        for ent in entities.iter_mut() {
+            if ent.role == role && ent.visible {
+                ent.active_anim = anim;
+                ent.anim_timer_sec = 0.0;
+            }
         }
     }
 }

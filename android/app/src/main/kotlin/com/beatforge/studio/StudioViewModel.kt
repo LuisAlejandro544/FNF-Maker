@@ -206,6 +206,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleAudioPreview(startMs: Double = 0.0) = editorDelegate.toggleAudioPreview(startMs)
 
+    fun setAudioPreviewTransport(play: Boolean, seekMs: Double = -1.0) =
+        editorDelegate.setAudioPreviewTransport(play, seekMs)
+
+    suspend fun readAudioPreviewState(): AudioPreviewTransportState =
+        editorDelegate.readAudioPreviewState()
+
     fun setSparrowBinding(entityId: String, animKind: String, prefix: String) =
         editorDelegate.setSparrowBinding(entityId, animKind, prefix)
 
@@ -261,6 +267,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 selectedScriptId = camScriptId,
+                currentScreen = StudioScreen.ScriptStudio,
+                scriptValidationMsg = null,
+                statusBanner = null
+            )
+        }
+    }
+
+    fun openStageEventsScriptInStudio() {
+        val snap = _uiState.value.snapshot
+        val eventsScriptId = snap.scripts.firstOrNull {
+            it.id == "script_stage_events" || it.name == "stage_events.lua"
+        }?.id ?: snap.scripts.firstOrNull()?.id ?: ""
+        editorDelegate.flushSaveAsync()
+        _uiState.update {
+            it.copy(
+                selectedScriptId = eventsScriptId,
                 currentScreen = StudioScreen.ScriptStudio,
                 scriptValidationMsg = null,
                 statusBanner = null

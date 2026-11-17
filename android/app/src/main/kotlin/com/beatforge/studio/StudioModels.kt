@@ -255,6 +255,8 @@ data class GameplayEntityFrame(
     val rotationDeg: Float = 0f,
     val flipX: Boolean,
     val visible: Boolean,
+    val preloadRequested: Boolean = false,
+    val retired: Boolean = false,
     val texturePath: String?,
     val frame: SparrowFrameInfo?
 )
@@ -326,6 +328,11 @@ data class GameplayStep(
     val hudVisible: Boolean = true,
     val hudOpacity: Float = 1f,
     val hudZoom: Float = 1f,
+    val flashColorArgb: Long = 0xFFFFFFFFL,
+    val flashAlpha: Float = 0f,
+    val flashOverHud: Boolean = false,
+    val activePlayerIdx: Int = -1,
+    val activeOpponentIdx: Int = -1,
     val paused: Boolean = false,
     val finished: Boolean = false,
     val scriptErrors: List<String> = emptyList(),
@@ -658,6 +665,8 @@ object StudioJsonParser {
                             rotationDeg = e.optDouble("rotationDeg", 0.0).toFloat(),
                             flipX = e.optBoolean("flipX", false),
                             visible = e.optBoolean("visible", true),
+                            preloadRequested = e.optBoolean("preloadRequested", false),
+                            retired = e.optBoolean("retired", false),
                             texturePath = optNullableString(e, "texturePath"),
                             frame = frameObj?.let { parseSparrowFrameObject(it) }
                         )
@@ -756,6 +765,11 @@ object StudioJsonParser {
                 hudVisible = obj.optBoolean("hudVisible", true),
                 hudOpacity = obj.optDouble("hudOpacity", 1.0).toFloat(),
                 hudZoom = obj.optDouble("hudZoom", 1.0).toFloat(),
+                flashColorArgb = obj.optLong("flashColorArgb", 0xFFFFFFFFL),
+                flashAlpha = obj.optDouble("flashAlpha", 0.0).toFloat(),
+                flashOverHud = obj.optBoolean("flashOverHud", false),
+                activePlayerIdx = obj.optInt("activePlayerIdx", -1),
+                activeOpponentIdx = obj.optInt("activeOpponentIdx", -1),
                 paused = obj.optBoolean("paused", false),
                 finished = obj.optBoolean("finished", false),
                 scriptErrors = stringList(obj.optJSONArray("scriptErrors")),

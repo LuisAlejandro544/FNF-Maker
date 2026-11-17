@@ -303,7 +303,7 @@ fun ScriptStudioScreen(
 
                     Text(
                         text = "Callbacks: onCreate() · onUpdate(dt) · onBeatHit(b) · onStepHit(s) · onCountdownTick(t) · onEvent(name,v1,v2) · onTweenCompleted(tag) · onTimerCompleted(tag)\n" +
-                            "APIs: setStrumProp/getStrumProp · tweenStrumProp · setEntityProp/getEntityProp · tweenEntityProp · tweenCameraPos/Zoom · makeGraphic/makeHudGraphic/makeText/setTextString · setHealth/addHealth · setHudVisible/Opacity/Zoom · setTrackVolume/Mute · runTimer",
+                            "APIs: setStrumProp/getStrumProp · tweenStrumProp · setEntityProp/getEntityProp · tweenEntityProp · tweenCameraPos/Zoom · flashCamera/flashHud/flashEffect · preloadEntity/retireEntity/swapEntity/setActiveCharacter · makeGraphic/makeHudGraphic/makeText/setTextString · setHealth/addHealth · setHudVisible/Opacity/Zoom · setTrackVolume/Mute · runTimer",
                         color = StudioColors.TextMuted,
                         fontSize = 10.sp,
                         lineHeight = 13.sp

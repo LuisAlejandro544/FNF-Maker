@@ -253,11 +253,15 @@ internal class StudioBitmapLoader {
     fun loadCompiledEntityBitmaps(
         compiledPaths: Map<String, String>,
         entities: List<StageEntitySnapshot>,
-        tier: DeviceTier
+        tier: DeviceTier,
+        onlyInitiallyVisible: Boolean = true
     ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
         val origPaths = entities.associate { it.id to it.imagePath }
         for (ent in entities) {
+            if (onlyInitiallyVisible && (!ent.visible || ent.opacity <= 0.005f)) {
+                continue
+            }
             val cPath = compiledPaths[ent.id] ?: origPaths[ent.id] ?: continue
             val oPath = origPaths[ent.id] ?: cPath
             val cap = compiledGameplayMaxSide(tier, ent)
@@ -266,6 +270,20 @@ internal class StudioBitmapLoader {
             }
         }
         return out
+    }
+
+    fun decodeSingleCompiledEntityBitmap(
+        entityId: String,
+        compiledPaths: Map<String, String>,
+        entities: List<StageEntitySnapshot>,
+        tier: DeviceTier
+    ): LoadedEntityBitmap? {
+        val ent = entities.firstOrNull { it.id == entityId } ?: return null
+        val origPath = ent.imagePath
+        val cPath = compiledPaths[entityId] ?: origPath ?: return null
+        val oPath = origPath ?: cPath
+        val cap = compiledGameplayMaxSide(tier, ent)
+        return decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = cap)
     }
 
     private fun decodePngBytes(bytes: ByteArray): ImageBitmap? {

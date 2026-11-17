@@ -10,12 +10,12 @@ Cuando pidas cambios o mejoras a una IA sobre este proyecto, indica siempre qué
 
 | Capa | Ruta | Lenguaje | Qué cubre |
 | :--- | :--- | :--- | :--- |
-| Núcleo del motor | `engine/crates/pulse_core` | Rust | `chart.json` completo/export (`mustHitSection`, `changeBPM`), Sparrow `.xml` (incluyendo `Miss`), `.astc` y codificador WebP lossless VP8L, `.json` Animate/TexturePacker, escenario Z-order, cámara bidireccional, `svg_skin.rs` (`resvg`), optimizador seguro y `hot_compile` incremental (`manifest.json` por huella FNV-1a/tamaño/`mtime` + tier + geometría + audio) a `.webp` lossless |
+| Núcleo del motor | `engine/crates/pulse_core` | Rust | `chart.json` completo/export (`mustHitSection`, `changeBPM`), Sparrow `.xml` (incluyendo `Miss`), `.astc` y codificador WebP lossless VP8L, `.json` Animate/TexturePacker, escenario Z-order, `camera_system.lua`, `stage_events.lua`, `svg_skin.rs` (`resvg`), optimizador seguro y `hot_compile` incremental (`manifest.json`, preservación de eventos, análisis de reuso) a `.webp` lossless |
 | Audio baja latencia | `engine/crates/pulse_audio` | Rust puro (`dlopen` AAudio) | Decodificación OGG/WAV/MP3 a `i16` compacto, fusión en caliente a WAV único (`compiled_mix.wav`), streaming SPSC lock-free de 512 KB (`streaming.rs`) y cuenta regresiva BPM (`3, 2, 1, ¡YA!`) |
-| Scripting Mods | `engine/crates/pulse_scripting` | Rust + Lua + TS + JS | `mlua` (Lua 5.4), `oxc` (TypeScript + `validate_js_syntax`), `rquickjs` (QuickJS-NG) con pre-compilación (`.luac`/`.js`), watchdog real (`HookTriggers::every_nth_instruction(4096)` / `set_interrupt_handler` 250ms/25ms + cuarentena 3-trips), modcharts, tweens/timers y `makeGraphic`/`makeText` |
-| Puente JNI & Sesión | `engine/crates/pulse_android` | Rust (`jni` 0.21) | `EngineSession` modular (`editor_ops`, `sprite_ops` WebP lossless, `persistence_ops`, `gameplay_ops` con caché incremental), `HOT_COMPILE_PROGRESS` (`nativeGetHotCompileProgress`), Idle al BPM, poses `Miss`, ratings SVG, Note Splash, paquete `BFGP` v2 y liberación de PCM |
-| Interfaz Android | `android/app/src/main/kotlin/com/beatforge/studio/` | Kotlin (Jetpack Compose) | `MainActivity`, `StudioViewModel` (`Dispatchers.IO`, polling progreso real `hotCompileProgress`, `LruCache` 1:1 Sparrow, splitter 2-frame), `HotCompileScreen` determinado `0%–100%`, `StageLiveTransformState` 60 FPS y `GameplayScreen` FNF SVG HUD + Note Splash |
-| SDK y Pruebas | `sdk/` | TypeScript / SVG / Lua / JS | Contratos `.d.ts` completos, utilidades testeadas con `node:test` (**29 casos**: `chart.json`, countdown, `.astc`, `.json`, `Miss`, `low_32bit`, `BFGP` v2, FNF HUD/splash, streaming audio, cámara Lua, Idle BPM, **caché incremental**, **WebP lossless** y **watchdog**), flechas originales |
+| Scripting Mods | `engine/crates/pulse_scripting` | Rust + Lua + TS + JS | `mlua` (Lua 5.4), `oxc` (TypeScript + `validate_js_syntax`), `rquickjs` (QuickJS-NG) con pre-compilación (`.luac`/`.js`), watchdog real (`HookTriggers::every_nth_instruction(4096)` / `set_interrupt_handler` 250ms/25ms + cuarentena), flashes, swaps/RAM, cambio de personaje y modcharts |
+| Puente JNI & Sesión | `engine/crates/pulse_android` | Rust (`jni` 0.21) | `EngineSession` modular (`editor_ops` sync `stage_events.lua`, `sprite_ops` WebP lossless, `persistence_ops`, `gameplay_ops` con lookahead 4s, flashes y personaje activo), `HOT_COMPILE_PROGRESS`, `BFGP` v2 (`152B`) y liberación de PCM |
+| Interfaz Android | `android/app/src/main/kotlin/com/beatforge/studio/` | Kotlin (Jetpack Compose) | `MainActivity`, `StudioViewModel` (`Dispatchers.IO`, carga perezosa + precarga 4s + reciclaje diferido 3 frames, `LruCache` 1:1 Sparrow), `ChartTimelineGrid` (`ChartPlayheadState` 60Hz + `Seguir/Libre` + sustain continuos + `#` `ChartStepCueDialog`), `StageLiveTransformState` 60 FPS y `GameplayScreen` (flashes Mundo/HUD + íconos dinámicos) |
+| SDK y Pruebas | `sdk/` | TypeScript / SVG / Lua / JS | Contratos `.d.ts` completos, utilidades testeadas con `node:test` (**32 casos**: `chart.json`, countdown, `.astc`, `.json`, `Miss`, `low_32bit`, `BFGP` v2 `152B`, FNF HUD/splash, streaming audio, cámara Lua, Idle BPM, caché incremental, WebP lossless, watchdog, **sustain continuo multi-sección**, **hilo reproductor + seguimiento** y **ciclo RAM / precarga 4s / flash-swap**), flechas originales |
 | Compilación APK | `.github/workflows/build-apk.yml` | YAML | Workflow manual `workflow_dispatch` con caché y 2 artefactos Debug |
 
 ---
@@ -62,7 +62,8 @@ npm run lint
 - [ ] No hay nombres comerciales o assets protegidos por copyright.
 - [ ] Todas las dependencias nuevas son MIT / Apache-2.0 (nunca GPL/LGPL/MPL).
 - [ ] Kotlin Compose no implementa fallbacks de motor; todo se resuelve vía JNI en Rust.
-- [ ] `entityBitmaps` (editor) y `compiledBitmaps` (gameplay) nunca coexisten en RAM al mismo tiempo.
+- [ ] `entityBitmaps` (editor) y `compiledBitmaps` (gameplay) nunca coexisten en RAM al mismo tiempo, y todo `.recycle()` de sprites retirados en gameplay usa la cola diferida de 3 frames.
+- [ ] `StageLiveTransformState` mantiene el editor de escenario sin commits JNI por píxel y `BFGP` v2 mantiene sincronizado el formato `152B` entre Rust, Kotlin y `sdk/ts`.
 - [ ] Se mantienen activas ambas arquitecturas: `arm64-v8a` (64 bits) y `armeabi-v7a` (32 bits).
 - [ ] `.github/workflows/build-apk.yml` permanece exclusivamente en `workflow_dispatch`.
-- [ ] Los tests de `sdk/ts/src/engine-tools.test.ts` y `npm run build` / `lint` pasan después del último cambio.
+- [ ] Los tests de `sdk/ts/src/engine-tools.test.ts` (32 casos) y `npm run build` / `lint` pasan después del último cambio.

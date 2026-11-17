@@ -58,6 +58,13 @@ const NECESSARY_ENGINE_APIS: &[&str] = &[
     "runTimer",
     "setTrackVolume",
     "setTrackMute",
+    "flashCamera",
+    "flashHud",
+    "flashEffect",
+    "preloadEntity",
+    "retireEntity",
+    "swapEntity",
+    "setActiveCharacter",
 ];
 
 fn strip_comments_for_api_scan(body: &str) -> String {

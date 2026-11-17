@@ -95,6 +95,11 @@ impl<'a> BinWriter<'a> {
     }
 
     #[inline]
+    fn write_i16(&mut self, v: i16) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
     fn write_u32(&mut self, v: u32) {
         self.write_bytes(&v.to_le_bytes());
     }
@@ -178,6 +183,11 @@ impl EngineSession {
                 hud_visible: true,
                 hud_opacity: 1.0,
                 hud_zoom: 1.0,
+                flash_color_argb: 0xFFFFFFFF,
+                flash_alpha: 0.0,
+                flash_over_hud: false,
+                active_player_idx: -1,
+                active_opponent_idx: -1,
                 paused: false,
                 finished: false,
                 script_errors: Vec::new(),
@@ -192,6 +202,35 @@ impl EngineSession {
 
         let session = self.gameplay.as_mut().expect("gameplay active");
         let beat_pulse = (1.0 - sim.beat_phase).clamp(0.0, 1.0).powi(2);
+
+        let active_player_idx = session
+            .bundle
+            .active_entities
+            .iter()
+            .position(|e| e.id == session.active_player_id)
+            .or_else(|| {
+                session
+                    .bundle
+                    .active_entities
+                    .iter()
+                    .position(|e| e.role == EntityRole::Player && e.visible)
+            })
+            .map(|i| i as i32)
+            .unwrap_or(-1);
+        let active_opponent_idx = session
+            .bundle
+            .active_entities
+            .iter()
+            .position(|e| e.id == session.active_opponent_id)
+            .or_else(|| {
+                session
+                    .bundle
+                    .active_entities
+                    .iter()
+                    .position(|e| e.role == EntityRole::Opponent && e.visible)
+            })
+            .map(|i| i as i32)
+            .unwrap_or(-1);
 
         let mut entities = std::mem::take(&mut session.step_entities_scratch);
         entities.clear();
@@ -229,6 +268,8 @@ impl EngineSession {
                 rotation_deg: ent.rotation_deg,
                 flip_x: ent.flip_x,
                 visible: ent.visible,
+                preload_requested: session.preload_requested_entities.contains(&ent.id),
+                retired: session.retired_entities.contains(&ent.id),
                 texture_path: tex_path,
                 frame,
             });
@@ -313,6 +354,11 @@ impl EngineSession {
             hud_visible: session.hud_visible,
             hud_opacity: session.hud_opacity,
             hud_zoom: session.hud_zoom,
+            flash_color_argb: session.flash_color_argb,
+            flash_alpha: session.flash_alpha,
+            flash_over_hud: session.flash_over_hud,
+            active_player_idx,
+            active_opponent_idx,
             paused: session.paused,
             finished: session.finished,
             script_errors: session.script_errors.clone(),
@@ -375,6 +421,10 @@ impl EngineSession {
             w.write_u32(0); // rating_event_id
             w.write_u32(0); // splash_event_id
             w.write_f32(0.0); // beat_phase
+            w.write_u32(0xFFFFFFFF); // flash_color_argb
+            w.write_f32(0.0); // flash_alpha
+            w.write_i16(-1); // active_player_idx
+            w.write_i16(-1); // active_opponent_idx
             w.write_u16(0); // entity_count
             w.write_u16(0); // note_count
             w.write_u16(0); // strum_count
@@ -386,6 +436,38 @@ impl EngineSession {
         let session = self.gameplay.as_mut().expect("gameplay active");
         let beat_pulse = (1.0 - sim.beat_phase).clamp(0.0, 1.0).powi(2);
         let entity_count = session.bundle.active_entities.len().min(u16::MAX as usize);
+        let active_player_idx = session
+            .bundle
+            .active_entities
+            .iter()
+            .take(entity_count)
+            .position(|e| e.id == session.active_player_id)
+            .or_else(|| {
+                session
+                    .bundle
+                    .active_entities
+                    .iter()
+                    .take(entity_count)
+                    .position(|e| e.role == EntityRole::Player && e.visible)
+            })
+            .map(|i| i as i16)
+            .unwrap_or(-1);
+        let active_opponent_idx = session
+            .bundle
+            .active_entities
+            .iter()
+            .take(entity_count)
+            .position(|e| e.id == session.active_opponent_id)
+            .or_else(|| {
+                session
+                    .bundle
+                    .active_entities
+                    .iter()
+                    .take(entity_count)
+                    .position(|e| e.role == EntityRole::Opponent && e.visible)
+            })
+            .map(|i| i as i16)
+            .unwrap_or(-1);
         let visible_notes = session.frame_arena.get_slice(sim.visible_span);
         let note_count = visible_notes.len().min(u16::MAX as usize);
         let strum_count: usize = 8;
@@ -464,6 +546,9 @@ impl EngineSession {
         if session.hud_visible {
             flags |= 1 << 6;
         }
+        if session.flash_over_hud {
+            flags |= 1 << 7;
+        }
 
         let masks = (sim.player_holding_mask as u32)
             | ((sim.opp_holding_mask as u32) << 8)
@@ -499,6 +584,10 @@ impl EngineSession {
         w.write_u32(session.rating_event_id);
         w.write_u32(session.splash_event_id);
         w.write_f32(sim.beat_phase);
+        w.write_u32(session.flash_color_argb);
+        w.write_f32(session.flash_alpha);
+        w.write_i16(active_player_idx);
+        w.write_i16(active_opponent_idx);
         w.write_u16(entity_count as u16);
         w.write_u16(note_count as u16);
         w.write_u16(strum_count as u16);
@@ -519,6 +608,12 @@ impl EngineSession {
                 if f.rotated {
                     e_flags |= 1 << 3;
                 }
+            }
+            if session.preload_requested_entities.contains(&ent.id) {
+                e_flags |= 1 << 6;
+            }
+            if session.retired_entities.contains(&ent.id) {
+                e_flags |= 1 << 7;
             }
 
             w.write_f32(ent.x);
