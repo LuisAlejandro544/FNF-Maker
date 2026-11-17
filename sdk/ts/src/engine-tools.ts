@@ -1188,6 +1188,54 @@ export function computeSustainTailSpan(params: {
   };
 }
 
+export interface ReceptorLayoutSpec {
+  downscrollWideTactile: boolean;
+  playerXs: [number, number, number, number];
+  playerY: number;
+  opponentXs: [number, number, number, number];
+  opponentY: number;
+}
+
+export function computeReceptorLayout(params: {
+  controlMode: MobileControlMode;
+  downscroll: boolean;
+  screenWidth: number;
+  screenHeight: number;
+  virtualWidth?: number;
+  virtualHeight?: number;
+}): ReceptorLayoutSpec {
+  const {
+    controlMode,
+    downscroll,
+    screenWidth,
+    screenHeight,
+    virtualWidth = 1280,
+    virtualHeight = 720,
+  } = params;
+  const sx = Math.max(1, screenWidth) / Math.max(1, virtualWidth);
+  const sy = Math.max(1, screenHeight) / Math.max(1, virtualHeight);
+  const downscrollWideTactile = downscroll && controlMode === 'tap_arrows';
+
+  if (downscrollWideTactile) {
+    return {
+      downscrollWideTactile: true,
+      playerXs: [340 * sx, 495 * sx, 785 * sx, 940 * sx],
+      playerY: 595 * sy,
+      opponentXs: [72 * sx, 140 * sx, 208 * sx, 276 * sx],
+      opponentY: 100 * sy,
+    };
+  }
+
+  const y = (downscroll ? 575 : 118) * sy;
+  return {
+    downscrollWideTactile: false,
+    playerXs: [765 * sx, 870 * sx, 975 * sx, 1080 * sx],
+    playerY: y,
+    opponentXs: [105 * sx, 210 * sx, 315 * sx, 420 * sx],
+    opponentY: y,
+  };
+}
+
 export function resolveMobileTouchLanes(params: {
   controlMode: MobileControlMode;
   touches: Array<{ x: number; y: number }>;
@@ -1220,19 +1268,24 @@ export function resolveMobileTouchLanes(params: {
 
   const sx = w / Math.max(1, virtualWidth);
   const sy = h / Math.max(1, virtualHeight);
-  const receptorY = (downscroll ? 575 : 118) * sy;
-  const notePxSize = 84 * Math.min(sx, sy);
-  const plrStartX = 765 * sx;
-  const laneStep = 105 * sx;
-  const maxHitX = Math.max(laneStep * 0.54, notePxSize * 0.8);
-  const maxHitY = Math.max(notePxSize * 1.25, 92);
+  const layout = computeReceptorLayout({
+    controlMode,
+    downscroll,
+    screenWidth: w,
+    screenHeight: h,
+    virtualWidth,
+    virtualHeight,
+  });
+  const notePxSize = (layout.downscrollWideTactile ? 98 : 84) * Math.min(sx, sy);
+  const maxHitX = layout.downscrollWideTactile ? 82 * sx : Math.max(105 * sx * 0.54, notePxSize * 0.8);
+  const maxHitY = Math.max(notePxSize * 1.3, 96);
 
   for (const t of touches) {
-    if (Math.abs(t.y - receptorY) > maxHitY) continue;
+    if (Math.abs(t.y - layout.playerY) > maxHitY) continue;
     let bestLane = -1;
     let bestDist = Infinity;
     for (let dir = 0; dir < 4; dir++) {
-      const cx = plrStartX + dir * laneStep;
+      const cx = layout.playerXs[dir];
       const dx = Math.abs(t.x - cx);
       if (dx <= maxHitX && dx < bestDist) {
         bestDist = dx;
@@ -1245,4 +1298,272 @@ export function resolveMobileTouchLanes(params: {
   }
   return mask;
 }
+
+export const BINARY_GAMEPLAY_MAGIC = 0x42464750; // "BFGP"
+export const BINARY_GAMEPLAY_HEADER_BYTES = 112;
+export const BINARY_GAMEPLAY_ENTITY_BYTES = 60;
+export const BINARY_GAMEPLAY_NOTE_BYTES = 28;
+
+export interface DecodedBinaryEntity {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  opacity: number;
+  visible: boolean;
+  flipX: boolean;
+  hasFrame: boolean;
+  frameRotated: boolean;
+  roleCode: number;
+  atlasX: number;
+  atlasY: number;
+  atlasW: number;
+  atlasH: number;
+  offX: number;
+  offY: number;
+  logicalW: number;
+  logicalH: number;
+}
+
+export interface DecodedBinaryNote {
+  id: bigint;
+  timeMs: number;
+  sustainMs: number;
+  direction: number;
+  isPlayer: boolean;
+  headHit: boolean;
+}
+
+export interface DecodedBinaryGameplayFrame {
+  active: boolean;
+  downscroll: boolean;
+  paused: boolean;
+  finished: boolean;
+  controlMode: MobileControlMode;
+  hasHudStrings: boolean;
+  hudRevision: number;
+  holdingLanesMask: number;
+  opponentHoldingLanesMask: number;
+  countdownStage: number;
+  countdownProgress: number;
+  songPosMs: number;
+  durationMs: number;
+  scrollSpeed: number;
+  activeBpm: number;
+  cameraZoom: number;
+  cameraShake: number;
+  cameraX: number;
+  cameraY: number;
+  virtualWidth: number;
+  virtualHeight: number;
+  health: number;
+  hits: number;
+  score: bigint;
+  combo: number;
+  maxCombo: number;
+  misses: number;
+  entities: DecodedBinaryEntity[];
+  visibleNotes: DecodedBinaryNote[];
+  lastJudgement?: string;
+  countdownLabel?: string;
+  scriptError?: string;
+  scriptLog?: string;
+}
+
+export function decodeBinaryGameplayFrame(
+  input: ArrayBuffer | Uint8Array,
+): DecodedBinaryGameplayFrame {
+  const bytes =
+    input instanceof Uint8Array
+      ? input
+      : new Uint8Array(input);
+  if (bytes.byteLength < BINARY_GAMEPLAY_HEADER_BYTES) {
+    throw new Error(`Paquete binario truncado (${bytes.byteLength} bytes)`);
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = view.getUint32(0, true);
+  if (magic !== BINARY_GAMEPLAY_MAGIC) {
+    throw new Error(`Cabecera mágica BFGP inválida: 0x${magic.toString(16)}`);
+  }
+
+  const flags = view.getUint32(4, true);
+  const hudRevision = view.getUint32(8, true);
+  const masks = view.getUint32(12, true);
+  const countdownStage = view.getInt32(16, true);
+  const countdownProgress = view.getFloat32(20, true);
+  const songPosMs = view.getFloat64(24, true);
+  const durationMs = view.getFloat64(32, true);
+  const scrollSpeed = view.getFloat64(40, true);
+  const activeBpm = view.getFloat64(48, true);
+  const cameraZoom = view.getFloat32(56, true);
+  const cameraShake = view.getFloat32(60, true);
+  const cameraX = view.getFloat32(64, true);
+  const cameraY = view.getFloat32(68, true);
+  const virtualWidth = view.getFloat32(72, true);
+  const virtualHeight = view.getFloat32(76, true);
+  const health = view.getFloat32(80, true);
+  const hits = view.getUint32(84, true);
+  const score = view.getBigInt64(88, true);
+  const combo = view.getUint32(96, true);
+  const maxCombo = view.getUint32(100, true);
+  const misses = view.getUint32(104, true);
+  const entityCount = view.getUint16(108, true);
+  const noteCount = view.getUint16(110, true);
+
+  let cursor = BINARY_GAMEPLAY_HEADER_BYTES;
+  const requiredMin =
+    cursor +
+    entityCount * BINARY_GAMEPLAY_ENTITY_BYTES +
+    noteCount * BINARY_GAMEPLAY_NOTE_BYTES;
+  if (bytes.byteLength < requiredMin) {
+    throw new Error(`Buffer insuficiente para entidades/notas (${bytes.byteLength} < ${requiredMin})`);
+  }
+
+  const entities: DecodedBinaryEntity[] = [];
+  for (let i = 0; i < entityCount; i++) {
+    const x = view.getFloat32(cursor, true);
+    const y = view.getFloat32(cursor + 4, true);
+    const width = view.getFloat32(cursor + 8, true);
+    const height = view.getFloat32(cursor + 12, true);
+    const scale = view.getFloat32(cursor + 16, true);
+    const opacity = view.getFloat32(cursor + 20, true);
+    const entFlags = view.getUint32(cursor + 24, true);
+    const atlasX = view.getUint32(cursor + 28, true);
+    const atlasY = view.getUint32(cursor + 32, true);
+    const atlasW = view.getUint32(cursor + 36, true);
+    const atlasH = view.getUint32(cursor + 40, true);
+    const offX = view.getInt32(cursor + 44, true);
+    const offY = view.getInt32(cursor + 48, true);
+    const logicalW = view.getUint32(cursor + 52, true);
+    const logicalH = view.getUint32(cursor + 56, true);
+    cursor += BINARY_GAMEPLAY_ENTITY_BYTES;
+
+    entities.push({
+      x,
+      y,
+      width,
+      height,
+      scale,
+      opacity,
+      visible: (entFlags & 1) !== 0,
+      flipX: (entFlags & (1 << 1)) !== 0,
+      hasFrame: (entFlags & (1 << 2)) !== 0,
+      frameRotated: (entFlags & (1 << 3)) !== 0,
+      roleCode: (entFlags >> 4) & 3,
+      atlasX,
+      atlasY,
+      atlasW,
+      atlasH,
+      offX,
+      offY,
+      logicalW,
+      logicalH,
+    });
+  }
+
+  const visibleNotes: DecodedBinaryNote[] = [];
+  for (let i = 0; i < noteCount; i++) {
+    const id = view.getBigUint64(cursor, true);
+    const timeMs = view.getFloat64(cursor + 8, true);
+    const sustainMs = view.getFloat64(cursor + 16, true);
+    const noteFlags = view.getUint32(cursor + 24, true);
+    cursor += BINARY_GAMEPLAY_NOTE_BYTES;
+
+    visibleNotes.push({
+      id,
+      timeMs,
+      sustainMs,
+      direction: noteFlags & 3,
+      isPlayer: (noteFlags & (1 << 2)) !== 0,
+      headHit: (noteFlags & (1 << 3)) !== 0,
+    });
+  }
+
+  const hasHudStrings = (flags & (1 << 5)) !== 0;
+  let lastJudgement: string | undefined;
+  let countdownLabel: string | undefined;
+  let scriptError: string | undefined;
+  let scriptLog: string | undefined;
+
+  if (hasHudStrings) {
+    const decoder = new TextDecoder('utf-8');
+    const readStr = () => {
+      if (cursor + 2 > bytes.byteLength) {
+        throw new Error('String UTF-8 truncada en paquete BFGP');
+      }
+      const len = view.getUint16(cursor, true);
+      cursor += 2;
+      if (cursor + len > bytes.byteLength) {
+        throw new Error('Longitud de string UTF-8 excede el buffer');
+      }
+      const text = decoder.decode(bytes.subarray(cursor, cursor + len));
+      cursor += len;
+      return text;
+    };
+    lastJudgement = readStr();
+    countdownLabel = readStr();
+    scriptError = readStr();
+    scriptLog = readStr();
+  }
+
+  return {
+    active: (flags & 1) !== 0,
+    downscroll: (flags & (1 << 1)) !== 0,
+    paused: (flags & (1 << 2)) !== 0,
+    finished: (flags & (1 << 3)) !== 0,
+    controlMode: (flags & (1 << 4)) !== 0 ? 'classic_hitbox' : 'tap_arrows',
+    hasHudStrings,
+    hudRevision,
+    holdingLanesMask: masks & 0xff,
+    opponentHoldingLanesMask: (masks >> 8) & 0xff,
+    countdownStage,
+    countdownProgress,
+    songPosMs,
+    durationMs,
+    scrollSpeed,
+    activeBpm,
+    cameraZoom,
+    cameraShake,
+    cameraX,
+    cameraY,
+    virtualWidth,
+    virtualHeight,
+    health,
+    hits,
+    score,
+    combo,
+    maxCombo,
+    misses,
+    entities,
+    visibleNotes,
+    lastJudgement,
+    countdownLabel,
+    scriptError,
+    scriptLog,
+  };
+}
+
+export function clampEntityScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1.0;
+  return Math.min(6.0, Math.max(0.05, scale));
+}
+
+export interface ProjectSummaryItem {
+  id: string;
+  name: string;
+  updatedAtMs: number;
+  isActive: boolean;
+}
+
+export function sortProjectSummaries<T extends ProjectSummaryItem>(projects: T[]): T[] {
+  return [...projects].sort((a, b) => {
+    if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+    if (b.updatedAtMs !== a.updatedAtMs) return b.updatedAtMs - a.updatedAtMs;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+
 

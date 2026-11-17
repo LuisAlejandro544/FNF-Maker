@@ -6,16 +6,19 @@
 //! - `sprite_ops`: Carga de texturas `.png`/`.astc`, XML Sparrow y horneado Adobe Animate.
 //! - `gameplay_ops`: Compilación en caliente (`rayon`) y simulación frame a frame con cuenta regresiva BPM.
 
+//! - `persistence_ops`: Persistencia automática instantánea en `filesDir` y menú de proyectos.
+
 pub mod dto;
 pub mod editor_ops;
 pub mod gameplay_ops;
+pub mod persistence_ops;
 pub mod sprite_ops;
 
 pub use dto::{
     ActionResultJson, AudioTrackSnapshotJson, ChartEventJson, ChartSectionSnapshotJson,
     ChartSnapshotJson, CompileReportJson, GameplayEntityFrameJson, GameplayRuntimeState,
-    GameplayStepJson, ProjectSnapshotJson, ScriptSnapshotJson, SparrowFrameJson,
-    StageEntitySnapshotJson, VisibleNoteJson,
+    GameplayStepJson, ProjectSnapshotJson, ProjectSummaryJson, ScriptSnapshotJson,
+    SparrowFrameJson, StageEntitySnapshotJson, VisibleNoteJson,
 };
 
 use pulse_audio::{AudioEngineHandle, DecodedTrack};
@@ -27,9 +30,11 @@ use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct EngineSession {
     pub cache_dir: PathBuf,
+    pub data_dir: PathBuf,
     pub project: ModProject,
     pub audio_engine: AudioEngineHandle,
     pub decoded_tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
@@ -38,12 +43,20 @@ pub struct EngineSession {
     pub texture_lru_cache: LruCache<String, OptimizedTexture>,
     pub last_compile_report: Option<HotCompileReport>,
     pub gameplay: Option<GameplayRuntimeState>,
+    pub dirty: bool,
+    pub last_save_at: Instant,
 }
 
 impl EngineSession {
     pub fn new(cache_dir: PathBuf) -> Self {
-        Self {
+        let data_dir = cache_dir.clone();
+        Self::new_with_dirs(cache_dir, data_dir)
+    }
+
+    pub fn new_with_dirs(cache_dir: PathBuf, data_dir: PathBuf) -> Self {
+        let mut sess = Self {
             cache_dir,
+            data_dir,
             project: ModProject::new_demo(),
             audio_engine: AudioEngineHandle::new_deferred(),
             decoded_tracks: [None, None, None],
@@ -52,7 +65,11 @@ impl EngineSession {
             texture_lru_cache: LruCache::new(DeviceResourceTier::Balanced.lru_cache_budget_bytes(), 64),
             last_compile_report: None,
             gameplay: None,
-        }
+            dirty: false,
+            last_save_at: Instant::now(),
+        };
+        sess.load_initial_project();
+        sess
     }
 }
 

@@ -32,6 +32,10 @@ impl EngineSession {
         self.project.control_mode = parse_control_mode_key(control_mode_key);
         self.project.audio_offset_ms = audio_offset_ms.clamp(-500.0, 500.0);
         self.project.chart.speed = scroll_speed.clamp(0.5, 5.0);
+        if let Some(gp) = self.gameplay.as_mut() {
+            gp.hud_revision = gp.hud_revision.wrapping_add(1);
+        }
+        self.mark_dirty_and_maybe_save(false);
         self.ok_response("Proyecto actualizado")
     }
 
@@ -45,6 +49,7 @@ impl EngineSession {
                     );
                     self.project.chart = chart;
                     self.project.chart_source_path = Some(path);
+                    self.save_active_project_now();
                     self.ok_response(msg)
                 }
                 Err(e) => self.err_response(format!("Chart inválido: {}", e)),
@@ -59,6 +64,7 @@ impl EngineSession {
 
     pub fn set_chart_bpm(&mut self, bpm: f64) -> String {
         self.project.chart.set_bpm(bpm);
+        self.save_active_project_now();
         self.ok_response(format!("BPM actualizado a {:.1}", self.project.chart.bpm))
     }
 
@@ -76,31 +82,37 @@ impl EngineSession {
         self.project
             .chart
             .set_metadata(title, speed, player1, player2, gf_version, stage, needs_voices);
+        self.save_active_project_now();
         self.ok_response("Metadatos completos de chart.json actualizados")
     }
 
     pub fn set_section_bpm(&mut self, sec_index: usize, bpm: f64, change_bpm: bool) -> String {
         self.project.chart.set_section_bpm(sec_index, bpm, change_bpm);
+        self.save_active_project_now();
         self.ok_response(format!("BPM de sección {} actualizado", sec_index + 1))
     }
 
     pub fn add_chart_event(&mut self, time_ms: f64, name: &str, value1: &str, value2: &str) -> String {
         self.project.chart.add_event(time_ms, name, value1, value2);
+        self.save_active_project_now();
         self.ok_response("Evento de chart.json añadido")
     }
 
     pub fn remove_chart_event(&mut self, index: usize) -> String {
         self.project.chart.remove_event(index);
+        self.save_active_project_now();
         self.ok_response("Evento eliminado")
     }
 
     pub fn add_chart_section(&mut self, must_hit: bool) -> String {
         let idx = self.project.chart.add_section(must_hit);
+        self.save_active_project_now();
         self.ok_response(format!("Sección {} añadida", idx + 1))
     }
 
     pub fn toggle_section_must_hit(&mut self, sec_index: usize) -> String {
         self.project.chart.toggle_section_must_hit(sec_index);
+        self.save_active_project_now();
         self.ok_response("Foco de sección actualizado")
     }
 
@@ -114,6 +126,7 @@ impl EngineSession {
         self.project
             .chart
             .toggle_note_at(sec_index, step_in_sec, col_0_to_7, sustain_steps);
+        self.save_active_project_now();
         self.ok_response("Nota actualizada")
     }
 
@@ -130,6 +143,7 @@ impl EngineSession {
                     .mixer
                     .set_track(slot, Some(Arc::clone(&arc_track)));
                 self.decoded_tracks[slot] = Some(arc_track);
+                self.save_active_project_now();
                 self.ok_response(format!("Pista {} decodificada y lista en Rust AAudio", slot + 1))
             }
             Err(e) => self.err_response(format!("Error decodificando pista {}: {}", slot + 1, e)),
@@ -142,6 +156,7 @@ impl EngineSession {
             self.project.audio_tracks[slot].file_name = None;
             self.decoded_tracks[slot] = None;
             self.audio_engine.mixer.set_track(slot, None);
+            self.save_active_project_now();
         }
         self.ok_response(format!("Pista {} liberada", slot + 1))
     }
@@ -165,6 +180,7 @@ impl EngineSession {
             self.audio_engine.mixer.configs[slot]
                 .duck_on_miss
                 .store(duck_on_miss, Ordering::Relaxed);
+            self.mark_dirty_and_maybe_save(false);
         }
         self.ok_response("Configuración de pista actualizada")
     }
@@ -181,6 +197,7 @@ impl EngineSession {
         let ent = StageEntity::new(id, clean_name, role);
         self.project.stage.entities.push(ent);
         self.project.stage.sort_by_z_order();
+        self.save_active_project_now();
         self.ok_response("Nuevo objeto añadido al escenario")
     }
 
@@ -199,6 +216,7 @@ impl EngineSession {
         opacity: f32,
         visible: bool,
         flip_x: bool,
+        commit_save: bool,
     ) -> String {
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
             if !name.trim().is_empty() {
@@ -215,6 +233,7 @@ impl EngineSession {
             ent.set_opacity(opacity);
             ent.visible = visible;
             ent.flip_x = flip_x;
+            self.mark_dirty_and_maybe_save(commit_save);
             self.ok_response("Objeto actualizado")
         } else {
             self.err_response("Objeto no encontrado")
@@ -229,6 +248,7 @@ impl EngineSession {
             "back" => self.project.stage.send_to_back(entity_id),
             _ => {}
         }
+        self.save_active_project_now();
         self.ok_response("Orden Z actualizado")
     }
 
@@ -255,6 +275,7 @@ impl EngineSession {
             source_code: template.to_string(),
             enabled: true,
         });
+        self.save_active_project_now();
         self.ok_response("Script creado")
     }
 
@@ -281,6 +302,7 @@ impl EngineSession {
                     source_code: src,
                     enabled: true,
                 });
+                self.save_active_project_now();
                 self.ok_response("Script comunitario importado")
             }
             Err(e) => self.err_response(format!("No se pudo leer el script: {}", e)),
@@ -291,6 +313,7 @@ impl EngineSession {
         if let Some(script) = self.project.scripts.iter_mut().find(|s| s.id == script_id) {
             script.enabled = enabled;
             script.source_code = source_code;
+            self.mark_dirty_and_maybe_save(false);
             self.ok_response("Script guardado")
         } else {
             self.err_response("Script no encontrado")
@@ -335,6 +358,7 @@ impl EngineSession {
                     .arrow_skin
                     .custom_svg_sources
                     .insert(dir, svg_text);
+                self.save_active_project_now();
                 self.ok_response(format!("Skin SVG actualizada para flecha {}", dir.label_es()))
             }
             Err(e) => self.err_response(format!("No se pudo leer SVG: {}", e)),
@@ -343,6 +367,7 @@ impl EngineSession {
 
     pub fn restore_default_arrow_svg(&mut self) -> String {
         self.project.arrow_skin = ArrowSkinSet::bundled_default();
+        self.save_active_project_now();
         self.ok_response("Skin de flechas SVG originales restaurada")
     }
 

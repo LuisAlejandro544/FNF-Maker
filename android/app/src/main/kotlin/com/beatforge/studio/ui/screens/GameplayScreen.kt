@@ -70,7 +70,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.beatforge.studio.GameplayStep
+import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.MobileControlMode
 import com.beatforge.studio.ui.theme.StudioColors
@@ -84,10 +84,10 @@ private val TOUCH_LANE_NAMES = listOf("IZQ", "ABA", "ARR", "DER")
 
 @Composable
 fun GameplayScreen(
-    step: GameplayStep,
+    frameState: GameplayFrameState,
     arrowBitmaps: Map<Int, ImageBitmap>,
     receptorBitmaps: Map<Int, ImageBitmap>,
-    compiledBitmaps: Map<String, LoadedEntityBitmap>,
+    compiledBitmapsByIndex: List<LoadedEntityBitmap?>,
     onStepFrame: suspend (dtSec: Float, pressedMask: Int, justPressedMask: Int) -> Unit,
     onChangeControlMode: (MobileControlMode) -> Unit,
     onSetPaused: (Boolean) -> Unit,
@@ -96,9 +96,7 @@ fun GameplayScreen(
 ) {
     var pressedMask by remember { mutableIntStateOf(0) }
     var pendingJustPressedMask by remember { mutableIntStateOf(0) }
-    val latestStep by rememberUpdatedState(step)
-    val latestPaused by rememberUpdatedState(step.paused)
-    val latestFinished by rememberUpdatedState(step.finished)
+    val hud = frameState.hudState
 
     LaunchedEffect(Unit) {
         var lastNs = 0L
@@ -110,7 +108,7 @@ fun GameplayScreen(
                 }
                 lastNs = ns
             }
-            if (!latestPaused && !latestFinished) {
+            if (!frameState.paused && !frameState.finished) {
                 val justMask = pendingJustPressedMask
                 pendingJustPressedMask = 0
                 onStepFrame(dt, pressedMask, justMask)
@@ -118,39 +116,43 @@ fun GameplayScreen(
         }
     }
 
-    val isClassicHitbox = step.controlMode == MobileControlMode.ClassicHitbox.key
+    val isClassicHitbox = hud.controlMode == MobileControlMode.ClassicHitbox.key
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(StudioColors.BgDark)
     ) {
-        // Lienzo principal de gameplay (entidades + cámara + receptores grises + colas sustain + notas SVG)
+        // Lienzo principal de gameplay: lee `frameState.drawTick` solo dentro de DrawScope (0 recomposiciones a 60 FPS)
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val vw = step.virtualWidth.coerceAtLeast(1f)
-            val vh = step.virtualHeight.coerceAtLeast(1f)
+            if (frameState.drawTick < 0L) return@Canvas
+
+            val vw = frameState.virtualWidth.coerceAtLeast(1f)
+            val vh = frameState.virtualHeight.coerceAtLeast(1f)
             val sx = size.width / vw
             val sy = size.height / vh
 
-            val shakePhase = (step.songPosMs * 0.08).toFloat()
-            val shakeX = sin(shakePhase) * step.cameraShake * sx
-            val shakeY = cos(shakePhase * 1.3f) * step.cameraShake * sy
+            val shakePhase = (frameState.songPosMs * 0.08).toFloat()
+            val shakeX = sin(shakePhase) * frameState.cameraShake * sx
+            val shakeY = cos(shakePhase * 1.3f) * frameState.cameraShake * sy
             val pivot = Offset(size.width * 0.5f, size.height * 0.5f)
 
             withTransform({
                 translate(shakeX, shakeY)
-                scale(step.cameraZoom, step.cameraZoom, pivot = pivot)
+                scale(frameState.cameraZoom, frameState.cameraZoom, pivot = pivot)
             }) {
-                // 1. Dibujar entidades compiladas en Z-order
-                step.entities.forEach { ent ->
-                    if (!ent.visible || ent.opacity <= 0.01f) return@forEach
+                // 1. Dibujar entidades compiladas en Z-order usando índice pre-resuelto O(1)
+                val entCount = frameState.entityCount
+                for (i in 0 until entCount) {
+                    val ent = frameState.entitiesPool[i]
+                    if (!ent.visible || ent.opacity <= 0.01f) continue
                     val cx = ent.x * sx
                     val cy = ent.y * sy
                     val w = ent.width * ent.scale * sx
                     val h = ent.height * ent.scale * sy
                     val left = cx - w / 2f
                     val top = cy - h / 2f
-                    val loaded = compiledBitmaps[ent.id]
+                    val loaded = compiledBitmapsByIndex.getOrNull(i)
 
                     withTransform({
                         if (ent.flipX) {
@@ -159,20 +161,19 @@ fun GameplayScreen(
                     }) {
                         if (loaded != null) {
                             val bmp = loaded.bitmap
-                            val f = ent.frame
                             val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.toFloat()
                             val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.toFloat()
 
-                            if (f != null && f.found && f.width > 0 && f.height > 0) {
-                                val srcX = (f.x * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
-                                val srcY = (f.y * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
-                                val srcW = (f.width * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
-                                val srcH = (f.height * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
+                            if (ent.hasFrame && ent.atlasW > 0 && ent.atlasH > 0) {
+                                val srcX = (ent.atlasX * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
+                                val srcY = (ent.atlasY * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
+                                val srcW = (ent.atlasW * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
+                                val srcH = (ent.atlasH * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
 
-                                val visW = if (f.rotated) f.height else f.width
-                                val visH = if (f.rotated) f.width else f.height
-                                val logicalW = f.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
-                                val logicalH = f.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                                val visW = if (ent.frameRotated) ent.atlasH else ent.atlasW
+                                val visH = if (ent.frameRotated) ent.atlasW else ent.atlasH
+                                val logicalW = ent.logicalW.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                                val logicalH = ent.logicalH.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
                                 val fit = min(w / logicalW, h / logicalH)
 
                                 val boxW = logicalW * fit
@@ -182,18 +183,18 @@ fun GameplayScreen(
 
                                 val visDrawW = visW * fit
                                 val visDrawH = visH * fit
-                                val visLeft = boxLeft + (-f.frameX * fit)
-                                val visTop = boxTop + (-f.frameY * fit)
+                                val visLeft = boxLeft + (-ent.offX * fit)
+                                val visTop = boxTop + (-ent.offY * fit)
                                 val frameCenterX = visLeft + visDrawW / 2f
                                 val frameCenterY = visTop + visDrawH / 2f
 
-                                val dstW = (f.width * fit).roundToInt().coerceAtLeast(2)
-                                val dstH = (f.height * fit).roundToInt().coerceAtLeast(2)
+                                val dstW = (ent.atlasW * fit).roundToInt().coerceAtLeast(2)
+                                val dstH = (ent.atlasH * fit).roundToInt().coerceAtLeast(2)
                                 val dstLeft = (frameCenterX - dstW / 2f).roundToInt()
                                 val dstTop = (frameCenterY - dstH / 2f).roundToInt()
 
                                 withTransform({
-                                    if (f.rotated) {
+                                    if (ent.frameRotated) {
                                         rotate(-90f, pivot = Offset(frameCenterX, frameCenterY))
                                     }
                                 }) {
@@ -219,10 +220,10 @@ fun GameplayScreen(
                                 )
                             }
                         } else {
-                            val boxColor = when (ent.role) {
-                                "background" -> Color(0xFF172033)
-                                "opponent" -> StudioColors.AccentCoral.copy(alpha = 0.28f)
-                                "player" -> StudioColors.AccentCyan.copy(alpha = 0.28f)
+                            val boxColor = when (ent.roleCode) {
+                                0 -> Color(0xFF172033)
+                                1 -> StudioColors.AccentCoral.copy(alpha = 0.28f)
+                                2 -> StudioColors.AccentCyan.copy(alpha = 0.28f)
                                 else -> StudioColors.AccentIndigo.copy(alpha = 0.25f)
                             }
                             drawRect(
@@ -241,81 +242,132 @@ fun GameplayScreen(
                 }
             }
 
-            // 2. Carriles y receptores (gris neutro por defecto; se iluminan con color SVG al pulsar/sostener)
-            val receptorY = (if (step.downscroll) 575f else 118f) * sy
-            val notePxSize = 84f * minOf(sx, sy)
-            val oppStartX = 105f * sx
-            val plrStartX = 765f * sx
-            val laneStep = 105f * sx
+            // Columnas translúcidas Hitbox Clásico dibujadas en Canvas para evitar recomposiciones al tocar
+            if (frameState.controlMode == MobileControlMode.ClassicHitbox.key) {
+                val colW = size.width / 4f
+                for (lane in 0..3) {
+                    val active = (pressedMask and (1 shl lane)) != 0 ||
+                        (frameState.holdingLanesMask and (1 shl lane)) != 0
+                    val col = StudioColors.LaneColors[lane]
+                    drawRect(
+                        color = col.copy(alpha = if (active) 0.22f else 0.03f),
+                        topLeft = Offset(lane * colW, 0f),
+                        size = Size(colW, size.height)
+                    )
+                    if (lane < 3) {
+                        val divX = (lane + 1) * colW
+                        drawLine(
+                            color = Color.White.copy(alpha = 0.14f),
+                            start = Offset(divX, 0f),
+                            end = Offset(divX, size.height),
+                            strokeWidth = 1.dp.toPx()
+                        )
+                    }
+                }
+            }
+
+            // 2. Carriles y receptores (sin color en reposo; se iluminan con color SVG al pulsar/sostener)
+            val classicMode = frameState.controlMode == MobileControlMode.ClassicHitbox.key
+            val useDownscrollTactileLayout = frameState.downscroll && !classicMode
+
+            val oppReceptorY = if (useDownscrollTactileLayout) 100f * sy else (if (frameState.downscroll) 575f else 118f) * sy
+            val plrReceptorY = if (useDownscrollTactileLayout) 595f * sy else (if (frameState.downscroll) 575f else 118f) * sy
+            val oppDownscroll = if (useDownscrollTactileLayout) false else frameState.downscroll
+            val plrDownscroll = frameState.downscroll
+
+            val oppNoteSize = if (useDownscrollTactileLayout) 58f * minOf(sx, sy) else 84f * minOf(sx, sy)
+            val plrNoteSize = if (useDownscrollTactileLayout) 98f * minOf(sx, sy) else 84f * minOf(sx, sy)
 
             for (dir in 0..3) {
-                val oppX = oppStartX + dir * laneStep
-                val plrX = plrStartX + dir * laneStep
+                val oppX = if (useDownscrollTactileLayout) {
+                    (72f + dir * 68f) * sx
+                } else {
+                    (105f + dir * 105f) * sx
+                }
+                val plrX = if (useDownscrollTactileLayout) {
+                    val vx = when (dir) {
+                        0 -> 340f
+                        1 -> 495f
+                        2 -> 785f
+                        else -> 940f
+                    }
+                    vx * sx
+                } else {
+                    (765f + dir * 105f) * sx
+                }
                 val coloredBmp = arrowBitmaps[dir]
                 val neutralBmp = receptorBitmaps[dir] ?: coloredBmp
                 val laneColor = StudioColors.LaneColors[dir]
 
-                val oppHolding = (step.opponentHoldingLanesMask and (1 shl dir)) != 0
+                val oppHolding = (frameState.opponentHoldingLanesMask and (1 shl dir)) != 0
                 drawReceptor(
-                    center = Offset(oppX, receptorY),
-                    sizePx = notePxSize * (if (oppHolding) 0.98f else 0.92f),
+                    center = Offset(oppX, oppReceptorY),
+                    sizePx = oppNoteSize * (if (oppHolding) 1.06f else 0.94f),
                     color = if (oppHolding) laneColor else Color(0xFF94A3B8),
                     bitmap = if (oppHolding) coloredBmp else neutralBmp,
                     alpha = if (oppHolding) 0.98f else 0.72f
                 )
 
                 val isPressed = (pressedMask and (1 shl dir)) != 0
-                val isHolding = (step.holdingLanesMask and (1 shl dir)) != 0
+                val isHolding = (frameState.holdingLanesMask and (1 shl dir)) != 0
                 val showColoredPlayer = isPressed || isHolding
                 val playerScale = when {
-                    isHolding -> 1.06f
+                    isHolding -> 1.08f
                     isPressed -> 0.92f
                     else -> 1f
                 }
 
-                // En modo Tocar Flechas dibujamos un aro táctil sutil alrededor de las flechas del jugador
-                if (!isClassicHitbox) {
-                    drawCircle(
-                        color = if (showColoredPlayer) laneColor.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.06f),
-                        radius = notePxSize * 0.58f,
-                        center = Offset(plrX, receptorY)
-                    )
-                    drawCircle(
-                        color = if (showColoredPlayer) laneColor.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.22f),
-                        radius = notePxSize * 0.58f,
-                        center = Offset(plrX, receptorY),
-                        style = Stroke(width = if (showColoredPlayer) 3.5f else 2f)
-                    )
-                }
-
                 drawReceptor(
-                    center = Offset(plrX, receptorY),
-                    sizePx = notePxSize * playerScale,
+                    center = Offset(plrX, plrReceptorY),
+                    sizePx = plrNoteSize * playerScale,
                     color = if (showColoredPlayer) laneColor else Color(0xFF94A3B8),
                     bitmap = if (showColoredPlayer) coloredBmp else neutralBmp,
                     alpha = when {
                         isHolding -> 1f
-                        isPressed -> 0.95f
-                        else -> 0.84f
+                        isPressed -> 0.96f
+                        else -> 0.86f
                     }
                 )
             }
 
             // 3. Notas visibles y colas sustain desplazándose hasta consumirse en el receptor
-            val pxPerMs = 0.44f * step.scrollSpeed.toFloat() * sy
-            step.visibleNotes.forEach { note ->
+            val pxPerMs = 0.44f * frameState.scrollSpeed.toFloat() * sy
+            val noteCount = frameState.visibleNoteCount
+            val curSongPosMs = frameState.songPosMs
+            for (i in 0 until noteCount) {
+                val note = frameState.notesPool[i]
                 val dir = note.direction.coerceIn(0, 3)
-                val baseStartX = if (note.isPlayer) plrStartX else oppStartX
-                val noteX = baseStartX + dir * laneStep
+                val noteX = if (note.isPlayer) {
+                    if (useDownscrollTactileLayout) {
+                        val vx = when (dir) {
+                            0 -> 340f
+                            1 -> 495f
+                            2 -> 785f
+                            else -> 940f
+                        }
+                        vx * sx
+                    } else {
+                        (765f + dir * 105f) * sx
+                    }
+                } else {
+                    if (useDownscrollTactileLayout) {
+                        (72f + dir * 68f) * sx
+                    } else {
+                        (105f + dir * 105f) * sx
+                    }
+                }
+                val receptorY = if (note.isPlayer) plrReceptorY else oppReceptorY
+                val laneDownscroll = if (note.isPlayer) plrDownscroll else oppDownscroll
+                val notePxSize = if (note.isPlayer) plrNoteSize else oppNoteSize
 
-                val headDeltaMs = (note.timeMs - step.songPosMs).toFloat()
-                val tailEndDeltaMs = (note.timeMs + note.sustainMs - step.songPosMs).toFloat()
-                val headY = if (step.downscroll) {
+                val headDeltaMs = (note.timeMs - curSongPosMs).toFloat()
+                val tailEndDeltaMs = (note.timeMs + note.sustainMs - curSongPosMs).toFloat()
+                val headY = if (laneDownscroll) {
                     receptorY - headDeltaMs * pxPerMs
                 } else {
                     receptorY + headDeltaMs * pxPerMs
                 }
-                val tailEndY = if (step.downscroll) {
+                val tailEndY = if (laneDownscroll) {
                     receptorY - tailEndDeltaMs * pxPerMs
                 } else {
                     receptorY + tailEndDeltaMs * pxPerMs
@@ -324,19 +376,18 @@ fun GameplayScreen(
                 val anchorY = if (note.headHit) receptorY else headY
                 val minY = minOf(anchorY, tailEndY)
                 val maxY = maxOf(anchorY, tailEndY)
-                if (maxY < -notePxSize || minY > size.height + notePxSize) return@forEach
+                if (maxY < -notePxSize || minY > size.height + notePxSize) continue
 
-                // Cola de nota larga (se ancla al receptor mientras se mantiene y se va acortando hasta terminar)
                 if (note.sustainMs > 45.0) {
-                    val tailTop = if (step.downscroll) tailEndY else anchorY
-                    val tailBottom = if (step.downscroll) anchorY else tailEndY
+                    val tailTop = if (laneDownscroll) tailEndY else anchorY
+                    val tailBottom = if (laneDownscroll) anchorY else tailEndY
                     val tailHeight = tailBottom - tailTop
                     if (tailHeight > 2f) {
                         val laneColor = StudioColors.LaneColors[dir]
                         val bodyWidth = notePxSize * 0.30f
                         val coreWidth = notePxSize * 0.11f
                         drawRoundRect(
-                            color = laneColor.copy(alpha = if (note.headHit) 0.82f else 0.62f),
+                            color = laneColor.copy(alpha = if (note.headHit) 0.84f else 0.64f),
                             topLeft = Offset(noteX - bodyWidth / 2f, tailTop),
                             size = Size(bodyWidth, tailHeight),
                             cornerRadius = CornerRadius(bodyWidth * 0.45f, bodyWidth * 0.45f)
@@ -350,7 +401,6 @@ fun GameplayScreen(
                     }
                 }
 
-                // La cabeza SVG con color solo se dibuja si aún no ha sido golpeada (o no es un hold activo)
                 if (!note.headHit) {
                     val bmp = arrowBitmaps[dir]
                     if (bmp != null) {
@@ -379,14 +429,12 @@ fun GameplayScreen(
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            val s = latestStep
                             var nextMask = 0
                             val w = size.width.toFloat().coerceAtLeast(1f)
                             val h = size.height.toFloat().coerceAtLeast(1f)
-                            val classicMode = s.controlMode == MobileControlMode.ClassicHitbox.key
+                            val classicMode = frameState.controlMode == MobileControlMode.ClassicHitbox.key
 
                             if (classicMode) {
-                                // Hitbox Clásico (Psych Engine Mobile): 4 columnas verticales completas
                                 event.changes.forEach { change ->
                                     if (change.pressed) {
                                         val lane = ((change.position.x / w) * 4f)
@@ -396,17 +444,15 @@ fun GameplayScreen(
                                     }
                                 }
                             } else {
-                                // Por defecto ("Tocar Flechas" FNF Mobile): tocar directamente las 4 flechas
-                                val vw = s.virtualWidth.coerceAtLeast(1f)
-                                val vh = s.virtualHeight.coerceAtLeast(1f)
+                                val vw = frameState.virtualWidth.coerceAtLeast(1f)
+                                val vh = frameState.virtualHeight.coerceAtLeast(1f)
                                 val sx = w / vw
                                 val sy = h / vh
-                                val receptorY = (if (s.downscroll) 575f else 118f) * sy
-                                val notePxSize = 84f * minOf(sx, sy)
-                                val plrStartX = 765f * sx
-                                val laneStep = 105f * sx
-                                val maxHitX = maxOf(laneStep * 0.54f, notePxSize * 0.80f)
-                                val maxHitY = maxOf(notePxSize * 1.25f, 92f)
+                                val useDownscrollTactile = frameState.downscroll
+                                val receptorY = if (useDownscrollTactile) 595f * sy else 118f * sy
+                                val notePxSize = (if (useDownscrollTactile) 98f else 84f) * minOf(sx, sy)
+                                val maxHitX = if (useDownscrollTactile) 82f * sx else maxOf(105f * sx * 0.54f, notePxSize * 0.80f)
+                                val maxHitY = maxOf(notePxSize * 1.30f, 96f)
 
                                 event.changes.forEach { change ->
                                     if (change.pressed) {
@@ -416,7 +462,17 @@ fun GameplayScreen(
                                             var bestLane = -1
                                             var bestDistX = Float.MAX_VALUE
                                             for (dir in 0..3) {
-                                                val cx = plrStartX + dir * laneStep
+                                                val cx = if (useDownscrollTactile) {
+                                                    val vx = when (dir) {
+                                                        0 -> 340f
+                                                        1 -> 495f
+                                                        2 -> 785f
+                                                        else -> 940f
+                                                    }
+                                                    vx * sx
+                                                } else {
+                                                    (765f + dir * 105f) * sx
+                                                }
                                                 val dx = abs(px - cx)
                                                 if (dx <= maxHitX && dx < bestDistX) {
                                                     bestDistX = dx
@@ -441,35 +497,19 @@ fun GameplayScreen(
                 }
         ) {
             if (isClassicHitbox) {
-                // Visualización translúcida de las 4 columnas verticales estilo Psych Engine Mobile Hitbox
                 Row(modifier = Modifier.fillMaxSize()) {
                     for (lane in 0..3) {
-                        val active = (pressedMask and (1 shl lane)) != 0 ||
-                            (step.holdingLanesMask and (1 shl lane)) != 0
                         val col = StudioColors.LaneColors[lane]
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .background(
-                                    if (active) col.copy(alpha = 0.22f) else col.copy(alpha = 0.03f)
-                                )
                                 .padding(bottom = 14.dp),
                             contentAlignment = Alignment.BottomCenter
                         ) {
-                            // Divisor vertical fino entre columnas hitbox
-                            if (lane < 3) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.CenterEnd)
-                                        .width(1.dp)
-                                        .fillMaxHeight()
-                                        .background(Color.White.copy(alpha = 0.14f))
-                                )
-                            }
                             Text(
                                 text = TOUCH_LANE_NAMES[lane],
-                                color = if (active) Color.White else col.copy(alpha = 0.72f),
+                                color = col.copy(alpha = 0.82f),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp
                             )
@@ -479,7 +519,7 @@ fun GameplayScreen(
             }
         }
 
-        // HUD Superior compacto (no bloquea toques sobre los receptores en upscroll)
+        // HUD Superior compacto (solo recomposiciones cuando cambia puntaje, combo, fallos o juicio)
         Surface(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -501,25 +541,25 @@ fun GameplayScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Puntaje: ${step.score}",
+                        text = "Puntaje: ${hud.score}",
                         color = StudioColors.TextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )
                     Text(
-                        text = "Combo: ${step.combo}",
+                        text = "Combo: ${hud.combo}",
                         color = StudioColors.AccentCyan,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )
                     Text(
-                        text = "Fallos: ${step.misses}",
+                        text = "Fallos: ${hud.misses}",
                         color = StudioColors.AccentCoral,
                         fontSize = 11.sp
                     )
-                    if (step.lastJudgement.isNotBlank()) {
+                    if (hud.lastJudgement.isNotBlank()) {
                         Text(
-                            text = step.lastJudgement,
+                            text = hud.lastJudgement,
                             color = StudioColors.AccentAmber,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
@@ -533,8 +573,8 @@ fun GameplayScreen(
                 ) {
                     Column(modifier = Modifier.width(140.dp)) {
                         LinearProgressIndicator(
-                            progress = { step.health.coerceIn(0f, 1f) },
-                            color = if (step.health >= 0.35f) StudioColors.AccentEmerald else StudioColors.AccentCoral,
+                            progress = { hud.health.coerceIn(0f, 1f) },
+                            color = if (hud.health >= 0.35f) StudioColors.AccentEmerald else StudioColors.AccentCoral,
                             trackColor = StudioColors.BgDark,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -551,9 +591,9 @@ fun GameplayScreen(
             }
         }
 
-        if (step.scriptErrors.isNotEmpty() || step.scriptLogs.isNotEmpty()) {
-            val isErr = step.scriptErrors.isNotEmpty()
-            val text = if (isErr) step.scriptErrors.first() else step.scriptLogs.last()
+        if (hud.scriptError.isNotBlank() || hud.scriptLog.isNotBlank()) {
+            val isErr = hud.scriptError.isNotBlank()
+            val text = if (isErr) hud.scriptError else hud.scriptLog
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -571,8 +611,8 @@ fun GameplayScreen(
         }
 
         // Animación central de cuenta regresiva sincronizada con el BPM ("3, 2, 1, ¡YA!")
-        if (step.countdownStage in 0..3 && !step.paused && !step.finished) {
-            val p = step.countdownProgress.coerceIn(0f, 1f)
+        if (hud.countdownStage in 0..3 && !hud.paused && !hud.finished) {
+            val p = hud.countdownProgress.coerceIn(0f, 1f)
             val popScale = if (p < 0.25f) {
                 1.42f - (p / 0.25f) * 0.42f
             } else {
@@ -583,7 +623,7 @@ fun GameplayScreen(
             } else {
                 1f
             }
-            val stageColor = when (step.countdownStage) {
+            val stageColor = when (hud.countdownStage) {
                 0 -> StudioColors.AccentCoral
                 1 -> StudioColors.AccentAmber
                 2 -> StudioColors.AccentCyan
@@ -615,13 +655,13 @@ fun GameplayScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = step.countdownLabel,
+                            text = hud.countdownLabel,
                             color = stageColor,
-                            fontSize = if (step.countdownStage == 3) 44.sp else 54.sp,
+                            fontSize = if (hud.countdownStage == 3) 44.sp else 54.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
-                            text = "${step.activeBpm.roundToInt()} BPM",
+                            text = "${hud.activeBpm.roundToInt()} BPM",
                             color = StudioColors.TextMuted,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
@@ -632,7 +672,7 @@ fun GameplayScreen(
         }
 
         // Diálogo de Pausa (incluye cambio rápido entre Tocar Flechas y Hitbox Clásico)
-        if (step.paused && !step.finished) {
+        if (hud.paused && !hud.finished) {
             Dialog(onDismissRequest = { onSetPaused(false) }) {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -651,7 +691,7 @@ fun GameplayScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             MobileControlMode.entries.forEach { mode ->
-                                val selected = step.controlMode == mode.key
+                                val selected = hud.controlMode == mode.key
                                 Surface(
                                     modifier = Modifier
                                         .weight(1f)
@@ -704,7 +744,7 @@ fun GameplayScreen(
         }
 
         // Diálogo de Resultados Finales
-        if (step.finished) {
+        if (hud.finished) {
             Dialog(onDismissRequest = onExitToStudio) {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -717,8 +757,8 @@ fun GameplayScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text("¡Canción Completada!", color = StudioColors.AccentEmerald, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Puntaje Final: ${step.score}", color = StudioColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Text("Combo Máximo: ${step.maxCombo}  |  Aciertos: ${step.hits}  |  Fallos: ${step.misses}", color = StudioColors.TextMuted, fontSize = 12.sp)
+                        Text("Puntaje Final: ${hud.score}", color = StudioColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Combo Máximo: ${hud.maxCombo}  |  Aciertos: ${hud.hits}  |  Fallos: ${hud.misses}", color = StudioColors.TextMuted, fontSize = 12.sp)
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedButton(onClick = onRestart, contentPadding = PaddingValues(horizontal = 14.dp)) {

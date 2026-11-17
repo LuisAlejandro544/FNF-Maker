@@ -13,8 +13,9 @@ use super::{
 };
 use image::ImageFormat;
 use pulse_core::EntityRole;
-use pulse_core::frame_memory::{FrameBumpArena, NotePlayState, NoteSlidingWindow};
+use pulse_core::frame_memory::{ArenaSpan, FrameBumpArena, FrameVisibleNote, NotePlayState, NoteSlidingWindow};
 use pulse_core::hot_compile::{DeviceResourceTier, hot_compile_project};
+use pulse_core::project::MobileControlMode;
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_scripting::{ModScriptRuntime, ScriptCommand};
 use std::collections::HashMap;
@@ -22,6 +23,102 @@ use std::sync::atomic::Ordering;
 
 const HIT_WINDOW_GOOD_MS: f64 = 155.0;
 const HIT_WINDOW_PERFECT_MS: f64 = 55.0;
+
+pub const BINARY_FRAME_MAGIC: u32 = 0x4246_4750; // "BFGP"
+pub const BINARY_HEADER_SIZE: usize = 112;
+pub const BINARY_ENTITY_SIZE: usize = 60;
+pub const BINARY_NOTE_SIZE: usize = 28;
+
+struct StepSimOutput {
+    song_pos_ms: f64,
+    active_bpm: f64,
+    countdown_stage: i32,
+    countdown_label: String,
+    countdown_progress: f32,
+    player_holding_mask: u8,
+    opp_holding_mask: u8,
+    visible_span: ArenaSpan<FrameVisibleNote>,
+}
+
+fn role_to_code(role: EntityRole) -> u32 {
+    match role {
+        EntityRole::Background => 0,
+        EntityRole::Opponent => 1,
+        EntityRole::Player => 2,
+        EntityRole::Decoration => 3,
+    }
+}
+
+fn truncate_utf8_for_u16(s: &str) -> &[u8] {
+    let bytes = s.as_bytes();
+    if bytes.len() <= u16::MAX as usize {
+        return bytes;
+    }
+    let mut end = u16::MAX as usize;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &bytes[..end]
+}
+
+struct BinWriter<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> BinWriter<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    #[inline]
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        let end = self.pos + bytes.len();
+        self.buf[self.pos..end].copy_from_slice(bytes);
+        self.pos = end;
+    }
+
+    #[inline]
+    fn write_u16(&mut self, v: u16) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_i32(&mut self, v: i32) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_i64(&mut self, v: i64) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_f32(&mut self, v: f32) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_f64(&mut self, v: f64) {
+        self.write_bytes(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn write_str_u16(&mut self, bytes: &[u8]) {
+        self.write_u16(bytes.len() as u16);
+        self.write_bytes(bytes);
+    }
+}
 
 impl EngineSession {
     pub fn hot_compile(&mut self, tier_code: i32) -> String {
@@ -137,54 +234,21 @@ impl EngineSession {
             paused: false,
             finished: false,
             last_logs: Vec::new(),
+            last_countdown_stage: -2,
+            hud_revision: 1,
+            last_binary_hud_revision: 0,
         });
 
         self.step_gameplay(0.0, 0, 0)
     }
 
-    pub fn step_gameplay(
+    fn step_gameplay_internal(
         &mut self,
         dt_sec: f32,
         lane_pressed_mask: i32,
         lane_just_pressed_mask: i32,
-    ) -> String {
-        let control_mode_str = control_mode_to_key(self.project.control_mode).to_string();
-        let Some(session) = self.gameplay.as_mut() else {
-            return serde_json::to_string(&GameplayStepJson {
-                active: false,
-                song_pos_ms: 0.0,
-                duration_ms: 0.0,
-                scroll_speed: 1.8,
-                active_bpm: 120.0,
-                downscroll: false,
-                control_mode: control_mode_str,
-                holding_lanes_mask: 0,
-                opponent_holding_lanes_mask: 0,
-                countdown_stage: -1,
-                countdown_label: String::new(),
-                countdown_progress: 0.0,
-                camera_zoom: 1.0,
-                camera_shake: 0.0,
-                camera_x: 640.0,
-                camera_y: 360.0,
-                virtual_width: 1280.0,
-                virtual_height: 720.0,
-                score: 0,
-                combo: 0,
-                max_combo: 0,
-                hits: 0,
-                misses: 0,
-                health: 0.5,
-                last_judgement: String::new(),
-                paused: false,
-                finished: false,
-                script_errors: Vec::new(),
-                script_logs: Vec::new(),
-                entities: Vec::new(),
-                visible_notes: Vec::new(),
-            })
-            .unwrap_or_default();
-        };
+    ) -> Option<StepSimOutput> {
+        let session = self.gameplay.as_mut()?;
 
         // Reinicio O(1) de la arena temporal al empezar el frame
         session.frame_arena.reset();
@@ -217,6 +281,17 @@ impl EngineSession {
         } else {
             (-1, String::new(), 0.0)
         };
+
+        let mut hud_changed = false;
+        if countdown_stage != session.last_countdown_stage {
+            session.last_countdown_stage = countdown_stage;
+            hud_changed = true;
+        }
+        let prev_judgement = session.last_judgement.clone();
+        let prev_paused = session.paused;
+        let prev_finished = session.finished;
+        let prev_log_count = session.last_logs.len();
+        let prev_last_log = session.last_logs.last().cloned();
 
         let mut just_pressed = [
             (lane_just_pressed_mask & 1) != 0,
@@ -441,6 +516,18 @@ impl EngineSession {
             }
         }
 
+        if prev_judgement != session.last_judgement
+            || prev_paused != session.paused
+            || prev_finished != session.finished
+            || prev_log_count != session.last_logs.len()
+            || prev_last_log.as_deref() != session.last_logs.last().map(|s| s.as_str())
+        {
+            hud_changed = true;
+        }
+        if hud_changed {
+            session.hud_revision = session.hud_revision.wrapping_add(1);
+        }
+
         // Recopilar notas visibles en la arena temporal del frame actual
         let visible_span = session.note_window.collect_visible_into_arena(
             &self.project.chart.notes,
@@ -450,6 +537,64 @@ impl EngineSession {
             &mut session.frame_arena,
             &mut session.visible_note_scratch,
         );
+
+        Some(StepSimOutput {
+            song_pos_ms,
+            active_bpm,
+            countdown_stage,
+            countdown_label,
+            countdown_progress,
+            player_holding_mask,
+            opp_holding_mask,
+            visible_span,
+        })
+    }
+
+    pub fn step_gameplay(
+        &mut self,
+        dt_sec: f32,
+        lane_pressed_mask: i32,
+        lane_just_pressed_mask: i32,
+    ) -> String {
+        let control_mode_str = control_mode_to_key(self.project.control_mode).to_string();
+        let Some(sim) = self.step_gameplay_internal(dt_sec, lane_pressed_mask, lane_just_pressed_mask) else {
+            return serde_json::to_string(&GameplayStepJson {
+                active: false,
+                song_pos_ms: 0.0,
+                duration_ms: 0.0,
+                scroll_speed: 1.8,
+                active_bpm: 120.0,
+                downscroll: false,
+                control_mode: control_mode_str,
+                holding_lanes_mask: 0,
+                opponent_holding_lanes_mask: 0,
+                countdown_stage: -1,
+                countdown_label: String::new(),
+                countdown_progress: 0.0,
+                camera_zoom: 1.0,
+                camera_shake: 0.0,
+                camera_x: 640.0,
+                camera_y: 360.0,
+                virtual_width: 1280.0,
+                virtual_height: 720.0,
+                score: 0,
+                combo: 0,
+                max_combo: 0,
+                hits: 0,
+                misses: 0,
+                health: 0.5,
+                last_judgement: String::new(),
+                paused: false,
+                finished: false,
+                script_errors: Vec::new(),
+                script_logs: Vec::new(),
+                entities: Vec::new(),
+                visible_notes: Vec::new(),
+            })
+            .unwrap_or_default();
+        };
+
+        let session = self.gameplay.as_mut().expect("gameplay active");
 
         let mut entities = std::mem::take(&mut session.step_entities_scratch);
         entities.clear();
@@ -498,7 +643,7 @@ impl EngineSession {
 
         let mut visible_notes = std::mem::take(&mut session.step_notes_scratch);
         visible_notes.clear();
-        for n in session.frame_arena.get_slice(visible_span) {
+        for n in session.frame_arena.get_slice(sim.visible_span) {
             visible_notes.push(VisibleNoteJson {
                 id: n.id,
                 time_ms: n.time_ms,
@@ -511,17 +656,17 @@ impl EngineSession {
 
         let step_dto = GameplayStepJson {
             active: true,
-            song_pos_ms,
+            song_pos_ms: sim.song_pos_ms,
             duration_ms: self.project.chart.stats.duration_ms,
             scroll_speed: self.project.chart.speed,
-            active_bpm,
+            active_bpm: sim.active_bpm,
             downscroll: self.project.downscroll,
             control_mode: control_mode_str,
-            holding_lanes_mask: player_holding_mask,
-            opponent_holding_lanes_mask: opp_holding_mask,
-            countdown_stage,
-            countdown_label,
-            countdown_progress,
+            holding_lanes_mask: sim.player_holding_mask,
+            opponent_holding_lanes_mask: sim.opp_holding_mask,
+            countdown_stage: sim.countdown_stage,
+            countdown_label: sim.countdown_label,
+            countdown_progress: sim.countdown_progress,
             camera_zoom: self.project.stage.camera_zoom,
             camera_shake: self.project.stage.camera_shake,
             camera_x: self.project.stage.camera_x,
@@ -552,9 +697,225 @@ impl EngineSession {
         out_json
     }
 
+    /// Serializa el frame de gameplay en formato binario Little-Endian sin asignaciones JSON
+    /// directamente dentro de un `DirectByteBuffer` de Kotlin.
+    /// Si `out_buf` es demasiado pequeño, devuelve `-(bytes_necesarios as i32)` para redimensionar.
+    pub fn step_gameplay_binary(
+        &mut self,
+        dt_sec: f32,
+        lane_pressed_mask: i32,
+        lane_just_pressed_mask: i32,
+        out_buf: &mut [u8],
+    ) -> i32 {
+        let Some(sim) = self.step_gameplay_internal(dt_sec, lane_pressed_mask, lane_just_pressed_mask) else {
+            if out_buf.len() < BINARY_HEADER_SIZE {
+                return -(BINARY_HEADER_SIZE as i32);
+            }
+            let mut w = BinWriter::new(out_buf);
+            w.write_u32(BINARY_FRAME_MAGIC);
+            w.write_u32(0); // flags: inactive
+            w.write_u32(0); // hud_revision
+            w.write_u32(0); // masks
+            w.write_i32(-1); // countdown_stage
+            w.write_f32(0.0); // countdown_progress
+            w.write_f64(0.0); // song_pos_ms
+            w.write_f64(0.0); // duration_ms
+            w.write_f64(self.project.chart.speed);
+            w.write_f64(self.project.chart.bpm);
+            w.write_f32(1.0); // camera_zoom
+            w.write_f32(0.0); // camera_shake
+            w.write_f32(self.project.stage.camera_x);
+            w.write_f32(self.project.stage.camera_y);
+            w.write_f32(self.project.stage.virtual_width);
+            w.write_f32(self.project.stage.virtual_height);
+            w.write_f32(0.5); // health
+            w.write_u32(0); // hits
+            w.write_i64(0); // score
+            w.write_u32(0); // combo
+            w.write_u32(0); // max_combo
+            w.write_u32(0); // misses
+            w.write_u16(0); // entity_count
+            w.write_u16(0); // visible_note_count
+            return BINARY_HEADER_SIZE as i32;
+        };
+
+        let session = self.gameplay.as_mut().expect("gameplay active");
+        let entity_count = session.bundle.active_entities.len().min(u16::MAX as usize);
+        let visible_notes = session.frame_arena.get_slice(sim.visible_span);
+        let note_count = visible_notes.len().min(u16::MAX as usize);
+
+        let has_hud_strings = session.hud_revision != session.last_binary_hud_revision;
+
+        let s_judgement = if has_hud_strings {
+            truncate_utf8_for_u16(&session.last_judgement)
+        } else {
+            &[]
+        };
+        let s_countdown = if has_hud_strings {
+            truncate_utf8_for_u16(&sim.countdown_label)
+        } else {
+            &[]
+        };
+        let s_err = if has_hud_strings {
+            session
+                .script_errors
+                .first()
+                .map(|s| truncate_utf8_for_u16(s))
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+        let s_log = if has_hud_strings {
+            session
+                .last_logs
+                .last()
+                .map(|s| truncate_utf8_for_u16(s))
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+
+        let hud_bytes = if has_hud_strings {
+            8 + s_judgement.len() + s_countdown.len() + s_err.len() + s_log.len()
+        } else {
+            0
+        };
+
+        let total_bytes = BINARY_HEADER_SIZE
+            + entity_count * BINARY_ENTITY_SIZE
+            + note_count * BINARY_NOTE_SIZE
+            + hud_bytes;
+
+        if total_bytes > out_buf.len() {
+            return -(total_bytes as i32);
+        }
+
+        let mut flags: u32 = 1; // active
+        if self.project.downscroll {
+            flags |= 1 << 1;
+        }
+        if session.paused {
+            flags |= 1 << 2;
+        }
+        if session.finished {
+            flags |= 1 << 3;
+        }
+        if self.project.control_mode == MobileControlMode::ClassicHitbox {
+            flags |= 1 << 4;
+        }
+        if has_hud_strings {
+            flags |= 1 << 5;
+        }
+
+        let masks =
+            (sim.player_holding_mask as u32) | ((sim.opp_holding_mask as u32) << 8);
+
+        let mut w = BinWriter::new(out_buf);
+        w.write_u32(BINARY_FRAME_MAGIC);
+        w.write_u32(flags);
+        w.write_u32(session.hud_revision);
+        w.write_u32(masks);
+        w.write_i32(sim.countdown_stage);
+        w.write_f32(sim.countdown_progress);
+        w.write_f64(sim.song_pos_ms);
+        w.write_f64(self.project.chart.stats.duration_ms);
+        w.write_f64(self.project.chart.speed);
+        w.write_f64(sim.active_bpm);
+        w.write_f32(self.project.stage.camera_zoom);
+        w.write_f32(self.project.stage.camera_shake);
+        w.write_f32(self.project.stage.camera_x);
+        w.write_f32(self.project.stage.camera_y);
+        w.write_f32(self.project.stage.virtual_width);
+        w.write_f32(self.project.stage.virtual_height);
+        w.write_f32(session.health);
+        w.write_u32(session.hits);
+        w.write_i64(session.score);
+        w.write_u32(session.combo);
+        w.write_u32(session.max_combo);
+        w.write_u32(session.misses);
+        w.write_u16(entity_count as u16);
+        w.write_u16(note_count as u16);
+
+        for ent in session.bundle.active_entities.iter().take(entity_count) {
+            let _ = self.texture_lru_cache.get(&ent.id);
+            let frame = ent
+                .atlas
+                .as_ref()
+                .and_then(|a| a.frame_at(ent.active_anim, ent.anim_timer_sec));
+
+            let mut e_flags: u32 = (role_to_code(ent.role) & 0x3) << 4;
+            if ent.visible {
+                e_flags |= 1 << 0;
+            }
+            if ent.flip_x {
+                e_flags |= 1 << 1;
+            }
+            if let Some(f) = frame {
+                e_flags |= 1 << 2;
+                if f.rotated {
+                    e_flags |= 1 << 3;
+                }
+            }
+
+            w.write_f32(ent.x);
+            w.write_f32(ent.y);
+            w.write_f32(ent.width);
+            w.write_f32(ent.height);
+            w.write_f32(ent.scale);
+            w.write_f32(ent.opacity);
+            w.write_u32(e_flags);
+
+            if let Some(f) = frame {
+                w.write_u32(f.x);
+                w.write_u32(f.y);
+                w.write_u32(f.width);
+                w.write_u32(f.height);
+                w.write_i32(f.frame_x);
+                w.write_i32(f.frame_y);
+                w.write_u32(f.frame_width);
+                w.write_u32(f.frame_height);
+            } else {
+                w.write_u32(0);
+                w.write_u32(0);
+                w.write_u32(0);
+                w.write_u32(0);
+                w.write_i32(0);
+                w.write_i32(0);
+                w.write_u32(0);
+                w.write_u32(0);
+            }
+        }
+
+        for n in visible_notes.iter().take(note_count) {
+            let mut n_flags: u32 = (n.direction as u32) & 0x3;
+            if n.is_player {
+                n_flags |= 1 << 2;
+            }
+            if n.is_holding {
+                n_flags |= 1 << 3;
+            }
+            w.write_u64(n.id);
+            w.write_f64(n.time_ms);
+            w.write_f64(n.sustain_ms);
+            w.write_u32(n_flags);
+        }
+
+        if has_hud_strings {
+            w.write_str_u16(s_judgement);
+            w.write_str_u16(s_countdown);
+            w.write_str_u16(s_err);
+            w.write_str_u16(s_log);
+            session.last_binary_hud_revision = session.hud_revision;
+        }
+
+        debug_assert_eq!(w.pos, total_bytes);
+        total_bytes as i32
+    }
+
     pub fn set_gameplay_paused(&mut self, paused: bool) -> String {
         if let Some(session) = self.gameplay.as_mut() {
             session.paused = paused;
+            session.hud_revision = session.hud_revision.wrapping_add(1);
             if paused {
                 self.audio_engine.mixer.pause();
             } else {
@@ -569,5 +930,41 @@ impl EngineSession {
         self.audio_engine.mixer.pause();
         self.gameplay = None;
         self.ok_response("Partida finalizada")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_gameplay_packet_encodes_header_entities_notes_and_hud_strings() {
+        let tmp = std::env::temp_dir().join("beatforge_bin_packet_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut session = EngineSession::new_with_dirs(tmp.clone(), tmp.clone());
+        let _ = session.start_gameplay();
+
+        // El buffer demasiado pequeño debe retornar tamaño negativo sin consumir `last_binary_hud_revision`
+        let mut tiny = [0u8; 32];
+        let needed = session.step_gameplay_binary(0.016, 0, 0, &mut tiny);
+        assert!(needed < -(BINARY_HEADER_SIZE as i32));
+
+        let mut buf = vec![0u8; 32 * 1024];
+        let written = session.step_gameplay_binary(0.016, 0, 0, &mut buf);
+        assert!(written >= BINARY_HEADER_SIZE as i32);
+
+        let magic = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(magic, BINARY_FRAME_MAGIC);
+        let flags = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        assert_ne!(flags & 1, 0); // active
+        assert_ne!(flags & (1 << 5), 0); // has_hud_strings en el primer paquete
+
+        // Segundo frame sin cambios de HUD no debería enviar strings
+        let written_second = session.step_gameplay_binary(0.016, 0, 0, &mut buf);
+        assert!(written_second > 0 && written_second <= written);
+        let flags_second = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        assert_eq!(flags_second & (1 << 5), 0);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

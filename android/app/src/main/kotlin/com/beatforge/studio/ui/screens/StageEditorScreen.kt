@@ -50,7 +50,8 @@ fun StageEditorScreen(
         scale: Float,
         opacity: Float,
         visible: Boolean,
-        flipX: Boolean
+        flipX: Boolean,
+        commitSave: Boolean
     ) -> Unit,
     onReorderEntity: (entityId: String, action: String) -> Unit,
     onRequestImportPng: (entityId: String) -> Unit
@@ -83,7 +84,8 @@ fun StageEditorScreen(
                     ent.scale,
                     ent.opacity,
                     !ent.visible,
-                    ent.flipX
+                    ent.flipX,
+                    true
                 )
             },
             onReorderEntity = onReorderEntity,

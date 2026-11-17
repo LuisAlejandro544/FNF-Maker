@@ -10,6 +10,7 @@ import org.json.JSONObject
 
 enum class StudioScreen(val label: String) {
     Hub("Inicio"),
+    Projects("Proyectos"),
     Chart("Chart"),
     Audio("Audio"),
     SpriteLab("Sprites"),
@@ -29,7 +30,7 @@ enum class MobileControlMode(val key: String, val label: String, val description
     TapArrows(
         key = "tap_arrows",
         label = "Tocar Flechas (Por defecto)",
-        description = "Toca directamente las 4 flechas en pantalla como FNF Mobile"
+        description = "En Downscroll coloca las 4 flechas táctiles abajo estilo FNF Mobile"
     ),
     ClassicHitbox(
         key = "classic_hitbox",
@@ -146,6 +147,20 @@ data class CompileReportSnapshot(
     val neutralizedUnboundedLoops: Int = 0,
     val estimatedVramSavedKb: Int = 0,
     val compiledTexturePaths: Map<String, String> = emptyMap()
+)
+
+data class ProjectSummary(
+    val id: String = "",
+    val name: String = "",
+    val author: String = "",
+    val chartTitle: String = "",
+    val bpm: Double = 120.0,
+    val noteCount: Int = 0,
+    val trackCount: Int = 0,
+    val entityCount: Int = 0,
+    val scriptCount: Int = 0,
+    val updatedAtMs: Long = 0L,
+    val isActive: Boolean = false
 )
 
 data class ProjectSnapshot(
@@ -279,6 +294,34 @@ object StudioJsonParser {
             parseProjectObject(JSONObject(rawJson))
         } catch (_: Exception) {
             ProjectSnapshot()
+        }
+    }
+
+    fun parseProjectList(rawJson: String): List<ProjectSummary> {
+        return try {
+            val arr = JSONArray(rawJson)
+            buildList(arr.length()) {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    add(
+                        ProjectSummary(
+                            id = obj.optString("id", ""),
+                            name = obj.optString("name", "Mod sin título"),
+                            author = obj.optString("author", "Creador"),
+                            chartTitle = obj.optString("chartTitle", ""),
+                            bpm = obj.optDouble("bpm", 120.0),
+                            noteCount = obj.optInt("noteCount", 0),
+                            trackCount = obj.optInt("trackCount", 0),
+                            entityCount = obj.optInt("entityCount", 0),
+                            scriptCount = obj.optInt("scriptCount", 0),
+                            updatedAtMs = obj.optLong("updatedAtMs", 0L),
+                            isActive = obj.optBoolean("isActive", false)
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 

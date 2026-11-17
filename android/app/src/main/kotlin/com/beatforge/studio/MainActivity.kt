@@ -57,6 +57,7 @@ import com.beatforge.studio.ui.screens.ChartScreen
 import com.beatforge.studio.ui.screens.GameplayScreen
 import com.beatforge.studio.ui.screens.HotCompileScreen
 import com.beatforge.studio.ui.screens.HubScreen
+import com.beatforge.studio.ui.screens.ProjectsScreen
 import com.beatforge.studio.ui.screens.ScriptStudioScreen
 import com.beatforge.studio.ui.screens.SpriteLabScreen
 import com.beatforge.studio.ui.screens.StageEditorScreen
@@ -123,6 +124,16 @@ class MainActivity : ComponentActivity() {
                 BeatForgeRootContent(state = state, viewModel = studioViewModel)
             }
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        studioViewModel.flushSave()
+    }
+
+    override fun onStop() {
+        studioViewModel.flushSave()
+        super.onStop()
     }
 
     private fun configureImmersiveLandscape() {
@@ -216,6 +227,15 @@ private fun BeatForgeRootContent(
                         onCompileAndPlay = { viewModel.startCompileAndPlay() }
                     )
 
+                    StudioScreen.Projects -> ProjectsScreen(
+                        projects = state.projects,
+                        activeProjectName = state.snapshot.name,
+                        onCreateProject = { name, author -> viewModel.createProject(name, author) },
+                        onOpenProject = { id -> viewModel.openProject(id) },
+                        onDuplicateProject = { id -> viewModel.duplicateProject(id) },
+                        onDeleteProject = { id -> viewModel.deleteProject(id) }
+                    )
+
                     StudioScreen.Chart -> ChartScreen(
                         snapshot = state.snapshot,
                         audioPreviewPlaying = state.audioPreviewPlaying,
@@ -272,8 +292,10 @@ private fun BeatForgeRootContent(
                         entityBitmaps = state.entityBitmaps,
                         onSelectEntity = { viewModel.selectEntity(it) },
                         onAddEntity = { name, role -> viewModel.addStageEntity(name, role) },
-                        onUpdateEntity = { id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx ->
-                            viewModel.updateStageEntity(id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx)
+                        onUpdateEntity = { id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx, commitSave ->
+                            viewModel.updateStageEntity(
+                                id, name, role, dx, dy, ax, ay, useAbs, scale, op, vis, fx, commitSave
+                            )
                         },
                         onReorderEntity = { id, action -> viewModel.reorderStageEntity(id, action) },
                         onRequestImportPng = { entityId ->
@@ -300,10 +322,10 @@ private fun BeatForgeRootContent(
                     StudioScreen.HotCompile -> HotCompileScreen(tier = state.selectedTier)
 
                     StudioScreen.Gameplay -> GameplayScreen(
-                        step = state.gameplayStep,
+                        frameState = viewModel.gameplayFrameState,
                         arrowBitmaps = state.arrowBitmaps,
                         receptorBitmaps = state.receptorBitmaps,
-                        compiledBitmaps = state.compiledBitmaps,
+                        compiledBitmapsByIndex = state.compiledBitmapsByIndex,
                         onStepFrame = { dt, pressed, justPressed ->
                             viewModel.stepGameplayFrame(dt, pressed, justPressed)
                         },

@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.Executors
 
 data class LoadedEntityBitmap(
     val bitmap: ImageBitmap,
@@ -32,6 +34,7 @@ data class StudioUiState(
     val initialized: Boolean = false,
     val currentScreen: StudioScreen = StudioScreen.Hub,
     val snapshot: ProjectSnapshot = ProjectSnapshot(),
+    val projects: List<ProjectSummary> = emptyList(),
     val selectedEntityId: String = "",
     val selectedScriptId: String = "",
     val arrowSkinDialogOpen: Boolean = false,
@@ -46,13 +49,20 @@ data class StudioUiState(
     val receptorBitmaps: Map<Int, ImageBitmap> = emptyMap(),
     val entityBitmaps: Map<String, LoadedEntityBitmap> = emptyMap(),
     val compiledBitmaps: Map<String, LoadedEntityBitmap> = emptyMap(),
-    val gameplayStep: GameplayStep = GameplayStep()
+    val compiledBitmapsByIndex: List<LoadedEntityBitmap?> = emptyList()
 )
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
+
+    val gameplayFrameState = GameplayFrameState()
+
+    private val engineExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "BeatForgeEngineIO").apply { isDaemon = true }
+    }
+    private val engineIoDispatcher = engineExecutor.asCoroutineDispatcher()
 
     private var pendingImportKind: ImportKind? = null
     private var launchPickerCallback: ((Array<String>) -> Unit)? = null
@@ -61,6 +71,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     init {
         _uiState.update { it.copy(selectedTier = detectOptimalDeviceTier()) }
         initializeEngine()
+    }
+
+    override fun onCleared() {
+        try {
+            NativeEngineBridge.nativeFlushSave()
+        } catch (_: Throwable) {
+        }
+        engineExecutor.shutdown()
+        super.onCleared()
     }
 
     /**
@@ -109,7 +128,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun exportChartToUri(uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             setBusy(true)
             try {
                 val jsonText = NativeEngineBridge.nativeExportChartJson()
@@ -133,7 +152,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun onUriPicked(uri: Uri) {
         val kind = pendingImportKind ?: return
         pendingImportKind = null
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             setBusy(true)
             val localPath = SafFileBridge.copyUriToInternalCache(
                 getApplication(),
@@ -161,16 +180,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             } else if (kind is ImportKind.SpritePng || kind is ImportKind.SparrowXml) {
                 reloadEntityBitmaps(_uiState.value.snapshot.stageEntities)
             }
+            refreshProjectsInternal()
             setBusy(false)
         }
     }
 
     private fun initializeEngine() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             NativeEngineBridge.ensureLoaded()
-            val cacheDir = getApplication<Application>().cacheDir.absolutePath
-            val rawSnapshot = NativeEngineBridge.nativeInit(cacheDir)
+            val app = getApplication<Application>()
+            val cacheDir = app.cacheDir.absolutePath
+            val dataDir = app.filesDir.absolutePath
+            val rawSnapshot = NativeEngineBridge.nativeInit(cacheDir, dataDir)
             val snap = StudioJsonParser.parseProjectSnapshot(rawSnapshot)
+            val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
             val arrows = loadArrowBitmapsInternal()
             val receptors = loadReceptorBitmapsInternal()
             val entBmps = loadEntityBitmapsInternal(snap.stageEntities)
@@ -178,6 +201,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 state.copy(
                     initialized = true,
                     snapshot = snap,
+                    projects = projects,
                     selectedEntityId = snap.stageEntities.firstOrNull()?.id ?: "",
                     selectedScriptId = snap.scripts.firstOrNull()?.id ?: "",
                     arrowBitmaps = arrows,
@@ -188,10 +212,103 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun flushSave() {
+        viewModelScope.launch(engineIoDispatcher) {
+            NativeEngineBridge.nativeFlushSave()
+            refreshProjectsInternal()
+        }
+    }
+
+    fun refreshProjects() {
+        viewModelScope.launch(engineIoDispatcher) {
+            NativeEngineBridge.nativeFlushSave()
+            refreshProjectsInternal()
+        }
+    }
+
+    fun createProject(name: String, author: String) {
+        viewModelScope.launch(engineIoDispatcher) {
+            setBusy(true)
+            if (_uiState.value.audioPreviewPlaying) {
+                NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
+            }
+            val raw = NativeEngineBridge.nativeCreateProject(name, author)
+            applyProjectSwitchResult(raw, navigateToHub = true)
+            setBusy(false)
+        }
+    }
+
+    fun openProject(projectId: String) {
+        viewModelScope.launch(engineIoDispatcher) {
+            setBusy(true)
+            if (_uiState.value.audioPreviewPlaying) {
+                NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
+            }
+            val raw = NativeEngineBridge.nativeOpenProject(projectId)
+            applyProjectSwitchResult(raw, navigateToHub = true)
+            setBusy(false)
+        }
+    }
+
+    fun duplicateProject(projectId: String) {
+        viewModelScope.launch(engineIoDispatcher) {
+            setBusy(true)
+            if (_uiState.value.audioPreviewPlaying) {
+                NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
+            }
+            val raw = NativeEngineBridge.nativeDuplicateProject(projectId)
+            applyProjectSwitchResult(raw, navigateToHub = false)
+            setBusy(false)
+        }
+    }
+
+    fun deleteProject(projectId: String) {
+        viewModelScope.launch(engineIoDispatcher) {
+            setBusy(true)
+            val raw = NativeEngineBridge.nativeDeleteProject(projectId)
+            applyProjectSwitchResult(raw, navigateToHub = false)
+            setBusy(false)
+        }
+    }
+
+    private fun applyProjectSwitchResult(rawJson: String, navigateToHub: Boolean) {
+        val result = StudioJsonParser.parseActionResult(rawJson)
+        val nextSnap = result.snapshot ?: _uiState.value.snapshot
+        val arrows = loadArrowBitmapsInternal()
+        val receptors = loadReceptorBitmapsInternal()
+        val entBmps = loadEntityBitmapsInternal(nextSnap.stageEntities)
+        val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
+
+        _uiState.update { state ->
+            state.copy(
+                currentScreen = if (navigateToHub && result.ok) StudioScreen.Hub else state.currentScreen,
+                snapshot = nextSnap,
+                projects = projects,
+                audioPreviewPlaying = false,
+                selectedEntityId = nextSnap.stageEntities.firstOrNull()?.id ?: "",
+                selectedScriptId = nextSnap.scripts.firstOrNull()?.id ?: "",
+                scriptValidationMsg = null,
+                arrowBitmaps = arrows,
+                receptorBitmaps = receptors,
+                entityBitmaps = entBmps,
+                compiledBitmaps = emptyMap(),
+                compiledBitmapsByIndex = emptyList(),
+                statusBanner = result.message.takeIf { it.isNotBlank() },
+                statusIsError = !result.ok
+            )
+        }
+    }
+
     fun navigateTo(screen: StudioScreen) {
         if (_uiState.value.currentScreen == StudioScreen.Gameplay && screen != StudioScreen.Gameplay) {
             stopGameplayAndNavigate(screen)
             return
+        }
+        viewModelScope.launch(engineIoDispatcher) {
+            NativeEngineBridge.nativeFlushSave()
+            if (screen == StudioScreen.Projects) {
+                refreshProjectsInternal()
+            }
         }
         _uiState.update { it.copy(currentScreen = screen, statusBanner = null) }
     }
@@ -225,7 +342,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         audioOffsetMs: Double,
         scrollSpeed: Double
     ) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeUpdateProjectMeta(
                 name,
                 author,
@@ -235,6 +352,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 scrollSpeed
             )
             applyActionJson(raw, silentOk = true)
+            if (_uiState.value.currentScreen == StudioScreen.Gameplay) {
+                val gpRaw = NativeEngineBridge.nativeStepGameplay(0f, 0, 0)
+                val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
+                withContext(Dispatchers.Main) {
+                    gameplayFrameState.seedFromJsonStep(gpStep)
+                }
+            }
         }
     }
 
@@ -251,13 +375,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun restoreDemoChart() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeRestoreDemoChart())
         }
     }
 
     fun setChartBpm(bpm: Double) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeSetChartBpm(bpm), silentOk = true)
         }
     }
@@ -271,7 +395,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         stage: String,
         needsVoices: Boolean
     ) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(
                 NativeEngineBridge.nativeUpdateChartDetails(
                     title,
@@ -287,7 +411,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setSectionBpm(secIndex: Int, bpm: Double, changeBpm: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(
                 NativeEngineBridge.nativeSetSectionBpm(secIndex, bpm, changeBpm),
                 silentOk = true
@@ -296,7 +420,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun addChartEvent(timeMs: Double, name: String, value1: String, value2: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(
                 NativeEngineBridge.nativeAddChartEvent(timeMs, name, value1, value2)
             )
@@ -304,25 +428,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun removeChartEvent(index: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeRemoveChartEvent(index), silentOk = true)
         }
     }
 
     fun addChartSection(mustHit: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeAddChartSection(mustHit))
         }
     }
 
     fun toggleSectionMustHit(secIndex: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeToggleSectionMustHit(secIndex), silentOk = true)
         }
     }
 
     fun toggleChartNote(secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(
                 NativeEngineBridge.nativeToggleChartNote(secIndex, stepInSec, col0To7, sustainSteps),
                 silentOk = true
@@ -331,20 +455,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun removeAudioTrack(slot: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeRemoveAudioTrack(slot))
         }
     }
 
     fun updateAudioTrackConfig(slot: Int, gain: Float, muted: Boolean, duckOnMiss: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeUpdateAudioTrackConfig(slot, gain, muted, duckOnMiss)
             applyActionJson(raw, silentOk = true)
         }
     }
 
     fun toggleAudioPreview(startMs: Double = 0.0) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val nextPlay = !_uiState.value.audioPreviewPlaying
             val playing = NativeEngineBridge.nativeToggleAudioPreview(nextPlay, startMs)
             _uiState.update { it.copy(audioPreviewPlaying = playing) }
@@ -352,20 +476,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setSparrowBinding(entityId: String, animKind: String, prefix: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeSetSparrowBinding(entityId, animKind, prefix))
         }
     }
 
     suspend fun querySparrowFrame(entityId: String, animKind: String, elapsedSec: Float): SparrowFrameInfo {
-        return withContext(Dispatchers.IO) {
+        return withContext(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeGetSparrowFrameInfo(entityId, animKind, elapsedSec)
             StudioJsonParser.parseSparrowFrameInfo(raw)
         }
     }
 
     fun addStageEntity(name: String, role: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeAddStageEntity(name, role)
             applyActionJson(raw)
             val newest = _uiState.value.snapshot.stageEntities.lastOrNull()?.id
@@ -387,9 +511,51 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         scale: Float,
         opacity: Float,
         visible: Boolean,
-        flipX: Boolean
+        flipX: Boolean,
+        commitSave: Boolean = true
     ) {
-        viewModelScope.launch(Dispatchers.IO) {
+        // Actualización optimista síncrona: evita que sliders o arrastres en 60Hz reboten con snapshots viejos
+        val clampedScale = scale.coerceIn(0.05f, 6.0f)
+        val clampedOpacity = opacity.coerceIn(0f, 1f)
+        _uiState.update { state ->
+            val updatedEntities = state.snapshot.stageEntities.map { ent ->
+                if (ent.id != entityId) {
+                    ent
+                } else {
+                    val nextX = when {
+                        useAbsPos -> absX.coerceIn(-1000f, 2600f)
+                        dx != 0f -> (ent.x + dx).coerceIn(-1000f, 2600f)
+                        else -> ent.x
+                    }
+                    val nextY = when {
+                        useAbsPos -> absY.coerceIn(-1000f, 1800f)
+                        dy != 0f -> (ent.y + dy).coerceIn(-1000f, 1800f)
+                        else -> ent.y
+                    }
+                    val cleanName = if (name.isNotBlank()) name.trim() else ent.displayName
+                    val roleLabel = when (role) {
+                        "background" -> "Fondo"
+                        "player" -> "Player (Jugador)"
+                        "opponent" -> "Enemigo (Rival)"
+                        else -> "Decoración"
+                    }
+                    ent.copy(
+                        displayName = cleanName,
+                        role = role,
+                        roleLabel = roleLabel,
+                        x = nextX,
+                        y = nextY,
+                        scale = clampedScale,
+                        opacity = clampedOpacity,
+                        visible = visible,
+                        flipX = flipX
+                    )
+                }
+            }
+            state.copy(snapshot = state.snapshot.copy(stageEntities = updatedEntities))
+        }
+
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeUpdateStageEntity(
                 entityId,
                 name,
@@ -399,23 +565,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 absX,
                 absY,
                 useAbsPos,
-                scale,
-                opacity,
+                clampedScale,
+                clampedOpacity,
                 visible,
-                flipX
+                flipX,
+                commitSave
             )
-            applyActionJson(raw, silentOk = true)
+            if (commitSave) {
+                applyActionJson(raw, silentOk = true)
+            }
         }
     }
 
     fun reorderStageEntity(entityId: String, action: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeReorderStageEntity(entityId, action), silentOk = true)
         }
     }
 
     fun addScript(language: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeAddScript(language)
             applyActionJson(raw)
             val newest = _uiState.value.snapshot.scripts.lastOrNull()?.id
@@ -426,14 +595,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateScript(scriptId: String, enabled: Boolean, sourceCode: String, silent: Boolean = true) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeUpdateScript(scriptId, enabled, sourceCode)
             applyActionJson(raw, silentOk = silent)
         }
     }
 
     fun validateScript(scriptId: String, currentEnabled: Boolean, currentSource: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             NativeEngineBridge.nativeUpdateScript(scriptId, currentEnabled, currentSource)
             val res = StudioJsonParser.parseValidationResult(
                 NativeEngineBridge.nativeValidateScript(scriptId)
@@ -450,14 +619,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun restoreDefaultArrowSvg() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             applyActionJson(NativeEngineBridge.nativeRestoreDefaultArrowSvg())
             reloadArrowBitmaps()
         }
     }
 
     fun startCompileAndPlay() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
+            NativeEngineBridge.nativeFlushSave()
             if (_uiState.value.audioPreviewPlaying) {
                 NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
             }
@@ -484,15 +654,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
             val gpRaw = NativeEngineBridge.nativeStartGameplay()
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
+            val compiledByIndex = gpStep.entities.map { compiledMap[it.id] }
+
+            withContext(Dispatchers.Main) {
+                gameplayFrameState.seedFromJsonStep(gpStep)
+            }
 
             _uiState.update {
                 it.copy(
                     isBusy = false,
                     snapshot = snap,
                     compiledBitmaps = compiledMap,
+                    compiledBitmapsByIndex = compiledByIndex,
                     arrowBitmaps = arrows,
                     receptorBitmaps = receptors,
-                    gameplayStep = gpStep,
                     currentScreen = StudioScreen.Gameplay
                 )
             }
@@ -500,41 +675,74 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     suspend fun stepGameplayFrame(dtSec: Float, pressedMask: Int, justPressedMask: Int) {
-        val step = withContext(Dispatchers.IO) {
-            val raw = NativeEngineBridge.nativeStepGameplay(dtSec, pressedMask, justPressedMask)
-            StudioJsonParser.parseGameplayStep(raw)
+        val written = withContext(engineIoDispatcher) {
+            var res = NativeEngineBridge.nativeStepGameplayBinary(
+                dtSec,
+                pressedMask,
+                justPressedMask,
+                gameplayFrameState.directBuffer
+            )
+            if (res < 0) {
+                val needed = -res
+                if (needed in 1..(16 * 1024 * 1024)) {
+                    gameplayFrameState.ensureDirectCapacity(needed)
+                    res = NativeEngineBridge.nativeStepGameplayBinary(
+                        dtSec,
+                        pressedMask,
+                        justPressedMask,
+                        gameplayFrameState.directBuffer
+                    )
+                }
+            }
+            res
         }
-        _uiState.update { it.copy(gameplayStep = step) }
+        if (written > 0) {
+            gameplayFrameState.decodeFromDirectBuffer(written)
+        }
     }
 
     fun setGameplayPaused(paused: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeSetGameplayPaused(paused)
             val step = StudioJsonParser.parseGameplayStep(raw)
-            _uiState.update { it.copy(gameplayStep = step) }
+            withContext(Dispatchers.Main) {
+                gameplayFrameState.seedFromJsonStep(step)
+            }
         }
     }
 
     fun restartGameplay() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val gpRaw = NativeEngineBridge.nativeStartGameplay()
             val gpStep = StudioJsonParser.parseGameplayStep(gpRaw)
-            _uiState.update { it.copy(gameplayStep = gpStep) }
+            val compiledMap = _uiState.value.compiledBitmaps
+            val compiledByIndex = gpStep.entities.map { compiledMap[it.id] }
+            withContext(Dispatchers.Main) {
+                gameplayFrameState.seedFromJsonStep(gpStep)
+            }
+            _uiState.update { it.copy(compiledBitmapsByIndex = compiledByIndex) }
         }
     }
 
     fun stopGameplayAndNavigate(target: StudioScreen = StudioScreen.Hub) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeStopGameplay()
             val res = StudioJsonParser.parseActionResult(raw)
+            withContext(Dispatchers.Main) {
+                gameplayFrameState.reset()
+            }
             _uiState.update {
                 it.copy(
                     currentScreen = target,
-                    snapshot = res.snapshot ?: it.snapshot,
-                    gameplayStep = GameplayStep()
+                    snapshot = res.snapshot ?: it.snapshot
                 )
             }
         }
+    }
+
+    private fun refreshProjectsInternal() {
+        val list = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())
+        _uiState.update { it.copy(projects = list) }
     }
 
     private fun applyActionJson(rawJson: String, silentOk: Boolean = false) {

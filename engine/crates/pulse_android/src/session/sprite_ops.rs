@@ -31,7 +31,7 @@ impl EngineSession {
         let (baked_sheet, baked_atlas) = bake_animate_atlas(&doc, &spritemap, &src_img)?;
         let anim_count = baked_atlas.animations.len();
 
-        let baked_dir = self.cache_dir.join("animate_baked");
+        let baked_dir = self.project_textures_dir().join("animate_baked");
         let _ = std::fs::create_dir_all(&baked_dir);
         let baked_path = baked_dir.join(format!("{}_baked.png", entity_id));
         baked_sheet
@@ -58,7 +58,7 @@ impl EngineSession {
         let display_png_path = if is_astc {
             match load_sprite_image(&path) {
                 Ok(decoded) => {
-                    let dec_dir = self.cache_dir.join("decoded_textures");
+                    let dec_dir = self.project_textures_dir().join("decoded_textures");
                     let _ = std::fs::create_dir_all(&dec_dir);
                     let out_png = dec_dir.join(format!("{}.png", entity_id));
                     if let Err(e) = decoded.save_with_format(&out_png, ImageFormat::Png) {
@@ -90,12 +90,18 @@ impl EngineSession {
         }
 
         match self.try_bake_animate_for_entity(entity_id) {
-            Ok(Some(msg)) => self.ok_response(msg),
-            Ok(None) => self.ok_response(if is_astc {
-                "Textura .astc decodificada y vinculada en Rust"
-            } else {
-                "Hoja de textura vinculada en Rust"
-            }),
+            Ok(Some(msg)) => {
+                self.save_active_project_now();
+                self.ok_response(msg)
+            }
+            Ok(None) => {
+                self.save_active_project_now();
+                self.ok_response(if is_astc {
+                    "Textura .astc decodificada y vinculada en Rust"
+                } else {
+                    "Hoja de textura vinculada en Rust"
+                })
+            }
             Err(e) => self.err_response(e),
         }
     }
@@ -124,6 +130,7 @@ impl EngineSession {
                         ent.animate_doc = None;
                         ent.animate_json_path = None;
                         ent.atlas = Some(atlas);
+                        self.save_active_project_now();
                         return self.ok_response(format!(
                             "Atlas JSON cargado automáticamente: {} animaciones",
                             count
@@ -142,11 +149,17 @@ impl EngineSession {
                         return self.err_response("Objeto de escenario no encontrado");
                     }
                     return match self.try_bake_animate_for_entity(entity_id) {
-                        Ok(Some(msg)) => self.ok_response(msg),
-                        Ok(None) => self.ok_response(format!(
-                            "spritemap1.json cargado ({} piezas). Falta Animation.json o textura para hornear el rig.",
-                            piece_count
-                        )),
+                        Ok(Some(msg)) => {
+                            self.save_active_project_now();
+                            self.ok_response(msg)
+                        }
+                        Ok(None) => {
+                            self.save_active_project_now();
+                            self.ok_response(format!(
+                                "spritemap1.json cargado ({} piezas). Falta Animation.json o textura para hornear el rig.",
+                                piece_count
+                            ))
+                        }
                         Err(e) => self.err_response(e),
                     };
                 }
@@ -159,11 +172,17 @@ impl EngineSession {
                         return self.err_response("Objeto de escenario no encontrado");
                     }
                     return match self.try_bake_animate_for_entity(entity_id) {
-                        Ok(Some(msg)) => self.ok_response(msg),
-                        Ok(None) => self.ok_response(format!(
-                            "Animation.json cargado ({} animaciones). Importa spritemap1.json y la textura (.astc/.png).",
-                            anim_count
-                        )),
+                        Ok(Some(msg)) => {
+                            self.save_active_project_now();
+                            self.ok_response(msg)
+                        }
+                        Ok(None) => {
+                            self.save_active_project_now();
+                            self.ok_response(format!(
+                                "Animation.json cargado ({} animaciones). Importa spritemap1.json y la textura (.astc/.png).",
+                                anim_count
+                            ))
+                        }
                         Err(e) => self.err_response(e),
                     };
                 }
@@ -180,6 +199,7 @@ impl EngineSession {
                     ent.animate_doc = None;
                     ent.animate_json_path = None;
                     ent.atlas = Some(atlas);
+                    self.save_active_project_now();
                     self.ok_response(format!(
                         "XML Sparrow ensamblado automáticamente: {} animaciones",
                         count
@@ -196,13 +216,19 @@ impl EngineSession {
         let Some(kind) = parse_anim_kind(kind_key) else {
             return self.err_response("Tipo de animación desconocido");
         };
+        let mut updated = false;
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
             if let Some(atlas) = &mut ent.atlas {
                 atlas.bindings.insert(kind, prefix.to_string());
-                return self.ok_response("Animación asignada");
+                updated = true;
             }
         }
-        self.err_response("El objeto no tiene un atlas cargado")
+        if updated {
+            self.save_active_project_now();
+            self.ok_response("Animación asignada")
+        } else {
+            self.err_response("El objeto no tiene un atlas cargado")
+        }
     }
 
     pub fn get_sparrow_frame_info(

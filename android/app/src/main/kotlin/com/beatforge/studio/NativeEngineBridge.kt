@@ -6,6 +6,8 @@
 
 package com.beatforge.studio
 
+import java.nio.ByteBuffer
+
 object NativeEngineBridge {
 
     @Volatile
@@ -23,7 +25,25 @@ object NativeEngineBridge {
     }
 
     @JvmStatic
-    external fun nativeInit(cacheDir: String): String
+    external fun nativeInit(cacheDir: String, dataDir: String): String
+
+    @JvmStatic
+    external fun nativeFlushSave()
+
+    @JvmStatic
+    external fun nativeListProjects(): String
+
+    @JvmStatic
+    external fun nativeCreateProject(name: String, author: String): String
+
+    @JvmStatic
+    external fun nativeOpenProject(projectId: String): String
+
+    @JvmStatic
+    external fun nativeDuplicateProject(projectId: String): String
+
+    @JvmStatic
+    external fun nativeDeleteProject(projectId: String): String
 
     @JvmStatic
     external fun nativeGetSnapshot(): String
@@ -142,7 +162,8 @@ object NativeEngineBridge {
         scale: Float,
         opacity: Float,
         visible: Boolean,
-        flipX: Boolean
+        flipX: Boolean,
+        commitSave: Boolean
     ): String
 
     @JvmStatic
@@ -188,6 +209,14 @@ object NativeEngineBridge {
         lanePressedMask: Int,
         laneJustPressedMask: Int
     ): String
+
+    @JvmStatic
+    external fun nativeStepGameplayBinary(
+        dtSec: Float,
+        lanePressedMask: Int,
+        laneJustPressedMask: Int,
+        outBuffer: ByteBuffer
+    ): Int
 
     @JvmStatic
     external fun nativeSetGameplayPaused(paused: Boolean): String

@@ -108,12 +108,22 @@ impl AudioTrackSlot {
     }
 }
 
+/// Marca de tiempo actual en milisegundos Unix para ordenar proyectos recientes.
+pub fn current_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Proyecto completo del usuario listo para editar o compilar en caliente.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModProject {
     pub id: String,
     pub name: String,
     pub author: String,
+    #[serde(default)]
+    pub updated_at_ms: u64,
     pub chart: ChartData,
     pub chart_source_path: Option<PathBuf>,
     pub audio_tracks: [AudioTrackSlot; MAX_AUDIO_TRACKS],
@@ -158,6 +168,7 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             id: "proj_neon_pulse".to_string(),
             name: "Neon Pulse Demo".to_string(),
             author: "Creador Local".to_string(),
+            updated_at_ms: current_epoch_ms(),
             chart: ChartData::bundled_demo_chart(),
             chart_source_path: None,
             audio_tracks: AudioTrackSlot::default_three_slots(),
@@ -184,6 +195,18 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             audio_offset_ms: 0.0,
             scroll_speed_override: None,
         }
+    }
+
+    /// Crea un nuevo proyecto limpio listo para personalizar desde cero.
+    pub fn new_blank(id: impl Into<String>, name: impl Into<String>, author: impl Into<String>) -> Self {
+        let mut proj = Self::new_demo();
+        proj.id = id.into();
+        let clean_name = name.into();
+        proj.name = clean_name.clone();
+        proj.author = author.into();
+        proj.chart.title = clean_name;
+        proj.updated_at_ms = current_epoch_ms();
+        proj
     }
 
     /// Asigna una pista de audio respetando el límite estricto de máximo 3 pistas.

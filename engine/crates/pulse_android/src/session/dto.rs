@@ -21,6 +21,22 @@ pub struct ActionResultJson<T: Serialize> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectSummaryJson {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub chart_title: String,
+    pub bpm: f64,
+    pub note_count: usize,
+    pub track_count: usize,
+    pub entity_count: usize,
+    pub script_count: usize,
+    pub updated_at_ms: u64,
+    pub is_active: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSnapshotJson {
     pub id: String,
     pub name: String,
@@ -248,6 +264,9 @@ pub struct GameplayRuntimeState {
     pub paused: bool,
     pub finished: bool,
     pub last_logs: Vec<String>,
+    pub last_countdown_stage: i32,
+    pub hud_revision: u32,
+    pub last_binary_hud_revision: u32,
 }
 
 impl EngineSession {

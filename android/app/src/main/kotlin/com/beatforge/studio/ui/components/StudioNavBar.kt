@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Dashboard
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Palette
@@ -53,6 +54,7 @@ private data class NavRailItem(
 
 private val RAIL_TABS = listOf(
     NavRailItem(StudioScreen.Hub, Icons.Rounded.Dashboard),
+    NavRailItem(StudioScreen.Projects, Icons.Rounded.FolderOpen),
     NavRailItem(StudioScreen.Chart, Icons.Rounded.Tune),
     NavRailItem(StudioScreen.Audio, Icons.Rounded.GraphicEq),
     NavRailItem(StudioScreen.SpriteLab, Icons.Rounded.Animation),

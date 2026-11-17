@@ -14,7 +14,11 @@ use std::sync::OnceLock;
 static SESSION: OnceLock<Mutex<EngineSession>> = OnceLock::new();
 
 pub fn init_session(cache_dir: PathBuf) -> &'static Mutex<EngineSession> {
-    SESSION.get_or_init(|| Mutex::new(EngineSession::new(cache_dir)))
+    init_session_with_dirs(cache_dir.clone(), cache_dir)
+}
+
+pub fn init_session_with_dirs(cache_dir: PathBuf, data_dir: PathBuf) -> &'static Mutex<EngineSession> {
+    SESSION.get_or_init(|| Mutex::new(EngineSession::new_with_dirs(cache_dir, data_dir)))
 }
 
 pub fn session() -> &'static Mutex<EngineSession> {
@@ -25,7 +29,7 @@ pub fn session() -> &'static Mutex<EngineSession> {
 mod jni_exports {
     use super::*;
     use jni::JNIEnv;
-    use jni::objects::{JByteArray, JClass, JString};
+    use jni::objects::{JByteArray, JByteBuffer, JClass, JString};
     use jni::sys::{jboolean, jdouble, jfloat, jint};
 
     fn read_str(env: &mut JNIEnv, input: &JString) -> String {
@@ -43,15 +47,85 @@ mod jni_exports {
         mut env: JNIEnv<'local>,
         _cls: JClass<'local>,
         cache_dir: JString<'local>,
+        data_dir: JString<'local>,
     ) -> JString<'local> {
         android_logger::init_once(
             android_logger::Config::default()
                 .with_max_level(log::LevelFilter::Info)
                 .with_tag("BeatForgeEngine"),
         );
-        let dir = PathBuf::from(read_str(&mut env, &cache_dir));
-        let sess = init_session(dir);
+        let cdir = PathBuf::from(read_str(&mut env, &cache_dir));
+        let ddir_raw = read_str(&mut env, &data_dir);
+        let ddir = if ddir_raw.trim().is_empty() {
+            cdir.clone()
+        } else {
+            PathBuf::from(ddir_raw)
+        };
+        let sess = init_session_with_dirs(cdir, ddir);
         let json = sess.lock().snapshot_json_string();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeFlushSave(
+        _env: JNIEnv,
+        _cls: JClass,
+    ) {
+        session().lock().flush_pending_save();
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeListProjects<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+    ) -> JString<'local> {
+        let json = session().lock().list_projects_json();
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeCreateProject<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        name: JString<'local>,
+        author: JString<'local>,
+    ) -> JString<'local> {
+        let n = read_str(&mut env, &name);
+        let a = read_str(&mut env, &author);
+        let json = session().lock().create_project(&n, &a);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeOpenProject<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        project_id: JString<'local>,
+    ) -> JString<'local> {
+        let pid = read_str(&mut env, &project_id);
+        let json = session().lock().open_project(&pid);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeDuplicateProject<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        project_id: JString<'local>,
+    ) -> JString<'local> {
+        let pid = read_str(&mut env, &project_id);
+        let json = session().lock().duplicate_project(&pid);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeDeleteProject<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        project_id: JString<'local>,
+    ) -> JString<'local> {
+        let pid = read_str(&mut env, &project_id);
+        let json = session().lock().delete_project(&pid);
         to_jstr(&mut env, &json)
     }
 
@@ -109,6 +183,7 @@ mod jni_exports {
             let mut guard = session().lock();
             guard.project.chart = pulse_core::ChartData::bundled_demo_chart();
             guard.project.chart_source_path = None;
+            guard.save_active_project_now();
             guard.ok_response("Chart demo restaurado")
         };
         to_jstr(&mut env, &json)
@@ -399,6 +474,7 @@ mod jni_exports {
         opacity: jfloat,
         visible: jboolean,
         flip_x: jboolean,
+        commit_save: jboolean,
     ) -> JString<'local> {
         let eid = read_str(&mut env, &entity_id);
         let name_s = read_str(&mut env, &name);
@@ -416,6 +492,7 @@ mod jni_exports {
             opacity,
             visible != 0,
             flip_x != 0,
+            commit_save != 0,
         );
         to_jstr(&mut env, &json)
     }
@@ -558,6 +635,32 @@ mod jni_exports {
             .lock()
             .step_gameplay(dt_sec, lane_pressed_mask, lane_just_pressed_mask);
         to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeStepGameplayBinary<'local>(
+        env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        dt_sec: jfloat,
+        lane_pressed_mask: jint,
+        lane_just_pressed_mask: jint,
+        out_buffer: JByteBuffer<'local>,
+    ) -> jint {
+        let Ok(ptr) = env.get_direct_buffer_address(&out_buffer) else {
+            return -1;
+        };
+        let Ok(cap) = env.get_direct_buffer_capacity(&out_buffer) else {
+            return -1;
+        };
+        if ptr.is_null() || cap == 0 {
+            return -1;
+        }
+        // SAFETY: `out_buffer` es un DirectByteBuffer válido proporcionado por Kotlin;
+        // su rango `[ptr, ptr + cap)` permanece vivo y exclusivo durante esta llamada JNI síncrona.
+        let slice = unsafe { std::slice::from_raw_parts_mut(ptr, cap) };
+        session()
+            .lock()
+            .step_gameplay_binary(dt_sec, lane_pressed_mask, lane_just_pressed_mask, slice)
     }
 
     #[unsafe(no_mangle)]

@@ -9,15 +9,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BINARY_GAMEPLAY_ENTITY_BYTES,
+  BINARY_GAMEPLAY_HEADER_BYTES,
+  BINARY_GAMEPLAY_MAGIC,
+  BINARY_GAMEPLAY_NOTE_BYTES,
   LruResourceCache,
   advanceNoteSlidingWindow,
   autoBindSparrowPrefixes,
+  clampEntityScale,
   compareNaturalFrameNames,
   computeCountdownState,
+  computeReceptorLayout,
   computeSmartTextureScale,
   computeSustainTailSpan,
   computeTrimmedFramePlacement,
   computeUniformCharacterDrawBox,
+  decodeBinaryGameplayFrame,
   desaturateToNeutralRgba,
   detectSpriteJsonFormat,
   mapRotatedSpriteSample,
@@ -28,6 +35,7 @@ import {
   resolveMobileTouchLanes,
   serializeChartJson,
   shouldDiscardInvisibleEntity,
+  sortProjectSummaries,
   stripTrailingFrameDigits,
   validateAudioTrackCount,
 } from './engine-tools';
@@ -491,39 +499,200 @@ test('computeSustainTailSpan shrinks tail smoothly into receptorY after head hit
   assert.equal(downscrollEnd.tailLength, 50);
 });
 
-test('resolveMobileTouchLanes enforces direct arrow hits in tap_arrows and 4 full columns in classic_hitbox', () => {
-  // En 1280x720 upscroll, las flechas del jugador están en x=765, 870, 975, 1080 y y=118
+test('resolveMobileTouchLanes uses wide bottom layout ONLY in downscroll tap_arrows and standard layout in upscroll', () => {
+  const downLayout = computeReceptorLayout({
+    controlMode: 'tap_arrows',
+    downscroll: true,
+    screenWidth: 1280,
+    screenHeight: 720,
+  });
+  assert.equal(downLayout.downscrollWideTactile, true);
+  assert.deepEqual(downLayout.playerXs, [340, 495, 785, 940]);
+  assert.equal(downLayout.playerY, 595);
+  assert.equal(downLayout.opponentY, 100);
+
+  const upLayout = computeReceptorLayout({
+    controlMode: 'tap_arrows',
+    downscroll: false,
+    screenWidth: 1280,
+    screenHeight: 720,
+  });
+  assert.equal(upLayout.downscrollWideTactile, false);
+  assert.deepEqual(upLayout.playerXs, [765, 870, 975, 1080]);
+  assert.equal(upLayout.playerY, 118);
+
+  // Downscroll tap_arrows: tocar flechas separadas abajo (IZQ en 340, DER en 940)
+  const hitDownscrollBottom = resolveMobileTouchLanes({
+    controlMode: 'tap_arrows',
+    touches: [
+      { x: 342, y: 595 },
+      { x: 938, y: 600 },
+    ],
+    screenWidth: 1280,
+    screenHeight: 720,
+    downscroll: true,
+  });
+  assert.equal(hitDownscrollBottom, (1 << 0) | (1 << 3));
+
+  // Upscroll tap_arrows: tocar fuera de las flechas superiores no cuenta
   const missOutside = resolveMobileTouchLanes({
     controlMode: 'tap_arrows',
-    touches: [{ x: 300, y: 500 }],
+    touches: [{ x: 340, y: 595 }],
     screenWidth: 1280,
     screenHeight: 720,
     downscroll: false,
   });
   assert.equal(missOutside, 0);
 
-  const hitPlayerArrows = resolveMobileTouchLanes({
+  const hitUpscrollTop = resolveMobileTouchLanes({
     controlMode: 'tap_arrows',
     touches: [
-      { x: 765, y: 120 }, // lane 0 (IZQ)
-      { x: 1080, y: 115 }, // lane 3 (DER)
+      { x: 765, y: 120 },
+      { x: 1080, y: 115 },
     ],
     screenWidth: 1280,
     screenHeight: 720,
     downscroll: false,
   });
-  assert.equal(hitPlayerArrows, (1 << 0) | (1 << 3));
+  assert.equal(hitUpscrollTop, (1 << 0) | (1 << 3));
 
   // Hitbox clásico (Psych Mobile): 4 columnas verticales completas sin importar Y
   const hitboxTouch = resolveMobileTouchLanes({
     controlMode: 'classic_hitbox',
     touches: [
-      { x: 400, y: 600 }, // 2do cuarto -> lane 1 (ABA)
-      { x: 1150, y: 200 }, // 4to cuarto -> lane 3 (DER)
+      { x: 400, y: 600 },
+      { x: 1150, y: 200 },
     ],
     screenWidth: 1280,
     screenHeight: 720,
-    downscroll: false,
+    downscroll: true,
   });
   assert.equal(hitboxTouch, (1 << 1) | (1 << 3));
 });
+
+test('decodeBinaryGameplayFrame decodes BFGP header, scaled entities, visible notes and optional HUD strings', () => {
+  const encoder = new TextEncoder();
+  const sJudg = encoder.encode('¡PERFECTO!');
+  const sCd = encoder.encode('¡YA!');
+  const sErr = encoder.encode('');
+  const sLog = encoder.encode('onBeatHit(4)');
+
+  const totalBytes =
+    BINARY_GAMEPLAY_HEADER_BYTES +
+    BINARY_GAMEPLAY_ENTITY_BYTES +
+    BINARY_GAMEPLAY_NOTE_BYTES +
+    8 +
+    sJudg.length +
+    sCd.length +
+    sErr.length +
+    sLog.length;
+
+  const buf = new Uint8Array(totalBytes);
+  const view = new DataView(buf.buffer);
+
+  // Header 112B
+  view.setUint32(0, BINARY_GAMEPLAY_MAGIC, true);
+  view.setUint32(4, 1 | (1 << 1) | (1 << 4) | (1 << 5), true); // active + downscroll + classicHitbox + hasHudStrings
+  view.setUint32(8, 7, true); // hudRevision
+  view.setUint32(12, 0b0010_0000_0101, true); // player mask=5, opp mask=2
+  view.setInt32(16, 3, true); // countdownStage
+  view.setFloat32(20, 0.75, true);
+  view.setFloat64(24, 1234.5, true); // songPosMs
+  view.setFloat64(32, 90000.0, true); // durationMs
+  view.setFloat64(40, 2.4, true); // scrollSpeed
+  view.setFloat64(48, 145.0, true); // activeBpm
+  view.setFloat32(56, 1.15, true); // cameraZoom
+  view.setFloat32(60, 0.0, true);
+  view.setFloat32(64, 640.0, true);
+  view.setFloat32(68, 360.0, true);
+  view.setFloat32(72, 1280.0, true);
+  view.setFloat32(76, 720.0, true);
+  view.setFloat32(80, 0.82, true); // health
+  view.setUint32(84, 18, true); // hits
+  view.setBigInt64(88, 6300n, true); // score
+  view.setUint32(96, 12, true); // combo
+  view.setUint32(100, 15, true); // maxCombo
+  view.setUint32(104, 1, true); // misses
+  view.setUint16(108, 1, true); // entityCount
+  view.setUint16(110, 1, true); // noteCount
+
+  // Entity 60B
+  let off = BINARY_GAMEPLAY_HEADER_BYTES;
+  view.setFloat32(off, 960, true);
+  view.setFloat32(off + 4, 420, true);
+  view.setFloat32(off + 8, 300, true);
+  view.setFloat32(off + 12, 340, true);
+  view.setFloat32(off + 16, 2.25, true); // scale
+  view.setFloat32(off + 20, 0.9, true); // opacity
+  view.setUint32(off + 24, 1 | (1 << 2) | (2 << 4), true); // visible + hasFrame + player(2)
+  view.setUint32(off + 28, 10, true);
+  view.setUint32(off + 32, 20, true);
+  view.setUint32(off + 36, 120, true);
+  view.setUint32(off + 40, 220, true);
+  view.setInt32(off + 44, -8, true);
+  view.setInt32(off + 48, -12, true);
+  view.setUint32(off + 52, 140, true);
+  view.setUint32(off + 56, 250, true);
+  off += BINARY_GAMEPLAY_ENTITY_BYTES;
+
+  // Note 28B
+  view.setBigUint64(off, 99n, true);
+  view.setFloat64(off + 8, 2500.0, true);
+  view.setFloat64(off + 16, 300.0, true);
+  view.setUint32(off + 24, 2 | (1 << 2) | (1 << 3), true); // up(2) + isPlayer + headHit
+  off += BINARY_GAMEPLAY_NOTE_BYTES;
+
+  for (const chunk of [sJudg, sCd, sErr, sLog]) {
+    view.setUint16(off, chunk.length, true);
+    off += 2;
+    buf.set(chunk, off);
+    off += chunk.length;
+  }
+
+  const decoded = decodeBinaryGameplayFrame(buf);
+  assert.equal(decoded.active, true);
+  assert.equal(decoded.downscroll, true);
+  assert.equal(decoded.controlMode, 'classic_hitbox');
+  assert.equal(decoded.hasHudStrings, true);
+  assert.equal(decoded.hudRevision, 7);
+  assert.equal(decoded.holdingLanesMask, 5);
+  assert.equal(decoded.opponentHoldingLanesMask, 2);
+  assert.equal(decoded.score, 6300n);
+  assert.equal(decoded.entities.length, 1);
+  assert.ok(Math.abs(decoded.entities[0].scale - 2.25) < 0.001);
+  assert.equal(decoded.entities[0].roleCode, 2);
+  assert.equal(decoded.entities[0].hasFrame, true);
+  assert.equal(decoded.entities[0].offX, -8);
+  assert.equal(decoded.visibleNotes.length, 1);
+  assert.equal(decoded.visibleNotes[0].direction, 2);
+  assert.equal(decoded.visibleNotes[0].headHit, true);
+  assert.equal(decoded.lastJudgement, '¡PERFECTO!');
+  assert.equal(decoded.countdownLabel, '¡YA!');
+  assert.equal(decoded.scriptLog, 'onBeatHit(4)');
+
+  // Sin bit 5 (hasHudStrings = false) no lee strings en frames estables
+  view.setUint32(4, 1, true);
+  const fastFrame = decodeBinaryGameplayFrame(
+    buf.subarray(0, BINARY_GAMEPLAY_HEADER_BYTES + BINARY_GAMEPLAY_ENTITY_BYTES + BINARY_GAMEPLAY_NOTE_BYTES),
+  );
+  assert.equal(fastFrame.hasHudStrings, false);
+  assert.equal(fastFrame.lastJudgement, undefined);
+});
+
+test('clampEntityScale and sortProjectSummaries enforce valid bounds and active-first ordering', () => {
+  assert.equal(clampEntityScale(0.001), 0.05);
+  assert.equal(clampEntityScale(12.5), 6.0);
+  assert.equal(clampEntityScale(2.75), 2.75);
+  assert.equal(clampEntityScale(Number.NaN), 1.0);
+
+  const sorted = sortProjectSummaries([
+    { id: 'p1', name: 'Viejo', updatedAtMs: 1000, isActive: false },
+    { id: 'p2', name: 'Reciente', updatedAtMs: 5000, isActive: false },
+    { id: 'p3', name: 'Activo', updatedAtMs: 2000, isActive: true },
+  ]);
+  assert.deepEqual(
+    sorted.map((p) => p.id),
+    ['p3', 'p2', 'p1'],
+  );
+});
+

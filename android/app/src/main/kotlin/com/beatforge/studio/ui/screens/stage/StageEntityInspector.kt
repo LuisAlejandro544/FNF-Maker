@@ -1,7 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/stage/StageEntityInspector.kt
 // Propósito: Inspector derecho de propiedades de la capa seleccionada en el escenario:
 // edición de nombre, cuadrícula 2x2 de roles, carga de imagen PNG/ASTC, selector de paso
-// (1/10/35 px), cruceta de desplazamiento, sliders de escala/opacidad y switches de visibilidad/flipX.
+// (1/10/35 px), cruceta de desplazamiento, controles de escala (0.1x–5.0x con botones
+// de precisión y slider sin rebote), opacidad y switches de visibilidad/flipX.
 
 package com.beatforge.studio.ui.screens.stage
 
@@ -37,7 +38,9 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -75,11 +78,52 @@ fun StageEntityInspector(
         scale: Float,
         opacity: Float,
         visible: Boolean,
-        flipX: Boolean
+        flipX: Boolean,
+        commitSave: Boolean
     ) -> Unit,
     onRequestImportPng: () -> Unit
 ) {
-    var localName by remember(entity.id, entity.displayName) { mutableStateOf(entity.displayName) }
+    var localName by remember(entity.id) { mutableStateOf(entity.displayName) }
+    var localScale by remember(entity.id) { mutableFloatStateOf(entity.scale) }
+    var isDraggingScale by remember(entity.id) { mutableStateOf(false) }
+    var localOpacity by remember(entity.id) { mutableFloatStateOf(entity.opacity) }
+    var isDraggingOpacity by remember(entity.id) { mutableStateOf(false) }
+
+    LaunchedEffect(entity.id, entity.displayName) {
+        if (localName != entity.displayName) {
+            localName = entity.displayName
+        }
+    }
+    LaunchedEffect(entity.id, entity.scale) {
+        if (!isDraggingScale) {
+            localScale = entity.scale
+        }
+    }
+    LaunchedEffect(entity.id, entity.opacity) {
+        if (!isDraggingOpacity) {
+            localOpacity = entity.opacity
+        }
+    }
+
+    fun applyImmediateScale(nextScale: Float, commit: Boolean) {
+        val clamped = nextScale.coerceIn(0.1f, 5.0f)
+        localScale = clamped
+        onUpdate(
+            entity.id,
+            localName,
+            entity.role,
+            0f,
+            0f,
+            0f,
+            0f,
+            false,
+            clamped,
+            localOpacity,
+            entity.visible,
+            entity.flipX,
+            commit
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -100,10 +144,11 @@ fun StageEntityInspector(
                     entity.x,
                     entity.y,
                     false,
-                    entity.scale,
-                    entity.opacity,
+                    localScale,
+                    localOpacity,
                     entity.visible,
-                    entity.flipX
+                    entity.flipX,
+                    true
                 )
             },
             label = { Text("Nombre", fontSize = 11.sp) },
@@ -141,10 +186,11 @@ fun StageEntityInspector(
                                         entity.x,
                                         entity.y,
                                         false,
-                                        entity.scale,
-                                        entity.opacity,
+                                        localScale,
+                                        localOpacity,
                                         entity.visible,
-                                        entity.flipX
+                                        entity.flipX,
+                                        true
                                     )
                                 },
                             contentAlignment = Alignment.Center
@@ -221,7 +267,7 @@ fun StageEntityInspector(
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             IconButton(
                 onClick = {
-                    onUpdate(entity.id, localName, entity.role, 0f, -stepPx.toFloat(), 0f, 0f, false, entity.scale, entity.opacity, entity.visible, entity.flipX)
+                    onUpdate(entity.id, localName, entity.role, 0f, -stepPx.toFloat(), 0f, 0f, false, localScale, localOpacity, entity.visible, entity.flipX, true)
                 },
                 modifier = Modifier.size(34.dp)
             ) {
@@ -230,7 +276,7 @@ fun StageEntityInspector(
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 IconButton(
                     onClick = {
-                        onUpdate(entity.id, localName, entity.role, -stepPx.toFloat(), 0f, 0f, 0f, false, entity.scale, entity.opacity, entity.visible, entity.flipX)
+                        onUpdate(entity.id, localName, entity.role, -stepPx.toFloat(), 0f, 0f, 0f, false, localScale, localOpacity, entity.visible, entity.flipX, true)
                     },
                     modifier = Modifier.size(34.dp)
                 ) {
@@ -238,7 +284,7 @@ fun StageEntityInspector(
                 }
                 IconButton(
                     onClick = {
-                        onUpdate(entity.id, localName, entity.role, stepPx.toFloat(), 0f, 0f, 0f, false, entity.scale, entity.opacity, entity.visible, entity.flipX)
+                        onUpdate(entity.id, localName, entity.role, stepPx.toFloat(), 0f, 0f, 0f, false, localScale, localOpacity, entity.visible, entity.flipX, true)
                     },
                     modifier = Modifier.size(34.dp)
                 ) {
@@ -247,7 +293,7 @@ fun StageEntityInspector(
             }
             IconButton(
                 onClick = {
-                    onUpdate(entity.id, localName, entity.role, 0f, stepPx.toFloat(), 0f, 0f, false, entity.scale, entity.opacity, entity.visible, entity.flipX)
+                    onUpdate(entity.id, localName, entity.role, 0f, stepPx.toFloat(), 0f, 0f, false, localScale, localOpacity, entity.visible, entity.flipX, true)
                 },
                 modifier = Modifier.size(34.dp)
             ) {
@@ -255,24 +301,75 @@ fun StageEntityInspector(
             }
         }
 
-        Column {
-            Text("Escala: ${((entity.scale * 100).roundToInt() / 100f)}x", color = StudioColors.TextMuted, fontSize = 11.sp)
+        // Escala continua + botones de ajuste preciso sin rebote
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Escala", color = StudioColors.TextMuted, fontSize = 11.sp)
+                Text(
+                    text = "${((localScale * 100f).roundToInt() / 100f)}x",
+                    color = StudioColors.AccentCyan,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
             Slider(
-                value = entity.scale,
+                value = localScale.coerceIn(0.1f, 5.0f),
                 onValueChange = { s ->
-                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, s, entity.opacity, entity.visible, entity.flipX)
+                    isDraggingScale = true
+                    applyImmediateScale(s, commit = false)
                 },
-                valueRange = 0.1f..3.0f,
-                colors = SliderDefaults.colors(thumbColor = StudioColors.AccentCyan, activeTrackColor = StudioColors.AccentCyan)
+                onValueChangeFinished = {
+                    isDraggingScale = false
+                    applyImmediateScale(localScale, commit = true)
+                },
+                valueRange = 0.1f..5.0f,
+                colors = SliderDefaults.colors(
+                    thumbColor = StudioColors.AccentCyan,
+                    activeTrackColor = StudioColors.AccentCyan
+                )
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ScaleStepButton(
+                    label = "- 0.1x",
+                    onClick = { applyImmediateScale(localScale - 0.1f, commit = true) },
+                    modifier = Modifier.weight(1f)
+                )
+                ScaleStepButton(
+                    label = "1.0x",
+                    onClick = { applyImmediateScale(1.0f, commit = true) },
+                    modifier = Modifier.weight(1f)
+                )
+                ScaleStepButton(
+                    label = "+ 0.1x",
+                    onClick = { applyImmediateScale(localScale + 0.1f, commit = true) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
 
         Column {
-            Text("Opacidad: ${(entity.opacity * 100).roundToInt()}%", color = StudioColors.TextMuted, fontSize = 11.sp)
+            Text(
+                text = "Opacidad: ${(localOpacity * 100f).roundToInt()}%",
+                color = StudioColors.TextMuted,
+                fontSize = 11.sp
+            )
             Slider(
-                value = entity.opacity,
+                value = localOpacity.coerceIn(0f, 1f),
                 onValueChange = { op ->
-                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, entity.scale, op, entity.visible, entity.flipX)
+                    isDraggingOpacity = true
+                    localOpacity = op
+                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, localScale, op, entity.visible, entity.flipX, false)
+                },
+                onValueChangeFinished = {
+                    isDraggingOpacity = false
+                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, localScale, localOpacity, entity.visible, entity.flipX, true)
                 },
                 valueRange = 0f..1f,
                 colors = SliderDefaults.colors(thumbColor = StudioColors.AccentIndigo, activeTrackColor = StudioColors.AccentIndigo)
@@ -288,7 +385,7 @@ fun StageEntityInspector(
             Switch(
                 checked = entity.visible,
                 onCheckedChange = { vis ->
-                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, entity.scale, entity.opacity, vis, entity.flipX)
+                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, localScale, localOpacity, vis, entity.flipX, true)
                 }
             )
         }
@@ -302,9 +399,35 @@ fun StageEntityInspector(
             Switch(
                 checked = entity.flipX,
                 onCheckedChange = { fx ->
-                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, entity.scale, entity.opacity, entity.visible, fx)
+                    onUpdate(entity.id, localName, entity.role, 0f, 0f, 0f, 0f, false, localScale, localOpacity, entity.visible, fx, true)
                 }
             )
         }
+    }
+}
+
+@Composable
+private fun ScaleStepButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(StudioColors.BgCard)
+            .border(1.dp, StudioColors.BorderSubtle, RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = StudioColors.TextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
