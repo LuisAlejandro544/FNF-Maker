@@ -20,6 +20,17 @@ use std::time::{Duration, Instant};
 
 const AUTO_SAVE_THROTTLE_MS: u64 = 250;
 
+fn normalize_loaded_project(proj: &mut ModProject) {
+    proj.ensure_camera_script();
+    proj.ensure_stage_events_script();
+    proj.ensure_ui_blackout_script();
+    for ent in &mut proj.stage.entities {
+        if let Some(atlas) = ent.atlas.as_mut() {
+            atlas.normalize_and_center_animations();
+        }
+    }
+}
+
 pub(super) fn sanitize_project_id(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
@@ -355,9 +366,7 @@ impl EngineSession {
         }
 
         if let Some(mut proj) = latest {
-            proj.ensure_camera_script();
-            proj.ensure_stage_events_script();
-            proj.ensure_ui_blackout_script();
+            normalize_loaded_project(&mut proj);
             self.project = proj;
             let _ = std::fs::write(
                 self.active_project_marker(),
@@ -381,9 +390,7 @@ impl EngineSession {
             .map_err(|e| format!("No se pudo leer el proyecto: {}", e))?;
         let mut proj = serde_json::from_str::<ModProject>(&raw)
             .map_err(|e| format!("Proyecto con formato inválido: {}", e))?;
-        proj.ensure_camera_script();
-        proj.ensure_stage_events_script();
-        proj.ensure_ui_blackout_script();
+        normalize_loaded_project(&mut proj);
         self.project = proj;
         Ok(())
     }
@@ -752,7 +759,9 @@ impl EngineSession {
         self.compiled_bundle = None;
         self.compiled_texture_paths.clear();
         self.last_compile_report = None;
-        self.project = imported.project;
+        let mut imported_proj = imported.project;
+        normalize_loaded_project(&mut imported_proj);
+        self.project = imported_proj;
         self.dirty = false;
         self.last_save_at = Instant::now();
 

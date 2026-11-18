@@ -45,6 +45,7 @@ impl EngineSession {
         if let Some(ent) = self.project.stage.find_mut(entity_id) {
             ent.image_path = Some(baked_path);
             ent.atlas = Some(baked_atlas);
+            ent.fit_dimensions_to_atlas();
             if let Some(pending) = ent.pending_character_desc.clone() {
                 ent.apply_character_descriptor(&pending, false);
             }
@@ -102,14 +103,10 @@ impl EngineSession {
             old_img = ent.image_path.take();
             ent.raw_image_path = Some(adopted_raw_path);
             ent.image_path = Some(display_img_path);
-            if let Some((w, h)) = dims {
-                if ent.atlas.is_none() && ent.role != EntityRole::Background && w > 0 && h > 0 {
-                    // Ajustar tamaño lógico inicial manteniendo proporción razonable dentro de 1280x720.
-                    let max_side = w.max(h) as f32;
-                    let norm = (320.0 / max_side).min(1.0);
-                    ent.width = (w as f32 * norm).max(64.0);
-                    ent.height = (h as f32 * norm).max(64.0);
-                }
+            if ent.atlas.is_some() {
+                ent.fit_dimensions_to_atlas();
+            } else if let Some((w, h)) = dims {
+                ent.fit_dimensions_to_image(w, h);
             }
         }
         self.remove_managed_asset_if_unreferenced(old_raw.as_deref());
@@ -159,6 +156,7 @@ impl EngineSession {
                         ent.animate_doc = None;
                         ent.animate_json_path = None;
                         ent.atlas = Some(atlas);
+                        ent.fit_dimensions_to_atlas();
                         if let Some(pending) = ent.pending_character_desc.clone() {
                             ent.apply_character_descriptor(&pending, false);
                         }
@@ -177,6 +175,7 @@ impl EngineSession {
                         ent.xml_path = Some(display_descriptor_path);
                         ent.animate_spritemap = Some(sm);
                         ent.atlas = Some(fallback);
+                        ent.fit_dimensions_to_atlas();
                     } else {
                         return self.err_response("Objeto de escenario no encontrado");
                     }
@@ -241,6 +240,7 @@ impl EngineSession {
                     ent.animate_doc = None;
                     ent.animate_json_path = None;
                     ent.atlas = Some(atlas);
+                    ent.fit_dimensions_to_atlas();
                     if let Some(pending) = ent.pending_character_desc.clone() {
                         ent.apply_character_descriptor(&pending, false);
                     }

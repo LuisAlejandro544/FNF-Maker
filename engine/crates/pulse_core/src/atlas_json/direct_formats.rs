@@ -84,11 +84,13 @@ impl AnimateSpritemap {
         }
 
         let bindings = SparrowAtlas::auto_detect_bindings(&animations);
-        SparrowAtlas {
+        let mut atlas = SparrowAtlas {
             image_path_hint: self.image_hint.clone(),
             animations,
             bindings,
-        }
+        };
+        atlas.normalize_and_center_animations();
+        atlas
     }
 }
 
@@ -236,9 +238,11 @@ pub(super) fn parse_texture_packer_json(root: &Value) -> Result<SparrowAtlas, St
     }
 
     let bindings = SparrowAtlas::auto_detect_bindings(&animations);
-    Ok(SparrowAtlas {
+    let mut atlas = SparrowAtlas {
         image_path_hint: image_hint,
         animations,
         bindings,
-    })
+    };
+    atlas.normalize_and_center_animations();
+    Ok(atlas)
 }

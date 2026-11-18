@@ -3723,6 +3723,194 @@ export function decodeBfgpNoteKindCode(noteFlags: number): number {
   return (noteFlags >>> 4) & 0xf;
 }
 
+export interface AtlasFrameBox {
+  width: number;
+  height: number;
+  frameX: number;
+  frameY: number;
+  frameWidth: number;
+  frameHeight: number;
+  rotated?: boolean;
+}
+
+export interface NormalizedAtlasFramesResult {
+  unifiedWidth: number;
+  unifiedHeight: number;
+  animations: Record<string, AtlasFrameBox[]>;
+}
+
+/**
+ * Centra horizontalmente y alinea a la base todas las animaciones de un atlas dentro de un
+ * lienzo lógico unificado (`frameWidth x frameHeight`), preservando el movimiento relativo
+ * entre frames de cada animación y normalizando frames sin recorte.
+ * Espejo exacto de `pulse_core::sparrow::SparrowAtlas::normalize_and_center_animations`.
+ */
+export function normalizeAndCenterAtlasFrames(
+  animations: Record<string, AtlasFrameBox[]>,
+): NormalizedAtlasFramesResult {
+  let unifiedW = 1;
+  let unifiedH = 1;
+
+  interface AnimLayout {
+    prefix: string;
+    spanW: number;
+    spanH: number;
+    relOffsets: Array<[number, number]>;
+  }
+
+  const layouts: AnimLayout[] = [];
+  for (const [prefix, frames] of Object.entries(animations)) {
+    if (!frames || frames.length === 0) continue;
+
+    const visDims = frames.map((f): [number, number] => [
+      Math.max(1, f.rotated ? f.height : f.width),
+      Math.max(1, f.rotated ? f.width : f.height),
+    ]);
+
+    const hasOffsets = frames.some(
+      (f, idx) =>
+        f.frameX !== 0 ||
+        f.frameY !== 0 ||
+        f.frameWidth > visDims[idx][0] ||
+        f.frameHeight > visDims[idx][1],
+    );
+
+    let spanW = 1;
+    let spanH = 1;
+    let relOffsets: Array<[number, number]> = [];
+
+    if (!hasOffsets) {
+      for (const [vw, vh] of visDims) {
+        spanW = Math.max(spanW, vw);
+        spanH = Math.max(spanH, vh);
+      }
+      relOffsets = visDims.map(([vw, vh]) => [
+        Math.trunc(Math.max(0, spanW - vw) / 2),
+        Math.max(0, spanH - vh),
+      ]);
+    } else {
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      const rawCoords: Array<[number, number]> = [];
+
+      for (let i = 0; i < frames.length; i += 1) {
+        const f = frames[i];
+        const [vw, vh] = visDims[i];
+        const vx0 = -f.frameX;
+        const vy0 = -f.frameY;
+        const vx1 = vx0 + vw;
+        const vy1 = vy0 + vh;
+        minX = Math.min(minX, vx0);
+        minY = Math.min(minY, vy0);
+        maxX = Math.max(maxX, vx1);
+        maxY = Math.max(maxY, vy1);
+        rawCoords.push([vx0, vy0]);
+      }
+
+      spanW = Math.max(1, maxX - minX);
+      spanH = Math.max(1, maxY - minY);
+      relOffsets = rawCoords.map(([vx0, vy0]) => [vx0 - minX, vy0 - minY]);
+    }
+
+    unifiedW = Math.max(unifiedW, spanW);
+    unifiedH = Math.max(unifiedH, spanH);
+    layouts.push({ prefix, spanW, spanH, relOffsets });
+  }
+
+  const out: Record<string, AtlasFrameBox[]> = {};
+  for (const [prefix, frames] of Object.entries(animations)) {
+    out[prefix] = frames.map((f) => ({ ...f }));
+  }
+
+  for (const layout of layouts) {
+    const frames = out[layout.prefix];
+    if (!frames) continue;
+    const padX = Math.trunc(Math.max(0, unifiedW - layout.spanW) / 2);
+    const padY = Math.max(0, unifiedH - layout.spanH);
+    for (let i = 0; i < frames.length; i += 1) {
+      const [rx, ry] = layout.relOffsets[i];
+      const fx = -(rx + padX);
+      const fy = -(ry + padY);
+      frames[i].frameX = fx === 0 ? 0 : fx;
+      frames[i].frameY = fy === 0 ? 0 : fy;
+      frames[i].frameWidth = unifiedW;
+      frames[i].frameHeight = unifiedH;
+    }
+  }
+
+  return {
+    unifiedWidth: unifiedW,
+    unifiedHeight: unifiedH,
+    animations: out,
+  };
+}
+
+export interface StageImportDimensionParams {
+  role: 'background' | 'player' | 'opponent' | 'decoration';
+  width: number;
+  height: number;
+  isAtlas?: boolean;
+  idleHeight?: number;
+}
+
+/**
+ * Calcula las dimensiones lógicas (`1280x720`) de una entidad al importar PNG/ASTC o atlas XML/JSON
+ * en escenario, evitando que hojas completas o sprites pequeños queden diminutos o aplastados.
+ * Espejo exacto de `StageEntity::fit_dimensions_to_atlas` / `fit_dimensions_to_image`.
+ */
+export function computeStageImportDimensions(
+  params: StageImportDimensionParams,
+): { width: number; height: number } {
+  const w = Math.max(1, params.width);
+  const h = Math.max(1, params.height);
+
+  if (params.isAtlas) {
+    const idleH = Math.max(1, params.idleHeight ?? h);
+    if (params.role === 'background') {
+      const cover = Math.max(1280 / w, 720 / h);
+      return {
+        width: Math.min(2560, Math.max(1280, w * cover)),
+        height: Math.min(1440, Math.max(720, h * cover)),
+      };
+    }
+    if (params.role === 'player' || params.role === 'opponent') {
+      const fit = Math.min(380 / idleH, 640 / w, 520 / h);
+      return {
+        width: Math.max(140, w * fit),
+        height: Math.max(160, h * fit),
+      };
+    }
+    const fit = Math.min(320 / idleH, 640 / w, 460 / h);
+    return {
+      width: Math.max(120, w * fit),
+      height: Math.max(120, h * fit),
+    };
+  }
+
+  if (params.role === 'background') {
+    const cover = Math.max(1280 / w, 720 / h);
+    return {
+      width: Math.min(2560, Math.max(1280, w * cover)),
+      height: Math.min(1440, Math.max(720, h * cover)),
+    };
+  }
+  if (params.role === 'player' || params.role === 'opponent') {
+    const fit = Math.min(520 / w, 380 / h);
+    return {
+      width: Math.min(560, Math.max(140, w * fit)),
+      height: Math.min(460, Math.max(160, h * fit)),
+    };
+  }
+  const fit = Math.min(560 / w, 320 / h);
+  return {
+    width: Math.min(640, Math.max(120, w * fit)),
+    height: Math.min(420, Math.max(120, h * fit)),
+  };
+}
+
+
 
 
 

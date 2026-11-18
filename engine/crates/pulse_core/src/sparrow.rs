@@ -177,11 +177,178 @@ impl SparrowAtlas {
 
         let bindings = Self::auto_detect_bindings(&animations);
 
-        Ok(Self {
+        let mut atlas = Self {
             image_path_hint,
             animations,
             bindings,
-        })
+        };
+        atlas.normalize_and_center_animations();
+        Ok(atlas)
+    }
+
+    /// Normaliza y centra automáticamente todas las animaciones del atlas dentro de un lienzo
+    /// lógico unificado `(unified_w, unified_h)` compartido por todo el spritesheet.
+    /// Elimina márgenes vacíos asimétricos entre poses (`Idle` derecho vs `Left`/`Down`/`Up`/`Right`
+    /// movidos), mantiene intacta la fluidez relativa interna entre frames de una misma animación,
+    /// alinea horizontalmente al centro y verticalmente al suelo, y garantiza que el escalado (`fit`)
+    /// no cambie de tamaño al alternar poses. Es idempotente y funciona en todos los formatos.
+    pub fn normalize_and_center_animations(&mut self) {
+        if self.animations.is_empty() {
+            return;
+        }
+
+        struct AnimFrameLayout {
+            prefix: String,
+            span_w: u32,
+            span_h: u32,
+            rel_offsets: Vec<(i32, i32)>,
+        }
+
+        let mut layouts: Vec<AnimFrameLayout> = Vec::with_capacity(self.animations.len());
+        let mut unified_w = 1_u32;
+        let mut unified_h = 1_u32;
+
+        for (prefix, anim) in &self.animations {
+            if anim.frames.is_empty() {
+                continue;
+            }
+
+            let vis_dims: Vec<(u32, u32)> = anim
+                .frames
+                .iter()
+                .map(|f| {
+                    let vw = if f.rotated { f.height } else { f.width }.max(1);
+                    let vh = if f.rotated { f.width } else { f.height }.max(1);
+                    (vw, vh)
+                })
+                .collect();
+
+            let has_offsets = anim.frames.iter().zip(vis_dims.iter()).any(|(f, &(vw, vh))| {
+                f.frame_x != 0 || f.frame_y != 0 || f.frame_width > vw || f.frame_height > vh
+            });
+
+            let (span_w, span_h, rel_offsets) = if !has_offsets {
+                // Atlas sin frameX/frameY: centrar cada frame horizontalmente y alinearlo a la base.
+                let mut max_w = 1_u32;
+                let mut max_h = 1_u32;
+                for &(vw, vh) in &vis_dims {
+                    max_w = max_w.max(vw);
+                    max_h = max_h.max(vh);
+                }
+                let rels = vis_dims
+                    .iter()
+                    .map(|&(vw, vh)| {
+                        let rx = ((max_w.saturating_sub(vw)) as i32) / 2;
+                        let ry = (max_h.saturating_sub(vh)) as i32;
+                        (rx, ry)
+                    })
+                    .collect();
+                (max_w, max_h, rels)
+            } else {
+                // Atlas con offsets: calcular la caja visual ajustada de la animación conservando
+                // los desplazamientos relativos entre sus propios frames.
+                let mut min_x = i32::MAX;
+                let mut min_y = i32::MAX;
+                let mut max_x = i32::MIN;
+                let mut max_y = i32::MIN;
+                let mut raw_coords = Vec::with_capacity(anim.frames.len());
+
+                for (f, &(vw, vh)) in anim.frames.iter().zip(vis_dims.iter()) {
+                    let vx0 = -f.frame_x;
+                    let vy0 = -f.frame_y;
+                    let vx1 = vx0.saturating_add(vw as i32);
+                    let vy1 = vy0.saturating_add(vh as i32);
+                    min_x = min_x.min(vx0);
+                    min_y = min_y.min(vy0);
+                    max_x = max_x.max(vx1);
+                    max_y = max_y.max(vy1);
+                    raw_coords.push((vx0, vy0));
+                }
+
+                let sw = (max_x.saturating_sub(min_x)).max(1) as u32;
+                let sh = (max_y.saturating_sub(min_y)).max(1) as u32;
+                let rels = raw_coords
+                    .into_iter()
+                    .map(|(vx0, vy0)| (vx0.saturating_sub(min_x), vy0.saturating_sub(min_y)))
+                    .collect();
+                (sw, sh, rels)
+            };
+
+            unified_w = unified_w.max(span_w);
+            unified_h = unified_h.max(span_h);
+            layouts.push(AnimFrameLayout {
+                prefix: prefix.clone(),
+                span_w,
+                span_h,
+                rel_offsets,
+            });
+        }
+
+        for layout in layouts {
+            let Some(anim) = self.animations.get_mut(&layout.prefix) else {
+                continue;
+            };
+            let pad_x = ((unified_w.saturating_sub(layout.span_w)) as i32) / 2;
+            let pad_y = (unified_h.saturating_sub(layout.span_h)) as i32;
+            for (frame, (rx, ry)) in anim.frames.iter_mut().zip(layout.rel_offsets.into_iter()) {
+                frame.frame_x = -(rx.saturating_add(pad_x));
+                frame.frame_y = -(ry.saturating_add(pad_y));
+                frame.frame_width = unified_w;
+                frame.frame_height = unified_h;
+            }
+        }
+    }
+
+    /// Devuelve `(unified_w, unified_h, ref_idle_w, ref_idle_h)` para dimensionar entidades
+    /// en el escenario usando la altura visual real del `Idle` sin encoger el personaje por poses amplias.
+    pub fn reference_frame_dimensions(&self) -> Option<(u32, u32, u32, u32)> {
+        let first_frame = self.animations.values().flat_map(|a| a.frames.iter()).next()?;
+        let first_vw = if first_frame.rotated {
+            first_frame.height
+        } else {
+            first_frame.width
+        }
+        .max(1);
+        let first_vh = if first_frame.rotated {
+            first_frame.width
+        } else {
+            first_frame.height
+        }
+        .max(1);
+        let unified_w = first_frame.frame_width.max(first_vw).max(1);
+        let unified_h = first_frame.frame_height.max(first_vh).max(1);
+
+        let ref_anim = self
+            .resolve_prefix(CharacterAnimKind::Idle)
+            .and_then(|p| self.animations.get(p))
+            .or_else(|| self.animations.values().find(|a| !a.frames.is_empty()))?;
+
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for f in &ref_anim.frames {
+            let vw = if f.rotated { f.height } else { f.width }.max(1) as i32;
+            let vh = if f.rotated { f.width } else { f.height }.max(1) as i32;
+            let vx0 = -f.frame_x;
+            let vy0 = -f.frame_y;
+            min_x = min_x.min(vx0);
+            min_y = min_y.min(vy0);
+            max_x = max_x.max(vx0 + vw);
+            max_y = max_y.max(vy0 + vh);
+        }
+
+        let ref_w = if max_x > min_x {
+            (max_x - min_x) as u32
+        } else {
+            unified_w
+        };
+        let ref_h = if max_y > min_y {
+            (max_y - min_y) as u32
+        } else {
+            unified_h
+        };
+        Some((unified_w, unified_h, ref_w.max(1), ref_h.max(1)))
     }
 
     /// Detecta automáticamente a qué dirección corresponde cada prefijo de animación del XML.
@@ -366,3 +533,54 @@ fn parse_i32(val: Option<&str>) -> i32 {
         .map(|f| f.round() as i32)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_and_centers_misaligned_sparrow_animations_idempotently() {
+        let xml = r#"
+        <TextureAtlas imagePath="hero.png">
+            <SubTexture name="hero idle0000" x="0" y="0" width="200" height="300" frameX="-20" frameY="-10" frameWidth="240" frameHeight="320" />
+            <SubTexture name="hero idle0001" x="200" y="0" width="196" height="304" frameX="-22" frameY="-6" frameWidth="240" frameHeight="320" />
+            <SubTexture name="hero singLEFT0000" x="400" y="0" width="260" height="290" frameX="-260" frameY="-80" frameWidth="620" frameHeight="420" />
+            <SubTexture name="hero singUP0000" x="700" y="0" width="180" height="360" />
+        </TextureAtlas>
+        "#;
+
+        let mut atlas = SparrowAtlas::from_xml_str(xml).unwrap();
+        let idle = &atlas.animations["hero idle"].frames;
+        let left = &atlas.animations["hero singLEFT"].frames;
+        let up = &atlas.animations["hero singUP"].frames;
+
+        // Todos comparten el mismo lienzo lógico unificado (260x360).
+        assert_eq!(idle[0].frame_width, 260);
+        assert_eq!(idle[0].frame_height, 360);
+        assert_eq!(left[0].frame_width, 260);
+        assert_eq!(left[0].frame_height, 360);
+        assert_eq!(up[0].frame_width, 260);
+        assert_eq!(up[0].frame_height, 360);
+
+        // singLEFT queda centrado en X (0..260 -> frame_x=0) y al suelo en Y (360-290=70 -> frame_y=-70)
+        assert_eq!(left[0].frame_x, 0);
+        assert_eq!(left[0].frame_y, -70);
+
+        // singUP sin frameX/Y queda centrado en X ((260-180)/2=40 -> frame_x=-40) y Y=0
+        assert_eq!(up[0].frame_x, -40);
+        assert_eq!(up[0].frame_y, 0);
+
+        // Idle queda centrado horizontalmente ((260-200)/2=30 -> frame_x=-30) y pies abajo
+        assert_eq!(idle[0].frame_x, -30);
+        assert_eq!(idle[0].frame_y, -60);
+        assert_eq!(idle[1].frame_y, -56);
+
+        // Idempotencia al volver a ejecutar sobre el atlas ya normalizado
+        let before_fx = idle[0].frame_x;
+        let before_fy = idle[0].frame_y;
+        atlas.normalize_and_center_animations();
+        assert_eq!(atlas.animations["hero idle"].frames[0].frame_x, before_fx);
+        assert_eq!(atlas.animations["hero idle"].frames[0].frame_y, before_fy);
+    }
+}
+

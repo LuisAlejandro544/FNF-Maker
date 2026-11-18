@@ -88,6 +88,8 @@ import {
   matchArrowSparrowSubTexture,
   decodeBfgpExtensionFlags,
   decodeBfgpNoteKindCode,
+  normalizeAndCenterAtlasFrames,
+  computeStageImportDimensions,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -1581,6 +1583,79 @@ test('decodeBfgpExtensionFlags, noteKindCode and normalizeRenderBackendKind pres
   assert.equal(normalizeRenderBackendKind('vulkan'), 'vulkan');
   assert.equal(normalizeRenderBackendKind('unknown'), 'canvas2d');
 });
+
+test('normalizeAndCenterAtlasFrames centers misaligned poses, aligns untrimmed frames, and is idempotent', () => {
+  const input = {
+    idle: [
+      { width: 100, height: 150, frameX: -10, frameY: -6, frameWidth: 180, frameHeight: 200 },
+      { width: 104, height: 154, frameX: -8, frameY: -2, frameWidth: 180, frameHeight: 200 },
+    ],
+    singLEFT: [
+      { width: 160, height: 170, frameX: -90, frameY: -35, frameWidth: 320, frameHeight: 210 },
+    ],
+    singUP: [
+      // Untrimmed JSON/Animate frames without frameX/frameY
+      { width: 120, height: 210, frameX: 0, frameY: 0, frameWidth: 120, frameHeight: 210 },
+    ],
+  };
+
+  const first = normalizeAndCenterAtlasFrames(input);
+  assert.equal(first.unifiedWidth, 160);
+  assert.equal(first.unifiedHeight, 210);
+
+  // Idle span = 104x154 (minY = 2) -> padX = (160 - 104)/2 = 28, padY = 210 - 154 = 56
+  // idle[0] ry = 6 - 2 = 4 -> frameY = -60; idle[1] ry = 2 - 2 = 0 -> frameY = -56
+  assert.equal(first.animations.idle[0].frameWidth, 160);
+  assert.equal(first.animations.idle[0].frameHeight, 210);
+  assert.equal(first.animations.idle[0].frameX, -30);
+  assert.equal(first.animations.idle[0].frameY, -60);
+  assert.equal(first.animations.idle[1].frameX, -28);
+  assert.equal(first.animations.idle[1].frameY, -56);
+
+  // singLEFT was shifted far right (-90, -35), now centered at floor (0, -40)
+  assert.equal(first.animations.singLEFT[0].frameX, 0);
+  assert.equal(first.animations.singLEFT[0].frameY, -40);
+
+  // Untrimmed singUP centered horizontally: padX = (160 - 120)/2 = 20, floor aligned = 0
+  assert.equal(first.animations.singUP[0].frameX, -20);
+  assert.equal(first.animations.singUP[0].frameY, 0);
+
+  // Idempotent on second pass
+  const second = normalizeAndCenterAtlasFrames(first.animations);
+  assert.deepEqual(second, first);
+});
+
+test('computeStageImportDimensions prevents full-sheet squashing and scales small/large imports cleanly', () => {
+  // Character imported with XML/JSON keeps ~380px idle height even with wide sing pose
+  const charFromAtlas = computeStageImportDimensions({
+    role: 'player',
+    width: 480,
+    height: 380,
+    isAtlas: true,
+    idleHeight: 360,
+  });
+  assert.ok(charFromAtlas.height >= 360 && charFromAtlas.height <= 420);
+  assert.ok(charFromAtlas.width >= 480);
+
+  // Small pixel sprite scales up comfortably instead of staying tiny
+  const pixelProp = computeStageImportDimensions({
+    role: 'decoration',
+    width: 64,
+    height: 64,
+    isAtlas: false,
+  });
+  assert.ok(pixelProp.width >= 300 && pixelProp.height >= 300);
+
+  // Background covers 1280x720 stage
+  const bg = computeStageImportDimensions({
+    role: 'background',
+    width: 960,
+    height: 540,
+    isAtlas: false,
+  });
+  assert.ok(bg.width >= 1280 && bg.height >= 720);
+});
+
 
 
 

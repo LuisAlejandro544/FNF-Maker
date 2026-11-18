@@ -97,6 +97,11 @@ pub struct StageEntity {
 
 impl StageEntity {
     pub fn new(id: impl Into<String>, display_name: impl Into<String>, role: EntityRole) -> Self {
+        let (def_w, def_h) = match role {
+            EntityRole::Background => (1280.0, 720.0),
+            EntityRole::Player | EntityRole::Opponent => (280.0, 380.0),
+            EntityRole::Decoration => (320.0, 280.0),
+        };
         Self {
             id: id.into(),
             display_name: display_name.into(),
@@ -116,8 +121,8 @@ impl StageEntity {
             pending_character_desc: None,
             x: 640.0,
             y: 360.0,
-            width: 220.0,
-            height: 260.0,
+            width: def_w,
+            height: def_h,
             scale: 1.0,
             opacity: 1.0,
             rotation_deg: 0.0,
@@ -159,6 +164,67 @@ impl StageEntity {
             0.0
         };
         self.anim_offsets.insert(kind, [ox, oy]);
+    }
+
+    /// Ajusta `width` y `height` lógicos (en 1280x720) para una imagen suelta sin atlas,
+    /// asegurando que los sprites importados en escenarios tengan tamaño visible y proporcionado.
+    pub fn fit_dimensions_to_image(&mut self, img_w: u32, img_h: u32) {
+        if img_w == 0 || img_h == 0 {
+            return;
+        }
+        let w = img_w as f32;
+        let h = img_h as f32;
+        match self.role {
+            EntityRole::Background => {
+                let cover = (1280.0 / w).max(720.0 / h);
+                self.width = (w * cover).clamp(1280.0, 2560.0);
+                self.height = (h * cover).clamp(720.0, 1440.0);
+            }
+            EntityRole::Player | EntityRole::Opponent => {
+                let fit = (520.0 / w).min(380.0 / h);
+                self.width = (w * fit).clamp(140.0, 560.0);
+                self.height = (h * fit).clamp(160.0, 460.0);
+            }
+            EntityRole::Decoration => {
+                let fit = (560.0 / w).min(320.0 / h);
+                self.width = (w * fit).clamp(120.0, 640.0);
+                self.height = (h * fit).clamp(120.0, 420.0);
+            }
+        }
+    }
+
+    /// Ajusta `width` y `height` lógicos a partir de las dimensiones reales del frame unificado y
+    /// la pose `Idle` del atlas, evitando que el sprite quede diminuto o aplastado por el tamaño
+    /// total de la hoja spritesheet.
+    pub fn fit_dimensions_to_atlas(&mut self) {
+        let Some((unified_w, unified_h, _ref_w, ref_h)) = self
+            .atlas
+            .as_ref()
+            .and_then(|a| a.reference_frame_dimensions())
+        else {
+            return;
+        };
+        let uw = unified_w.max(1) as f32;
+        let uh = unified_h.max(1) as f32;
+        let idle_h = ref_h.max(1) as f32;
+
+        match self.role {
+            EntityRole::Background => {
+                let cover = (1280.0 / uw).max(720.0 / uh);
+                self.width = (uw * cover).clamp(1280.0, 2560.0);
+                self.height = (uh * cover).clamp(720.0, 1440.0);
+            }
+            EntityRole::Player | EntityRole::Opponent => {
+                let fit = (380.0 / idle_h).min(640.0 / uw).min(520.0 / uh);
+                self.width = (uw * fit).max(140.0);
+                self.height = (uh * fit).max(160.0);
+            }
+            EntityRole::Decoration => {
+                let fit = (320.0 / idle_h).min(640.0 / uw).min(460.0 / uh);
+                self.width = (uw * fit).max(120.0);
+                self.height = (uh * fit).max(120.0);
+            }
+        }
     }
 
     /// Aplica un descriptor `.json` / `.xml` de personaje sobre la entidad, enlazando prefijos,
@@ -322,23 +388,23 @@ impl Default for StageScene {
 
         let mut deco = StageEntity::new("stage_speakers", "Cabina de Sonido", EntityRole::Decoration);
         deco.x = 640.0;
-        deco.y = 430.0;
-        deco.width = 240.0;
-        deco.height = 180.0;
+        deco.y = 415.0;
+        deco.width = 320.0;
+        deco.height = 240.0;
         deco.z_index = 15;
 
         let mut opp = StageEntity::new("opponent_main", "Rival Principal", EntityRole::Opponent);
         opp.x = 300.0;
-        opp.y = 420.0;
-        opp.width = 210.0;
-        opp.height = 280.0;
+        opp.y = 415.0;
+        opp.width = 280.0;
+        opp.height = 380.0;
         opp.z_index = 20;
 
         let mut player = StageEntity::new("player_main", "Jugador Principal", EntityRole::Player);
         player.x = 980.0;
-        player.y = 430.0;
-        player.width = 210.0;
-        player.height = 260.0;
+        player.y = 420.0;
+        player.width = 280.0;
+        player.height = 370.0;
         player.z_index = 30;
 
         let cam_cfg = StageCameraConfig::default();
@@ -433,3 +499,37 @@ impl StageScene {
         self.entities.iter_mut().find(|e| e.id == entity_id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sparrow::SparrowAtlas;
+
+    #[test]
+    fn stage_import_sizes_characters_and_props_generously_without_sheet_squashing() {
+        let mut char_ent = StageEntity::new("opp", "Oponente", EntityRole::Opponent);
+        // Primero importa un spritesheet ancho 4096x2048
+        char_ent.fit_dimensions_to_image(4096, 2048);
+        assert!(char_ent.width >= 400.0);
+
+        // Luego importa su XML con pose Idle de 240x360 y ataque ancho de 480x380
+        let xml = r#"
+        <TextureAtlas imagePath="opp.png">
+            <SubTexture name="opp idle0000" x="0" y="0" width="240" height="360" />
+            <SubTexture name="opp singLEFT0000" x="240" y="0" width="480" height="380" />
+        </TextureAtlas>
+        "#;
+        char_ent.atlas = Some(SparrowAtlas::from_xml_str(xml).unwrap());
+        char_ent.fit_dimensions_to_atlas();
+
+        // Debe conservar altura cómoda (~380px para el Idle) y proporción real del lienzo unificado 480x380
+        assert!(char_ent.height >= 360.0 && char_ent.height <= 420.0);
+        assert!(char_ent.width > char_ent.height);
+
+        // Un fondo importado siempre cubre mínimo 1280x720
+        let mut bg = StageEntity::new("bg2", "Fondo", EntityRole::Background);
+        bg.fit_dimensions_to_image(800, 600);
+        assert!(bg.width >= 1280.0 && bg.height >= 720.0);
+    }
+}
+

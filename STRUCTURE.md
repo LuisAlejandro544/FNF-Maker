@@ -26,15 +26,15 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │   └── src/
 │       │       ├── lib.rs               # Exportaciones públicas y pruebas unitarias Rust
 │       │       ├── chart.rs             # Parser y exportador universal `chart.json` (clásico, V-Slice, Codename, `strumLines`, notas especiales `Hurt`/`Instakill`/`Dodge`, eventos)
-│       │       ├── sparrow.rs           # Lector XML Sparrow y auto-armado de Idle/Left/Down/Up/Right + Miss + Death (`death_start`, `death_loop`, `death_confirm`)
+│       │       ├── sparrow.rs           # Lector XML Sparrow, centrado universal (`normalize_and_center_animations`) y auto-armado de Idle/Direcciones + Miss + Death
 │       │       ├── astc_loader.rs       # Decodificador puro Rust `.astc` (`texture2ddecoder`) y codificador WebP lossless (`save_lossless_webp`)
-│       │       ├── atlas_json/          # Lectores `.json` y baker `Animation.json` divididos modularmente
+│       │       ├── atlas_json/          # Lectores `.json` y baker `Animation.json` divididos modularmente (con centrado unificado por defecto)
 │       │       │   ├── mod.rs           # Punto de entrada del módulo, detección de formato y reexportaciones públicas
 │       │       │   ├── transform.rs     # Álgebra afín 2D (`Affine2D`) y matrices/color (`ColorTransform2D`)
-│       │       │   ├── direct_formats.rs# Parsers directos `spritemap1.json` y TexturePacker Hash/Array
+│       │       │   ├── direct_formats.rs# Parsers directos `spritemap1.json` y TexturePacker Hash/Array centrados por defecto
 │       │       │   ├── animate_model.rs # Árbol de líneas de tiempo, capas, fotogramas y símbolos de `Animation.json`
-│       │       │   └── animate_baker.rs # Rasterización por pose a atlas 4096×4096 empaquetado por estantes + tests
-│       │       ├── stage.rs             # Escenario 1280×720, roles (Fondo/Player/Oponente/Decoración), anim_offsets y Z-order
+│       │       │   └── animate_baker.rs # Rasterización por pose a atlas 4096×4096 empaquetado por estantes + centrado + tests
+│       │       ├── stage.rs             # Escenario 1280×720, roles, auto-dimensionado al importar imagen/atlas (`fit_dimensions_to_*`), anim_offsets y Z-order
 │       │       ├── mod_descriptors.rs   # Parsers `.json`/`.xml` de personaje (`characters/*`) y escenario (`stages/*`: Psych/V-Slice/Codename)
 │       │       ├── svg_skin.rs          # Flechas (incl. nota X `default_hurt_arrow_x_svg`), importador `NOTE_assets.png+.xml`, barra, íconos, ratings y Note Splash SVG vía resvg
 │       │       ├── gfx_backend.rs       # Tipos base `RenderBackendKind` (`Canvas2d`/`Gles2`/`Gles3`/`Vulkan`) y `GfxCapabilities`
@@ -74,8 +74,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   ├── dto.rs           # DTOs hacia Kotlin (incl. `render_backend`, `gfx_capabilities`, `anim_offsets` y métricas de caché)
 │                   ├── editor_ops.rs    # Operaciones de editor (`import_stage_config`, `import_arrow_sparrow_atlas`, `stage_events.lua`, `render_backend`)
 │                   ├── gfx_probe.rs     # Sondeo dinámico `dlopen` en Android 32/64b de `libEGL.so`, `libGLESv2.so`, `libGLESv3.so` y `libvulkan.so`
-│                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP, Sparrow XML, Animate, `import_character_config` y `set_entity_anim_offset`
-│                   ├── persistence_ops.rs # Guardado/carga, adopción `assets/`, GC de huérfanos, audio `.bfaud` y export/import Vanilla `.mod`
+│                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP, Sparrow XML, Animate, auto-dimensionado en escenario, `import_character_config` y `set_entity_anim_offset`
+│                   ├── persistence_ops.rs # Guardado/carga (con normalización de centrado en proyectos cargados), adopción `assets/`, GC, `.bfaud` y Vanilla `.mod`
 │                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
 │                       ├── mod.rs         # Coordinador `start/pause/stop/retry_game_over/trigger_test_game_over`, LRU y BFGP v2 (`152B`)
 │                       ├── hot_compile_ops.rs # `hot_compile_with_progress` en `compiled_cache/<projectId>/` con cuota y desalojo LRU multi-proyecto
@@ -160,8 +160,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (incl. `triggerGameOver`, `isGameOver`, `onGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, sustain, hilo, ciclo RAM, notas especiales X, `NOTE_assets.xml`, `BFGP` v2, `RenderBackendKind`, `.mod`
-│       └── engine-tools.test.ts         # 44 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, sustain, hilo, ciclo RAM, centrado atlas, tamaño escenario, notas X, `BFGP` v2, `RenderBackendKind`, `.mod`
+│       └── engine-tools.test.ts         # 46 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

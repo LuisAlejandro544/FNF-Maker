@@ -556,14 +556,13 @@ pub fn bake_animate_atlas(
     }
 
     let bindings = SparrowAtlas::auto_detect_bindings(&animations);
-    Ok((
-        DynamicImage::ImageRgba8(sheet),
-        SparrowAtlas {
-            image_path_hint: format!("{}_baked.png", doc.name),
-            animations,
-            bindings,
-        },
-    ))
+    let mut atlas = SparrowAtlas {
+        image_path_hint: format!("{}_baked.png", doc.name),
+        animations,
+        bindings,
+    };
+    atlas.normalize_and_center_animations();
+    Ok((DynamicImage::ImageRgba8(sheet), atlas))
 }
 
 /// Muestreo bilineal en alfa premultiplicada estrictamente confinado dentro de `rect` para
