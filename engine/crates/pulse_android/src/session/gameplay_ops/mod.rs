@@ -42,6 +42,7 @@ impl EngineSession {
         self.project.ensure_camera_script();
         self.project.ensure_stage_events_script();
         self.project.ensure_ui_blackout_script();
+        self.project.stage.camera.ensure_default_cameras();
         self.project
             .stage
             .apply_camera_config(self.project.stage.camera.clone());
@@ -107,9 +108,20 @@ impl EngineSession {
 
         let reused_later_entities = analyze_reused_entity_ids(&self.project);
 
+        let (cam0_x, cam0_y, cam0_zoom, _) = self.project.stage.resolve_camera_slot_target(
+            0,
+            &active_player_id,
+            &active_opponent_id,
+        );
+        self.project.stage.camera_x = cam0_x;
+        self.project.stage.camera_y = cam0_y;
+        self.project.stage.camera_base_zoom = cam0_zoom;
+        self.project.stage.camera_zoom = cam0_zoom;
+
         let (mut runtime, script_errors) =
             ModScriptRuntime::load_from_scripts(&bundle.optimized_scripts);
-        let initial_must_hit = self.project.chart.must_hit_at_ms(0.0);
+        let (_, initial_must_hit, initial_gf_section, _) =
+            self.project.chart.camera_state_at_ms(0.0);
         let default_strums = [StrumOverrideState::default(); 8];
         sync_script_host_state(
             &runtime.state,
@@ -122,6 +134,8 @@ impl EngineSession {
             0.0,
             self.project.chart.bpm.max(40.0),
             initial_must_hit,
+            initial_gf_section,
+            0,
             0.5,
             0,
             0,
@@ -223,6 +237,13 @@ impl EngineSession {
             screen_blackout_alpha: 0.0,
             active_player_id,
             active_opponent_id,
+            active_camera_slot: 0,
+            camera_slot_zoom_override: None,
+            camera_follow_lock: None,
+            camera_gf_override: false,
+            camera_offset_override: [0.0, 0.0],
+            last_section_idx: -1,
+            last_cam_beat_bucket: -1,
             flash_color_argb: 0xFFFFFFFF,
             flash_alpha: 0.0,
             flash_decay_per_sec: 1.0,

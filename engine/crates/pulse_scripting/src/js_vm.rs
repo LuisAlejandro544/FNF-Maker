@@ -140,6 +140,55 @@ impl JsScriptVm {
                     h.push_command(ScriptCommand::ShakeCamera { intensity });
                 });
             }
+            {
+                let h = Arc::clone(&host);
+                bind_js!(
+                    "__nativeSwitchCamera",
+                    move |slot: i32, zoom: f32, dur: f32, ease: String| {
+                        let slot_idx = slot.max(0) as usize;
+                        *h.active_camera_slot.lock() = slot_idx;
+                        h.push_command(ScriptCommand::SwitchCameraSlot {
+                            slot: slot_idx,
+                            zoom: if zoom.is_finite() && zoom > 0.1 {
+                                Some(zoom)
+                            } else {
+                                None
+                            },
+                            duration_sec: if dur.is_finite() { dur.max(0.0) } else { 0.0 },
+                            ease: if ease.trim().is_empty() {
+                                "sineOut".to_string()
+                            } else {
+                                ease
+                            },
+                        });
+                    }
+                );
+                let _: rquickjs::Value = ctx
+                    .eval(
+                        "globalThis.switchCamera = function(slot, zoom, dur, ease) { __nativeSwitchCamera((slot|0), (typeof zoom==='number'&&isFinite(zoom))?zoom:-1, (typeof dur==='number'&&isFinite(dur))?dur:0, ease||'sineOut'); };",
+                    )
+                    .map_err(|e| JsVmError::Eval(e.to_string()))?;
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("getActiveCamera", move || -> i32 {
+                    *h.active_camera_slot.lock() as i32
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("setCameraFollowPos", move |x: f32, y: f32| {
+                    if x.is_finite() && y.is_finite() {
+                        h.push_command(ScriptCommand::SetCameraFollowLock { x, y });
+                    }
+                });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("clearCameraFollowPos", move || {
+                    h.push_command(ScriptCommand::ClearCameraFollowLock);
+                });
+            }
 
             // --- Entidades ---
             {
@@ -220,6 +269,10 @@ impl JsScriptVm {
             {
                 let h = Arc::clone(&host);
                 bind_js!("getMustHitSection", move || -> bool { *h.must_hit_section.lock() });
+            }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("getGfSection", move || -> bool { *h.gf_section.lock() });
             }
             {
                 let h = Arc::clone(&host);

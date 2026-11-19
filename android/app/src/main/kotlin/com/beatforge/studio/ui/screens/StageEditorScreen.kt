@@ -72,6 +72,30 @@ fun StageEditorScreen(
         panStrength: Float,
         commitSave: Boolean
     ) -> Unit,
+    onSelectCameraSlot: (slotIndex: Int) -> Unit,
+    onUpdateCameraSlot: (
+        slotIndex: Int,
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean
+    ) -> Unit,
+    onAddCustomCamera: (
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float
+    ) -> Unit,
+    onRemoveCustomCamera: (slotIndex: Int) -> Unit,
     onOpenCameraScript: () -> Unit,
     onImportStageConfig: () -> Unit,
     onOpenFilesGuide: () -> Unit
@@ -107,11 +131,10 @@ fun StageEditorScreen(
     }
 
     LaunchedEffect(
-        stageCamera.baseX,
-        stageCamera.baseY,
-        stageCamera.baseZoom
+        stageCamera,
+        entities
     ) {
-        liveTransform.syncFromCamera(stageCamera)
+        liveTransform.syncFromCamera(stageCamera, entities)
     }
 
     Row(
@@ -180,20 +203,9 @@ fun StageEditorScreen(
             onToggleSelectedLock = { selected?.let { toggleLock(it.id) } },
             onSelectEntity = onSelectEntity,
             onSelectCamera = { onSelectEntity(CAMERA_SELECTION_ID) },
+            onSelectCameraSlot = onSelectCameraSlot,
             onUpdateEntity = onUpdateEntity,
-            onUpdateCamera = { bx, by, bz, commit ->
-                onUpdateCamera(
-                    stageCamera.enabled,
-                    bx,
-                    by,
-                    bz,
-                    stageCamera.followMode,
-                    stageCamera.followIntervalBeats,
-                    stageCamera.smoothSpeed,
-                    stageCamera.panStrength,
-                    commit
-                )
-            },
+            onUpdateCameraSlot = onUpdateCameraSlot,
             modifier = Modifier.weight(0.47f)
         )
 
@@ -214,6 +226,10 @@ fun StageEditorScreen(
                     liveTransform = liveTransform,
                     onStepChange = { stepPx = it },
                     onUpdateCamera = onUpdateCamera,
+                    onSelectCameraSlot = onSelectCameraSlot,
+                    onUpdateCameraSlot = onUpdateCameraSlot,
+                    onAddCustomCamera = onAddCustomCamera,
+                    onRemoveCustomCamera = onRemoveCustomCamera,
                     onOpenCameraScript = onOpenCameraScript
                 )
             } else if (selected == null) {

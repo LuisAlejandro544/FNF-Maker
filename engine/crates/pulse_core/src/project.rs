@@ -39,102 +39,104 @@ const STAGE_CUES_END_MARKER: &str = "-- [STAGE_CUES_END]";
 const UI_BLACKOUT_START_MARKER: &str = "-- [UI_BLACKOUT_START]";
 const UI_BLACKOUT_END_MARKER: &str = "-- [UI_BLACKOUT_END]";
 
+const CAM_RUNTIME_V2_MARKER: &str = "-- [CAM_RUNTIME_V2]";
+
 /// Genera o actualiza el bloque de parámetros del script `camera_system.lua` preservando
 /// cualquier lógica personalizada que el usuario haya añadido debajo de los marcadores.
 pub fn render_camera_lua_script(cfg: &StageCameraConfig, existing_source: Option<&str>) -> String {
+    let mut normalized = cfg.clone();
+    normalized.ensure_default_cameras();
+
+    let slots_summary: Vec<String> = normalized
+        .cameras
+        .iter()
+        .map(|s| {
+            format!(
+                "--   Cam {}: {} (target={}, x={:.0}, y={:.0}, zoom={:.2})",
+                s.index,
+                s.name,
+                s.target_kind.as_key(),
+                s.x,
+                s.y,
+                s.zoom
+            )
+        })
+        .collect();
+
     let config_block = format!(
         "{}\n\
 local CAM_ENABLED = {}\n\
 local CAM_BASE_X = {:.1}\n\
 local CAM_BASE_Y = {:.1}\n\
 local CAM_BASE_ZOOM = {:.3}\n\
-local CAM_MODE = \"{}\" -- \"beats\" = cada N beats | \"sections\" = chart.json mustHitSection\n\
+local CAM_MODE = \"{}\" -- \"fixed\" = Cam 0 fija | \"sections\" = chart.json + eventos | \"beats\" = cada N beats\n\
 local CAM_INTERVAL_BEATS = {}\n\
 local CAM_SMOOTH = {:.2}\n\
 local CAM_PAN_STRENGTH = {:.2}\n\
+local CAM_ACTIVE_INDEX = {}\n\
+local CAM_COUNT = {}\n\
+{}\n\
 {}",
         CAM_CFG_START_MARKER,
-        if cfg.enabled { "true" } else { "false" },
-        cfg.base_x,
-        cfg.base_y,
-        cfg.base_zoom,
-        cfg.follow_mode.as_lua_str(),
-        cfg.follow_interval_beats.max(1),
-        cfg.smooth_speed,
-        cfg.pan_strength,
+        if normalized.enabled { "true" } else { "false" },
+        normalized.base_x,
+        normalized.base_y,
+        normalized.base_zoom,
+        normalized.follow_mode.as_lua_str(),
+        normalized.follow_interval_beats.max(1),
+        normalized.smooth_speed,
+        normalized.pan_strength,
+        normalized.active_camera_index,
+        normalized.cameras.len(),
+        slots_summary.join("\n"),
         CAM_CFG_END_MARKER
     );
 
     if let Some(src) = existing_source {
-        if let (Some(start_idx), Some(end_idx)) =
-            (src.find(CAM_CFG_START_MARKER), src.find(CAM_CFG_END_MARKER))
-        {
-            if end_idx >= start_idx {
-                let tail_start = end_idx + CAM_CFG_END_MARKER.len();
-                let prefix = &src[..start_idx];
-                let suffix = &src[tail_start..];
-                return format!("{}{}{}", prefix, config_block, suffix);
+        let is_unmodified_v1 = !src.contains(CAM_RUNTIME_V2_MARKER)
+            && src.contains("local roleId = isPlayerTurn and \"player\" or \"opponent\"");
+        if !is_unmodified_v1 {
+            if let (Some(start_idx), Some(end_idx)) =
+                (src.find(CAM_CFG_START_MARKER), src.find(CAM_CFG_END_MARKER))
+            {
+                if end_idx >= start_idx {
+                    let tail_start = end_idx + CAM_CFG_END_MARKER.len();
+                    let prefix = &src[..start_idx];
+                    let suffix = &src[tail_start..];
+                    return format!("{}{}{}", prefix, config_block, suffix);
+                }
             }
         }
     }
 
     format!(
-        "-- Script real del Sistema de Cámara (BeatForge Studio)\n\
--- Sincronizado automáticamente con el editor visual del Escenario.\n\
--- Puedes editar estos valores o personalizar el comportamiento abajo en Lua 5.4:\n\
+        "-- Script real del Sistema Multicámara (BeatForge Studio)\n\
+{}\n\
+-- El motor nativo gestiona Cam 0 (Fija inicial), Cam 1 (Jugador), Cam 2 (Enemigo), Cam 3+\n\
+-- y todos los eventos de chart.json (FocusCamera, ZoomCamera, Camera Follow Pos, Switch Camera).\n\
+-- Cambia CAM_SCRIPT_OVERRIDE a true solo si deseas controlar la cámara manualmente desde Lua:\n\
 {}\n\n\
-local targetX = CAM_BASE_X\n\
-local targetY = CAM_BASE_Y\n\
-local focusPlayer = false\n\n\
-local function updateCameraTarget(isPlayerTurn)\n\
-    local roleId = isPlayerTurn and \"player\" or \"opponent\"\n\
-    local charX = getEntityX(roleId)\n\
-    local charY = getEntityY(roleId)\n\
-    if charX ~= nil and charY ~= nil then\n\
-        targetX = CAM_BASE_X + (charX - CAM_BASE_X) * CAM_PAN_STRENGTH\n\
-        targetY = CAM_BASE_Y + ((charY - 24.0) - CAM_BASE_Y) * CAM_PAN_STRENGTH\n\
-    else\n\
-        targetX = CAM_BASE_X\n\
-        targetY = CAM_BASE_Y\n\
-    end\n\
-end\n\n\
+local CAM_SCRIPT_OVERRIDE = false\n\n\
 function onCreate()\n\
-    setCameraBaseZoom(CAM_BASE_ZOOM)\n\
-    setCameraZoom(CAM_BASE_ZOOM)\n\
     if not CAM_ENABLED then\n\
         setCameraPos(CAM_BASE_X, CAM_BASE_Y)\n\
+        setCameraBaseZoom(CAM_BASE_ZOOM)\n\
+        setCameraZoom(CAM_BASE_ZOOM)\n\
         return\n\
     end\n\
-    if CAM_MODE == \"sections\" then\n\
-        focusPlayer = getMustHitSection()\n\
-    else\n\
-        focusPlayer = false\n\
-    end\n\
-    updateCameraTarget(focusPlayer)\n\
-    setCameraPos(targetX, targetY)\n\
+    -- Arranca en Cámara 0 con su FOV/zoom configurado hasta recibir acciones de otras cámaras.\n\
+    switchCamera(0)\n\
 end\n\n\
 function onBeatHit(beat)\n\
-    if not CAM_ENABLED then return end\n\
+    if not CAM_ENABLED or not CAM_SCRIPT_OVERRIDE then return end\n\
     if CAM_MODE == \"sections\" then\n\
-        focusPlayer = getMustHitSection()\n\
-    else\n\
+        switchCamera(getMustHitSection() and 1 or 2)\n\
+    elseif CAM_MODE == \"beats\" then\n\
         local step = math.max(1, CAM_INTERVAL_BEATS)\n\
-        focusPlayer = (math.floor(beat / step) % 2) == 1\n\
+        switchCamera(((math.floor(beat / step) % 2) == 1) and 1 or 2)\n\
     end\n\
-    updateCameraTarget(focusPlayer)\n\
-end\n\n\
-function onUpdate(dt)\n\
-    if not CAM_ENABLED then\n\
-        setCameraPos(CAM_BASE_X, CAM_BASE_Y)\n\
-        return\n\
-    end\n\
-    local cx = getCameraX()\n\
-    local cy = getCameraY()\n\
-    local t = 1.0 - math.exp(-CAM_SMOOTH * math.max(0.0, dt))\n\
-    local nx = cx + (targetX - cx) * t\n\
-    local ny = cy + (targetY - cy) * t\n\
-    setCameraPos(nx, ny)\n\
 end\n",
+        CAM_RUNTIME_V2_MARKER,
         config_block
     )
 }
@@ -143,6 +145,7 @@ end\n",
 /// para mantener sincronizado el rectángulo visual del escenario y el inspector.
 pub fn parse_camera_config_from_lua(source: &str, current: &StageCameraConfig) -> StageCameraConfig {
     let mut next = current.clone();
+    next.ensure_default_cameras();
     for line in source.lines() {
         let trimmed = line.trim();
         let no_comment = trimmed.split("--").next().unwrap_or("").trim();
@@ -205,9 +208,16 @@ pub fn parse_camera_config_from_lua(source: &str, current: &StageCameraConfig) -
                     }
                 }
             }
+            "CAM_ACTIVE_INDEX" => {
+                if let Ok(v) = val.parse::<i32>() {
+                    let max_idx = next.cameras.len().saturating_sub(1);
+                    next.active_camera_index = (v.max(0) as usize).min(max_idx);
+                }
+            }
             _ => {}
         }
     }
+    next.sync_slot0_from_base();
     next
 }
 
@@ -1191,13 +1201,20 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
         }
     }
 
-    /// Garantiza que proyectos antiguos cargados desde disco cuenten con `camera_system.lua`.
+    /// Garantiza que proyectos antiguos cargados desde disco cuenten con `camera_system.lua` actualizado (V2).
     pub fn ensure_camera_script(&mut self) {
-        let has_camera_script = self
+        self.stage.camera.ensure_default_cameras();
+        if let Some(script) = self
             .scripts
-            .iter()
-            .any(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME);
-        if !has_camera_script {
+            .iter_mut()
+            .find(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME)
+        {
+            let rendered = render_camera_lua_script(&self.stage.camera, Some(&script.source_code));
+            if rendered != script.source_code {
+                script.source_code = rendered;
+                script.precompiled_bytecode = None;
+            }
+        } else {
             let source_code = render_camera_lua_script(&self.stage.camera, None);
             self.scripts.insert(
                 0,

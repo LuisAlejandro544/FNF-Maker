@@ -229,6 +229,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleSectionMustHit(secIndex: Int) = editorDelegate.toggleSectionMustHit(secIndex)
 
+    fun setSectionCameraSlot(secIndex: Int, cameraSlot: Int?) =
+        editorDelegate.setSectionCameraSlot(secIndex, cameraSlot)
+
     fun toggleChartNote(
         secIndex: Int,
         stepInSec: Int,
@@ -298,6 +301,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) = editorDelegate.updateStageCamera(
         enabled, baseX, baseY, baseZoom, followMode, followIntervalBeats, smoothSpeed, panStrength, commitSave
     )
+
+    fun selectStageCamera(slotIndex: Int) = editorDelegate.selectStageCamera(slotIndex)
+
+    fun updateCameraSlot(
+        slotIndex: Int,
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean = true
+    ) = editorDelegate.updateCameraSlot(
+        slotIndex, name, targetKind, targetEntityId, x, y, zoom, smoothSpeed, panStrength, commitSave
+    )
+
+    fun addCustomCamera(
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float
+    ) = editorDelegate.addCustomCamera(
+        name, targetKind, targetEntityId, x, y, zoom, smoothSpeed, panStrength
+    )
+
+    fun removeCustomCamera(slotIndex: Int) = editorDelegate.removeCustomCamera(slotIndex)
 
     fun openCameraScriptInStudio() {
         val snap = _uiState.value.snapshot

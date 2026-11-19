@@ -101,7 +101,8 @@ data class ChartSectionSnapshot(
     val bpm: Double = 128.0,
     val changeBpm: Boolean = false,
     val altAnim: Boolean = false,
-    val gfSection: Boolean = false
+    val gfSection: Boolean = false,
+    val cameraSlot: Int? = null
 )
 
 data class ChartSnapshot(
@@ -215,16 +216,52 @@ data class ProjectSummary(
     val isActive: Boolean = false
 )
 
+data class StageCameraSlotSnapshot(
+    val index: Int = 0,
+    val name: String = "Cam 0 · Inicial Fija",
+    val targetKind: String = "fixed",
+    val targetEntityId: String? = null,
+    val x: Float = 640f,
+    val y: Float = 360f,
+    val zoom: Float = 1f,
+    val smoothSpeed: Float = 6f,
+    val panStrength: Float = 0f
+)
+
+fun defaultStageCameraSlots(
+    baseX: Float = 640f,
+    baseY: Float = 360f,
+    baseZoom: Float = 1f,
+    smoothSpeed: Float = 6f,
+    panStrength: Float = 0.72f
+): List<StageCameraSlotSnapshot> = listOf(
+    StageCameraSlotSnapshot(0, "Cam 0 · Inicial Fija", "fixed", null, baseX, baseY, baseZoom, smoothSpeed, 0f),
+    StageCameraSlotSnapshot(1, "Cam 1 · Player", "player", "player_main", 0f, -24f, baseZoom, smoothSpeed, panStrength),
+    StageCameraSlotSnapshot(2, "Cam 2 · Enemigo", "opponent", "opponent_main", 0f, -24f, baseZoom, smoothSpeed, panStrength)
+)
+
 data class StageCameraSnapshot(
     val enabled: Boolean = true,
     val baseX: Float = 640f,
     val baseY: Float = 360f,
     val baseZoom: Float = 1f,
-    val followMode: String = "beats",
+    val followMode: String = "sections",
     val followIntervalBeats: Int = 4,
     val smoothSpeed: Float = 6f,
-    val panStrength: Float = 0.72f
-)
+    val panStrength: Float = 0.72f,
+    val activeCameraIndex: Int = 0,
+    val cameras: List<StageCameraSlotSnapshot> = defaultStageCameraSlots()
+) {
+    fun resolvedCameras(): List<StageCameraSlotSnapshot> =
+        cameras.ifEmpty { defaultStageCameraSlots(baseX, baseY, baseZoom, smoothSpeed, panStrength) }
+
+    fun activeSlot(): StageCameraSlotSnapshot {
+        val list = resolvedCameras()
+        return list.firstOrNull { it.index == activeCameraIndex }
+            ?: list.getOrNull(activeCameraIndex)
+            ?: list.first()
+    }
+}
 
 data class ProjectSnapshot(
     val id: String = "",
@@ -472,7 +509,8 @@ object StudioJsonParser {
                         bpm = s.optDouble("bpm", 120.0),
                         changeBpm = s.optBoolean("changeBpm", false),
                         altAnim = s.optBoolean("altAnim", false),
-                        gfSection = s.optBoolean("gfSection", false)
+                        gfSection = s.optBoolean("gfSection", false),
+                        cameraSlot = if (s.has("cameraSlot") && !s.isNull("cameraSlot")) s.optInt("cameraSlot", 0) else null
                     )
                 )
             }
@@ -628,15 +666,46 @@ object StudioJsonParser {
 
         val camObj = obj.optJSONObject("stageCamera")
         val stageCamera = if (camObj != null) {
+            val baseX = camObj.optDouble("baseX", 640.0).toFloat()
+            val baseY = camObj.optDouble("baseY", 360.0).toFloat()
+            val baseZoom = camObj.optDouble("baseZoom", 1.0).toFloat()
+            val smoothSpeed = camObj.optDouble("smoothSpeed", 6.0).toFloat()
+            val panStrength = camObj.optDouble("panStrength", 0.72).toFloat()
+            val camArr = camObj.optJSONArray("cameras")
+            val parsedSlots = if (camArr != null && camArr.length() > 0) {
+                buildList(camArr.length()) {
+                    for (i in 0 until camArr.length()) {
+                        val slotObj = camArr.optJSONObject(i) ?: continue
+                        add(
+                            StageCameraSlotSnapshot(
+                                index = slotObj.optInt("index", i),
+                                name = slotObj.optString("name", "Cam $i"),
+                                targetKind = slotObj.optString("targetKind", "fixed"),
+                                targetEntityId = optNullableString(slotObj, "targetEntityId"),
+                                x = slotObj.optDouble("x", 0.0).toFloat(),
+                                y = slotObj.optDouble("y", 0.0).toFloat(),
+                                zoom = slotObj.optDouble("zoom", 1.0).toFloat(),
+                                smoothSpeed = slotObj.optDouble("smoothSpeed", smoothSpeed.toDouble()).toFloat(),
+                                panStrength = slotObj.optDouble("panStrength", panStrength.toDouble()).toFloat()
+                            )
+                        )
+                    }
+                }
+            } else {
+                defaultStageCameraSlots(baseX, baseY, baseZoom, smoothSpeed, panStrength)
+            }
             StageCameraSnapshot(
                 enabled = camObj.optBoolean("enabled", true),
-                baseX = camObj.optDouble("baseX", 640.0).toFloat(),
-                baseY = camObj.optDouble("baseY", 360.0).toFloat(),
-                baseZoom = camObj.optDouble("baseZoom", 1.0).toFloat(),
-                followMode = camObj.optString("followMode", "beats"),
+                baseX = baseX,
+                baseY = baseY,
+                baseZoom = baseZoom,
+                followMode = camObj.optString("followMode", "sections"),
                 followIntervalBeats = camObj.optInt("followIntervalBeats", 4),
-                smoothSpeed = camObj.optDouble("smoothSpeed", 6.0).toFloat(),
-                panStrength = camObj.optDouble("panStrength", 0.72).toFloat()
+                smoothSpeed = smoothSpeed,
+                panStrength = panStrength,
+                activeCameraIndex = camObj.optInt("activeCameraIndex", 0)
+                    .coerceIn(0, (parsedSlots.size - 1).coerceAtLeast(0)),
+                cameras = parsedSlots
             )
         } else {
             StageCameraSnapshot()

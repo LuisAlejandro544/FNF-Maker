@@ -115,6 +115,9 @@ object NativeEngineBridge {
     external fun nativeToggleSectionMustHit(secIndex: Int): String
 
     @JvmStatic
+    external fun nativeSetSectionCameraSlot(secIndex: Int, cameraSlot: Int): String
+
+    @JvmStatic
     external fun nativeToggleChartNote(
         secIndex: Int,
         stepInSec: Int,
@@ -214,6 +217,38 @@ object NativeEngineBridge {
         panStrength: Float,
         commitSave: Boolean
     ): String
+
+    @JvmStatic
+    external fun nativeSelectStageCamera(slotIndex: Int): String
+
+    @JvmStatic
+    external fun nativeUpdateCameraSlot(
+        slotIndex: Int,
+        name: String,
+        targetKind: String,
+        targetEntityId: String,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean
+    ): String
+
+    @JvmStatic
+    external fun nativeAddCustomCamera(
+        name: String,
+        targetKind: String,
+        targetEntityId: String,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float
+    ): String
+
+    @JvmStatic
+    external fun nativeRemoveCustomCamera(slotIndex: Int): String
 
     @JvmStatic
     external fun nativeAddScript(language: String): String

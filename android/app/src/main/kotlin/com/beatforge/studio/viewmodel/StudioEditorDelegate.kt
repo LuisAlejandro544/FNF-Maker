@@ -16,6 +16,7 @@ import com.beatforge.studio.NativeEngineBridge
 import com.beatforge.studio.SafFileBridge
 import com.beatforge.studio.SparrowFrameInfo
 import com.beatforge.studio.StageCameraSnapshot
+import com.beatforge.studio.StageCameraSlotSnapshot
 import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.StudioJsonParser
 import com.beatforge.studio.StudioScreen
@@ -499,6 +500,15 @@ internal class StudioEditorDelegate(
         }
     }
 
+    fun setSectionCameraSlot(secIndex: Int, cameraSlot: Int?) {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(
+                NativeEngineBridge.nativeSetSectionCameraSlot(secIndex, cameraSlot ?: -1),
+                silentOk = true
+            )
+        }
+    }
+
     fun toggleChartNote(
         secIndex: Int,
         stepInSec: Int,
@@ -712,9 +722,26 @@ internal class StudioEditorDelegate(
         val clampedBeats = followIntervalBeats.coerceIn(1, 32)
         val clampedSmooth = smoothSpeed.coerceIn(1f, 20f)
         val clampedPan = panStrength.coerceIn(0f, 1f)
-        val normalizedMode = if (followMode == "sections") "sections" else "beats"
+        val normalizedMode = when (followMode) {
+            "fixed" -> "fixed"
+            "beats" -> "beats"
+            else -> "sections"
+        }
 
         uiState.update { state ->
+            val currentCam = state.snapshot.stageCamera
+            val updatedSlots = currentCam.resolvedCameras().map { slot ->
+                if (slot.index == 0) {
+                    slot.copy(
+                        x = clampedX,
+                        y = clampedY,
+                        zoom = clampedZoom,
+                        smoothSpeed = clampedSmooth
+                    )
+                } else {
+                    slot
+                }
+            }
             state.copy(
                 snapshot = state.snapshot.copy(
                     stageCamera = StageCameraSnapshot(
@@ -725,7 +752,9 @@ internal class StudioEditorDelegate(
                         followMode = normalizedMode,
                         followIntervalBeats = clampedBeats,
                         smoothSpeed = clampedSmooth,
-                        panStrength = clampedPan
+                        panStrength = clampedPan,
+                        activeCameraIndex = currentCam.activeCameraIndex.coerceIn(0, (updatedSlots.size - 1).coerceAtLeast(0)),
+                        cameras = updatedSlots
                     )
                 )
             )
@@ -746,6 +775,127 @@ internal class StudioEditorDelegate(
             if (commitSave) {
                 applyActionJson(raw, silentOk = true)
             }
+        }
+    }
+
+    fun selectStageCamera(slotIndex: Int) {
+        uiState.update { state ->
+            val cam = state.snapshot.stageCamera
+            val maxIdx = (cam.resolvedCameras().size - 1).coerceAtLeast(0)
+            state.copy(
+                snapshot = state.snapshot.copy(
+                    stageCamera = cam.copy(activeCameraIndex = slotIndex.coerceIn(0, maxIdx))
+                )
+            )
+        }
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeSelectStageCamera(slotIndex), silentOk = true)
+        }
+    }
+
+    fun updateCameraSlot(
+        slotIndex: Int,
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float,
+        commitSave: Boolean
+    ) {
+        val clampedX = x.coerceIn(-1200f, 2600f)
+        val clampedY = y.coerceIn(-1200f, 1800f)
+        val clampedZoom = zoom.coerceIn(0.35f, 2.5f)
+        val clampedSmooth = smoothSpeed.coerceIn(1f, 20f)
+        val clampedPan = panStrength.coerceIn(0f, 1f)
+        val cleanName = name.trim()
+        val cleanEntityId = targetEntityId?.trim()?.takeIf { it.isNotBlank() }
+
+        uiState.update { state ->
+            val cam = state.snapshot.stageCamera
+            val updatedSlots = cam.resolvedCameras().map { slot ->
+                if (slot.index != slotIndex) {
+                    slot
+                } else {
+                    slot.copy(
+                        name = cleanName.ifBlank { slot.name },
+                        targetKind = targetKind,
+                        targetEntityId = if (targetKind == "fixed") null else cleanEntityId,
+                        x = clampedX,
+                        y = clampedY,
+                        zoom = clampedZoom,
+                        smoothSpeed = clampedSmooth,
+                        panStrength = if (targetKind == "fixed") 0f else clampedPan
+                    )
+                }
+            }
+            val nextCam = if (slotIndex == 0) {
+                cam.copy(
+                    baseX = clampedX,
+                    baseY = clampedY,
+                    baseZoom = clampedZoom,
+                    smoothSpeed = clampedSmooth,
+                    activeCameraIndex = 0,
+                    cameras = updatedSlots
+                )
+            } else {
+                cam.copy(
+                    activeCameraIndex = slotIndex.coerceIn(0, (updatedSlots.size - 1).coerceAtLeast(0)),
+                    cameras = updatedSlots
+                )
+            }
+            state.copy(snapshot = state.snapshot.copy(stageCamera = nextCam))
+        }
+
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeUpdateCameraSlot(
+                slotIndex,
+                cleanName,
+                targetKind,
+                cleanEntityId ?: "",
+                clampedX,
+                clampedY,
+                clampedZoom,
+                clampedSmooth,
+                clampedPan,
+                commitSave
+            )
+            if (commitSave) {
+                applyActionJson(raw, silentOk = true)
+            }
+        }
+    }
+
+    fun addCustomCamera(
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float
+    ) {
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeAddCustomCamera(
+                name,
+                targetKind,
+                targetEntityId ?: "",
+                x.coerceIn(-1200f, 2600f),
+                y.coerceIn(-1200f, 1800f),
+                zoom.coerceIn(0.35f, 2.5f),
+                smoothSpeed.coerceIn(1f, 20f),
+                panStrength.coerceIn(0f, 1f)
+            )
+            applyActionJson(raw)
+        }
+    }
+
+    fun removeCustomCamera(slotIndex: Int) {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeRemoveCustomCamera(slotIndex))
         }
     }
 

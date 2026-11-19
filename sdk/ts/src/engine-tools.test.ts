@@ -90,6 +90,11 @@ import {
   decodeBfgpNoteKindCode,
   normalizeAndCenterAtlasFrames,
   computeStageImportDimensions,
+  alignAtlasAnimationsWithRgba,
+  resolveCharacterAnimWithFlipX,
+  defaultStageCameraSlots,
+  resolveCameraSlotTarget,
+  parseChartCameraEvent,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -1655,6 +1660,284 @@ test('computeStageImportDimensions prevents full-sheet squashing and scales smal
   });
   assert.ok(bg.width >= 1280 && bg.height >= 720);
 });
+
+test('alignAtlasAnimationsWithRgba aligns asymmetric poses and rotated frames to foot anchor idempotently', () => {
+  const imgW = 500;
+  const imgH = 200;
+  const rgba = new Uint8Array(imgW * imgH * 4);
+  const paintRect = (rx: number, ry: number, rw: number, rh: number) => {
+    for (let py = ry; py < ry + rh; py += 1) {
+      for (let px = rx; px < rx + rw; px += 1) {
+        const idx = (py * imgW + px) * 4;
+        rgba[idx] = 255;
+        rgba[idx + 1] = 255;
+        rgba[idx + 2] = 255;
+        rgba[idx + 3] = 255;
+      }
+    }
+  };
+
+  // idle (0..80 x 0..120): botas en lx=25..55 (centro=40), suelo ly=120
+  paintRect(25, 10, 30, 110);
+  // singRIGHT (100..260 x 0..150): botas en lx=20..50 (centro=35), suelo ly=110 + brazo derecho + 40px vacío abajo
+  paintRect(120, 10, 30, 100);
+  paintRect(150, 20, 105, 50);
+  // singLEFT rotado (300..420 x 0..140 -> vis 140x120): botas visual lx=95..125 (centro=110), ly=10..115 (suelo=115)
+  for (let ly = 10; ly < 115; ly += 1) {
+    for (let lx = 95; lx < 125; lx += 1) {
+      const tx = 300 + (120 - 1 - ly);
+      const ty = lx;
+      const idx = (ty * imgW + tx) * 4;
+      rgba[idx] = 255;
+      rgba[idx + 1] = 255;
+      rgba[idx + 2] = 255;
+      rgba[idx + 3] = 255;
+    }
+  }
+  for (let ly = 20; ly < 65; ly += 1) {
+    for (let lx = 0; lx < 95; lx += 1) {
+      const tx = 300 + (120 - 1 - ly);
+      const ty = lx;
+      const idx = (ty * imgW + tx) * 4;
+      rgba[idx] = 255;
+      rgba[idx + 1] = 255;
+      rgba[idx + 2] = 255;
+      rgba[idx + 3] = 255;
+    }
+  }
+
+  const input = {
+    idle: [{ x: 0, y: 0, width: 80, height: 120, frameX: 0, frameY: 0, frameWidth: 80, frameHeight: 120 }],
+    right: [{ x: 100, y: 0, width: 160, height: 150, frameX: 0, frameY: 0, frameWidth: 160, frameHeight: 150 }],
+    left: [{ x: 300, y: 0, width: 120, height: 140, frameX: 0, frameY: 0, frameWidth: 140, frameHeight: 120, rotated: true }],
+  };
+
+  const first = alignAtlasAnimationsWithRgba(input, imgW, imgH, rgba);
+  const center = first.unifiedWidth * 0.5;
+  const fIdle = first.animations.idle[0];
+  const fRight = first.animations.right[0];
+  const fLeft = first.animations.left[0];
+
+  assert.equal(fIdle.frameWidth, first.unifiedWidth);
+  assert.equal(fRight.frameWidth, first.unifiedWidth);
+  assert.equal(fLeft.frameWidth, first.unifiedWidth);
+
+  const floorIdle = -fIdle.frameY + 120;
+  const floorRight = -fRight.frameY + 110;
+  const floorLeft = -fLeft.frameY + 115;
+  assert.ok(Math.abs(floorIdle - floorRight) <= 1);
+  assert.ok(Math.abs(floorIdle - floorLeft) <= 1);
+
+  assert.ok(Math.abs(-fIdle.frameX + 40 - center) <= 1);
+  assert.ok(Math.abs(-fRight.frameX + 35 - center) <= 1);
+  assert.ok(Math.abs(-fLeft.frameX + 110 - center) <= 1);
+
+  const second = alignAtlasAnimationsWithRgba(first.animations, imgW, imgH, rgba);
+  assert.deepEqual(second, first);
+});
+
+test('resolveCharacterAnimWithFlipX swaps left and right poses on flipX unless pre-swapped by descriptor', () => {
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: false, anim: 'left' }), 'left');
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: true, anim: 'left' }), 'right');
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: true, anim: 'right' }), 'left');
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: true, anim: 'missLeft' }), 'missRight');
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: true, anim: 'missRight' }), 'missLeft');
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: true, anim: 'up' }), 'up');
+  assert.equal(resolveCharacterAnimWithFlipX({ flipX: true, anim: 'down' }), 'down');
+
+  // Evita doble intercambio si character.json con flip_x ya asignó singLEFT -> Right y singRIGHT -> Left
+  assert.equal(
+    resolveCharacterAnimWithFlipX({
+      flipX: true,
+      anim: 'left',
+      descriptorFlipX: true,
+      leftPrefix: 'Pico Note Right',
+      rightPrefix: 'Pico NOTE LEFT',
+    }),
+    'left',
+  );
+});
+
+test('multi-camera slots resolve Cam 0 fixed, Cam 1 player, Cam 2 opponent, Cam 3+ custom and Lua V2 fixed mode', () => {
+  const slots = defaultStageCameraSlots(640, 360, 1.0, 6.0);
+  assert.equal(slots.length, 3);
+  assert.equal(slots[0].targetKind, 'fixed');
+  assert.equal(slots[1].targetKind, 'player');
+  assert.equal(slots[2].targetKind, 'opponent');
+
+  slots.push({
+    index: 3,
+    name: 'Cam 3 · Cabina',
+    targetKind: 'gf',
+    targetEntityId: null,
+    x: 0,
+    y: -30,
+    zoom: 1.35,
+    smoothSpeed: 8.0,
+    panStrength: 1.0,
+  });
+  slots.push({
+    index: 4,
+    name: 'Cam 4 · Medio Camino Enemigo',
+    targetKind: 'opponent',
+    targetEntityId: null,
+    x: 0,
+    y: 0,
+    zoom: 1.15,
+    smoothSpeed: 5.0,
+    panStrength: 0.5,
+  });
+
+  const cfg = {
+    enabled: true,
+    baseX: 640,
+    baseY: 360,
+    baseZoom: 1.0,
+    followMode: 'fixed' as const,
+    followIntervalBeats: 4,
+    smoothSpeed: 6.0,
+    panStrength: 0.85,
+    activeCameraIndex: 3,
+    cameras: slots,
+  };
+  const entities = [
+    { id: 'stage_bg', role: 'background' as const, x: 640, y: 360, visible: true },
+    { id: 'stage_speakers', displayName: 'Cabina de Sonido', role: 'decoration' as const, x: 640, y: 415, visible: true },
+    { id: 'opponent_main', role: 'opponent' as const, x: 300, y: 415, visible: true, cameraOffset: [20, -10] as [number, number] },
+    { id: 'player_main', role: 'player' as const, x: 980, y: 420, visible: true },
+  ];
+
+  const c0 = resolveCameraSlotTarget({ camera: cfg, entities, slotIndex: 0 });
+  assert.deepEqual({ x: c0.x, y: c0.y, zoom: c0.zoom }, { x: 640, y: 360, zoom: 1.0 });
+
+  const c1 = resolveCameraSlotTarget({ camera: cfg, entities, slotIndex: 1, activePlayerId: 'player_main' });
+  assert.equal(c1.x, 980);
+  assert.equal(c1.y, 420 - 24);
+
+  const c2 = resolveCameraSlotTarget({ camera: cfg, entities, slotIndex: 2, activeOpponentId: 'opponent_main' });
+  assert.equal(c2.x, 320); // 300 + cameraOffset[0]=20
+  assert.equal(c2.y, 415 - 10 - 24);
+
+  const c3 = resolveCameraSlotTarget({ camera: cfg, entities, slotIndex: 3 });
+  assert.equal(c3.x, 640);
+  assert.equal(c3.y, 385);
+  assert.equal(c3.zoom, 1.35);
+
+  const c4 = resolveCameraSlotTarget({ camera: cfg, entities, slotIndex: 4 });
+  // panStrength 0.5 interpolates halfway between Cam 0 (640,360) and opponent (320,405)
+  assert.equal(c4.x, 480);
+  assert.ok(Math.abs(c4.y - 382.5) < 0.01);
+
+  const luaBlock = renderCameraLuaConfigBlock(cfg);
+  assert.ok(luaBlock.includes('local CAM_MODE = "fixed"'));
+  assert.ok(luaBlock.includes('local CAM_ACTIVE_INDEX = 3'));
+  assert.ok(luaBlock.includes('local CAM_COUNT = 5'));
+
+  const parsedLua = parseCameraConfigFromLua(
+    `${luaBlock}\nfunction onSongStart() switchCamera(3) end`,
+    { ...cfg, followMode: 'sections', activeCameraIndex: 0 },
+  );
+  assert.equal(parsedLua.followMode, 'fixed');
+  assert.equal(parsedLua.activeCameraIndex, 3);
+});
+
+test('chart.json preserves section.cameraSlot and parseChartCameraEvent handles V-Slice, Psych, Codename and Switch Camera', () => {
+  const raw = JSON.stringify({
+    song: {
+      song: 'Cam Test',
+      bpm: 150,
+      speed: 2.0,
+      notes: [
+        { mustHitSection: false, cameraSlot: 0, sectionNotes: [[100, 0, 0]] },
+        { mustHitSection: true, cameraSlot: 3, sectionNotes: [[1700, 0, 0]] },
+      ],
+    },
+  });
+  const parsed = parseChartJson(raw);
+  assert.equal(parsed.sections[0].cameraSlot, 0);
+  assert.equal(parsed.sections[1].cameraSlot, 3);
+  const reserialized = parseChartJson(serializeChartJson(parsed));
+  assert.equal(reserialized.sections[0].cameraSlot, 0);
+  assert.equal(reserialized.sections[1].cameraSlot, 3);
+
+  const sw = parseChartCameraEvent({
+    name: 'Switch Camera',
+    value1: 'cam=3;zoom=1.35;dur=0.50;ease=cubicOut',
+    value2: '',
+  });
+  assert.deepEqual(sw, {
+    kind: 'select_camera',
+    slot: 3,
+    focusGf: false,
+    offsetX: 0,
+    offsetY: 0,
+    zoom: 1.35,
+    durationSec: 0.5,
+    ease: 'cubicOut',
+  });
+
+  // 150 BPM -> 1 step = 0.1s
+  const focusPlayer = parseChartCameraEvent({
+    name: 'FocusCamera',
+    value1: JSON.stringify({ char: 0, x: 25, y: -15, duration: 4, ease: 'quadOut' }),
+    value2: '',
+    activeBpm: 150,
+  });
+  assert.equal(focusPlayer?.kind, 'select_camera');
+  if (focusPlayer?.kind === 'select_camera') {
+    assert.equal(focusPlayer.slot, 1);
+    assert.equal(focusPlayer.offsetX, 25);
+    assert.equal(focusPlayer.offsetY, -15);
+    assert.ok(Math.abs(focusPlayer.durationSec - 0.4) < 0.001);
+  }
+
+  const focusStageOrigin = parseChartCameraEvent({
+    name: 'FocusCamera',
+    value1: JSON.stringify({ char: -1 }),
+    value2: '',
+  });
+  assert.equal(focusStageOrigin?.kind, 'select_camera');
+  if (focusStageOrigin?.kind === 'select_camera') {
+    assert.equal(focusStageOrigin.slot, 0);
+  }
+
+  const zoomStage = parseChartCameraEvent({
+    name: 'ZoomCamera',
+    value1: JSON.stringify({ zoom: 1.25, duration: 8, mode: 'stage', ease: 'sineInOut' }),
+    value2: '',
+    activeBpm: 120,
+  });
+  assert.deepEqual(zoomStage, {
+    kind: 'set_zoom',
+    zoom: 1.25,
+    isDirectStage: true,
+    durationSec: 1.0,
+    ease: 'sineInOut',
+  });
+
+  const lock = parseChartCameraEvent({ name: 'Camera Follow Pos', value1: '700', value2: '350' });
+  assert.equal(lock?.kind, 'follow_pos');
+  const unlock = parseChartCameraEvent({ name: 'Camera Follow Pos', value1: '', value2: '' });
+  assert.equal(unlock?.kind, 'clear_follow_pos');
+
+  const bump = parseChartCameraEvent({ name: 'Add Camera Zoom', value1: '0.04', value2: '0.02' });
+  assert.deepEqual(bump, { kind: 'add_zoom_bump', camZoomAdd: 0.04, hudZoomAdd: 0.02 });
+
+  const codenameOpp = parseChartCameraEvent({ name: 'Camera Movement', value1: '0', value2: '' });
+  assert.equal(codenameOpp?.kind, 'select_camera');
+  if (codenameOpp?.kind === 'select_camera') {
+    assert.equal(codenameOpp.slot, 2);
+  }
+
+  const loopRes = optimizeScriptLoops(
+    'lua',
+    'for i = 1, 5000 do\n  switchCamera(3)\n  setCameraFollowPos(640, 360)\nend',
+  );
+  assert.equal(loopRes.discardedLoops, 0);
+  assert.equal(loopRes.neutralizedLoops, 1);
+  assert.ok(loopRes.optimizedSource.includes('switchCamera'));
+});
+
 
 
 

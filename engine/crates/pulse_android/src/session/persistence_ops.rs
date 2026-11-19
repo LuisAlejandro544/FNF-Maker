@@ -9,6 +9,7 @@
 
 use super::{ActionResultJson, EngineSession, ProjectSummaryJson};
 use pulse_audio::decode_audio_file_cached;
+use pulse_core::astc_loader::load_sprite_image;
 use pulse_core::disk_cache::{cleanup_legacy_flat_compiled_cache, touch_dir_last_used};
 use pulse_core::project::{MAX_AUDIO_TRACKS, ModProject, current_epoch_ms};
 use pulse_core::vanilla::{export_project_vanilla_mod, import_project_vanilla_mod};
@@ -21,12 +22,34 @@ use std::time::{Duration, Instant};
 const AUTO_SAVE_THROTTLE_MS: u64 = 250;
 
 fn normalize_loaded_project(proj: &mut ModProject) {
+    proj.stage.camera.ensure_default_cameras();
     proj.ensure_camera_script();
     proj.ensure_stage_events_script();
     proj.ensure_ui_blackout_script();
     for ent in &mut proj.stage.entities {
+        let no_manual_offsets = ent.character_config_path.is_none()
+            && ent
+                .anim_offsets
+                .values()
+                .all(|[ox, oy]| ox.abs() < 0.01 && oy.abs() < 0.01);
+        let img_opt = if no_manual_offsets {
+            ent.image_path
+                .as_deref()
+                .and_then(|p| load_sprite_image(p).ok())
+        } else {
+            None
+        };
+        let mut did_pixel_align = false;
         if let Some(atlas) = ent.atlas.as_mut() {
-            atlas.normalize_and_center_animations();
+            if let Some(img) = img_opt.as_ref() {
+                atlas.align_animations_with_image(img);
+                did_pixel_align = true;
+            } else {
+                atlas.normalize_and_center_animations();
+            }
+        }
+        if did_pixel_align {
+            ent.fit_dimensions_to_atlas();
         }
     }
 }

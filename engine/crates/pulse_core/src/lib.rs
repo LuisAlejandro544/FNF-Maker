@@ -35,7 +35,10 @@ pub use astc_loader::{
     save_lossless_webp,
 };
 pub use atlas_json::{AnimateDocument, AnimateSpritemap, DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
-pub use chart::{ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection, NoteSpecialKind};
+pub use chart::{
+    ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection, NoteSpecialKind,
+    ParsedChartCameraAction, parse_chart_camera_event,
+};
 pub use gfx_backend::{GfxCapabilities, RenderBackendKind};
 pub use disk_cache::{
     CacheBudgetSplit, DEFAULT_TOTAL_CACHE_QUOTA_BYTES, LruEvictionReport, MAX_CACHE_QUOTA_BYTES,
@@ -63,7 +66,10 @@ pub use project::{
 };
 pub use script_optimizer::{ScriptBatchReport, ScriptLoopOptResult, optimize_scripts_for_hot_compile, optimize_single_script};
 pub use sparrow::{AnimSet, CharacterAnimKind, SparrowAtlas, SparrowFrame};
-pub use stage::{CameraFollowMode, EntityRole, StageCameraConfig, StageEntity, StageScene};
+pub use stage::{
+    CameraFollowMode, CameraTargetKind, EntityRole, StageCameraConfig, StageCameraSlot,
+    StageEntity, StageScene, default_camera_slots,
+};
 pub use svg_skin::{
     ArrowSkinSet, RasterizedArrow, default_arrow_svg_bundle, default_hurt_arrow_x_svg,
     default_receptor_svg_bundle, desaturate_to_neutral_receptor, import_arrow_sparrow_atlas,

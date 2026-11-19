@@ -38,6 +38,9 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +49,10 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,6 +65,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.beatforge.studio.StageCameraSnapshot
 import com.beatforge.studio.VisibleNote
 import com.beatforge.studio.ui.theme.StudioColors
 import java.util.Locale
@@ -69,6 +77,7 @@ private val LANE_ARROWS = listOf("←", "↓", "↑", "→")
 fun ChartTimelineGrid(
     rows: List<ChartTimelineRow>,
     listState: LazyListState,
+    stageCamera: StageCameraSnapshot,
     selectedSustainSteps: Int,
     audioPreviewPlaying: Boolean,
     playheadState: ChartPlayheadState,
@@ -78,6 +87,7 @@ fun ChartTimelineGrid(
     onScrubPlayheadMs: (Double) -> Unit,
     onSeekPlayheadAndPauseOrKeep: (Double) -> Unit,
     onToggleSectionMustHit: (secIndex: Int) -> Unit,
+    onSetSectionCameraSlot: (secIndex: Int, cameraSlot: Int?) -> Unit,
     onSelectSection: (secIndex: Int) -> Unit,
     onToggleChartNote: (secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int) -> Unit,
     onOpenStepCueDialog: (ChartTimelineRow.StepRow) -> Unit,
@@ -180,7 +190,11 @@ fun ChartTimelineGrid(
                             is ChartTimelineRow.SectionHeader -> {
                                 ChartSectionHeaderRow(
                                     row = row,
-                                    onToggleSectionMustHit = { onToggleSectionMustHit(row.section.index) }
+                                    stageCamera = stageCamera,
+                                    onToggleSectionMustHit = { onToggleSectionMustHit(row.section.index) },
+                                    onSetSectionCameraSlot = { camSlot ->
+                                        onSetSectionCameraSlot(row.section.index, camSlot)
+                                    }
                                 )
                             }
 
@@ -370,9 +384,14 @@ private fun ChartPlayheadThreadOverlay(
 @Composable
 private fun ChartSectionHeaderRow(
     row: ChartTimelineRow.SectionHeader,
-    onToggleSectionMustHit: () -> Unit
+    stageCamera: StageCameraSnapshot,
+    onToggleSectionMustHit: () -> Unit,
+    onSetSectionCameraSlot: (Int?) -> Unit
 ) {
     val sec = row.section
+    val slots = stageCamera.resolvedCameras()
+    var camMenuExpanded by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -418,7 +437,7 @@ private fun ChartSectionHeaderRow(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Sección ${sec.index + 1} · ${String.format(Locale.US, "%.2fs", sec.startMs / 1000.0)} · ${sec.bpm.roundToInt()} BPM",
+                    text = "Sec ${sec.index + 1} · ${String.format(Locale.US, "%.2fs", sec.startMs / 1000.0)} · ${sec.bpm.roundToInt()} BPM",
                     color = StudioColors.TextPrimary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
@@ -442,20 +461,86 @@ private fun ChartSectionHeaderRow(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(StudioColors.BgCard.copy(alpha = 0.92f))
-                    .clickable(onClick = onToggleSectionMustHit)
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                Icon(Icons.Rounded.SwapHoriz, null, tint = StudioColors.AccentAmber, modifier = Modifier.size(13.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = if (sec.mustHitSection) "Cámara: Jugador" else "Cámara: Oponente",
-                    color = if (sec.mustHitSection) StudioColors.AccentEmerald else StudioColors.AccentCoral,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Box {
+                    val slotIdx = sec.cameraSlot
+                    val slotLabel = if (slotIdx == null) {
+                        "Auto"
+                    } else {
+                        "Cam $slotIdx"
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (slotIdx != null) StudioColors.AccentCyan.copy(alpha = 0.18f)
+                                else StudioColors.BgCard.copy(alpha = 0.92f)
+                            )
+                            .border(
+                                1.dp,
+                                if (slotIdx != null) StudioColors.AccentCyan else StudioColors.BorderSubtle,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { camMenuExpanded = true }
+                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Videocam,
+                            contentDescription = null,
+                            tint = if (slotIdx != null) StudioColors.AccentCyan else StudioColors.TextMuted,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            text = slotLabel,
+                            color = if (slotIdx != null) StudioColors.AccentCyan else StudioColors.TextPrimary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = camMenuExpanded,
+                        onDismissRequest = { camMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Auto (mustHit / GF)", fontSize = 12.sp) },
+                            onClick = {
+                                camMenuExpanded = false
+                                onSetSectionCameraSlot(null)
+                            }
+                        )
+                        slots.forEach { slot ->
+                            DropdownMenuItem(
+                                text = { Text(slot.name, fontSize = 12.sp) },
+                                onClick = {
+                                    camMenuExpanded = false
+                                    onSetSectionCameraSlot(slot.index)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(StudioColors.BgCard.copy(alpha = 0.92f))
+                        .clickable(onClick = onToggleSectionMustHit)
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                ) {
+                    Icon(Icons.Rounded.SwapHoriz, null, tint = StudioColors.AccentAmber, modifier = Modifier.size(13.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        text = if (sec.mustHitSection) "Jugador" else "Oponente",
+                        color = if (sec.mustHitSection) StudioColors.AccentEmerald else StudioColors.AccentCoral,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }
@@ -626,6 +711,7 @@ private fun StepNumberCueCell(
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                     badgeKinds.take(3).forEach { kind ->
                         val dotColor = when (kind) {
+                            StepCueKind.Camera -> StudioColors.AccentCyan
                             StepCueKind.Flash -> StudioColors.AccentAmber
                             StepCueKind.Swap -> StudioColors.AccentEmerald
                             StepCueKind.Character -> StudioColors.AccentPurple

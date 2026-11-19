@@ -29,6 +29,7 @@ export interface ChartSectionSpec {
   changeBpm: boolean;
   altAnim: boolean;
   gfSection: boolean;
+  cameraSlot?: number | null;
 }
 
 export interface ParsedChartNote {
@@ -410,6 +411,9 @@ export function parseChartJson(rawJson: string): ParsedChart {
               ? stepsNum / 4
               : 4;
 
+        const rawCameraSlot = asFiniteNumber(sec.cameraSlot ?? sec.camera ?? sec.camSlot);
+        const cameraSlot = rawCameraSlot !== null && rawCameraSlot >= 0 ? Math.round(rawCameraSlot) : null;
+
         sections.push({
           mustHitSection: mustHit,
           sectionBeats,
@@ -417,6 +421,7 @@ export function parseChartJson(rawJson: string): ParsedChart {
           changeBpm,
           altAnim: Boolean(sec.altAnim ?? false),
           gfSection: Boolean(sec.gfSection ?? false),
+          ...(cameraSlot !== null ? { cameraSlot } : {}),
         });
 
         const secNotes = Array.isArray(sec.sectionNotes)
@@ -623,6 +628,9 @@ export function serializeChartJson(chart: ParsedChart): string {
           changeBPM: w.sec.changeBpm,
           altAnim: w.sec.altAnim,
           gfSection: w.sec.gfSection,
+          ...(typeof w.sec.cameraSlot === 'number' && w.sec.cameraSlot >= 0
+            ? { cameraSlot: Math.round(w.sec.cameraSlot) }
+            : {}),
         })),
       },
     },
@@ -963,6 +971,9 @@ const NECESSARY_ENGINE_APIS = [
   'setCameraBaseZoom',
   'setCameraPos',
   'shakeCamera',
+  'switchCamera',
+  'setCameraFollowPos',
+  'clearCameraFollowPos',
   'playAnim',
   'playEntityAnim',
   'setHealth',
@@ -1789,7 +1800,20 @@ export function estimateMergedAudioRamSavings(
   };
 }
 
-export type CameraFollowMode = 'beats' | 'sections';
+export type CameraFollowMode = 'fixed' | 'beats' | 'sections';
+export type CameraTargetKind = 'fixed' | 'player' | 'opponent' | 'gf' | 'entity';
+
+export interface StageCameraSlotSpec {
+  index: number;
+  name: string;
+  targetKind: CameraTargetKind;
+  targetEntityId?: string | null;
+  x: number;
+  y: number;
+  zoom: number;
+  smoothSpeed: number;
+  panStrength: number;
+}
 
 export interface StageCameraConfigSpec {
   enabled: boolean;
@@ -1800,6 +1824,8 @@ export interface StageCameraConfigSpec {
   followIntervalBeats: number;
   smoothSpeed: number;
   panStrength: number;
+  activeCameraIndex?: number;
+  cameras?: StageCameraSlotSpec[];
 }
 
 export interface CameraCaptureBox {
@@ -1808,6 +1834,55 @@ export interface CameraCaptureBox {
   width: number;
   height: number;
   zoom: number;
+}
+
+/**
+ * Construye las 3 ranuras base predeterminadas del sistema multicámara:
+ * Cam 0 (Fija inicial), Cam 1 (Jugador) y Cam 2 (Enemigo).
+ */
+export function defaultStageCameraSlots(
+  baseX = 640,
+  baseY = 360,
+  baseZoom = 1.0,
+  smoothSpeed = 6.0,
+): StageCameraSlotSpec[] {
+  const clampZoom = Math.min(2.5, Math.max(0.35, Number.isFinite(baseZoom) ? baseZoom : 1.0));
+  const clampSmooth = Math.min(20, Math.max(1, Number.isFinite(smoothSpeed) ? smoothSpeed : 6.0));
+  return [
+    {
+      index: 0,
+      name: 'Cam 0 · Inicial Fija',
+      targetKind: 'fixed',
+      targetEntityId: null,
+      x: Math.min(2600, Math.max(-1000, Number.isFinite(baseX) ? baseX : 640)),
+      y: Math.min(1800, Math.max(-1000, Number.isFinite(baseY) ? baseY : 360)),
+      zoom: clampZoom,
+      smoothSpeed: clampSmooth,
+      panStrength: 0.0,
+    },
+    {
+      index: 1,
+      name: 'Cam 1 · Jugador',
+      targetKind: 'player',
+      targetEntityId: null,
+      x: 0,
+      y: -24,
+      zoom: clampZoom,
+      smoothSpeed: clampSmooth,
+      panStrength: 1.0,
+    },
+    {
+      index: 2,
+      name: 'Cam 2 · Enemigo',
+      targetKind: 'opponent',
+      targetEntityId: null,
+      x: 0,
+      y: -24,
+      zoom: clampZoom,
+      smoothSpeed: clampSmooth,
+      panStrength: 1.0,
+    },
+  ];
 }
 
 /**
@@ -1832,9 +1907,489 @@ export function computeCameraCaptureBox(
 }
 
 /**
+ * Resuelve `(x, y, zoom, smoothSpeed)` efectivos en escena para una ranura de cámara (`Cam 0/1/2/3+`).
+ * Espejo exacto de `StageScene::resolve_slot_against_entities` en `pulse_core::stage`.
+ */
+export function resolveCameraSlotTarget(params: {
+  camera: StageCameraConfigSpec;
+  entities: Array<{
+    id: string;
+    displayName?: string;
+    role: EntityRole;
+    x: number;
+    y: number;
+    visible: boolean;
+    cameraOffset?: [number, number];
+  }>;
+  slotIndex: number;
+  activePlayerId?: string;
+  activeOpponentId?: string;
+}): { x: number; y: number; zoom: number; smoothSpeed: number } {
+  const { camera, entities, slotIndex, activePlayerId = '', activeOpponentId = '' } = params;
+  const slots =
+    camera.cameras && camera.cameras.length > 0
+      ? camera.cameras
+      : defaultStageCameraSlots(camera.baseX, camera.baseY, camera.baseZoom, camera.smoothSpeed);
+
+  const cam0 = slots[0]?.targetKind === 'fixed' ? slots[0] : null;
+  const cam0X = cam0 ? cam0.x : camera.baseX;
+  const cam0Y = cam0 ? cam0.y : camera.baseY;
+  const slot = slots[slotIndex] ?? slots[0];
+  if (!slot) {
+    return {
+      x: Math.min(2600, Math.max(-1000, camera.baseX)),
+      y: Math.min(1800, Math.max(-1000, camera.baseY)),
+      zoom: Math.min(2.5, Math.max(0.35, camera.baseZoom)),
+      smoothSpeed: Math.min(20, Math.max(1, camera.smoothSpeed)),
+    };
+  }
+
+  const zoom = Math.min(2.5, Math.max(0.35, Number.isFinite(slot.zoom) ? slot.zoom : 1.0));
+  const smoothSpeed = Math.min(20, Math.max(1, Number.isFinite(slot.smoothSpeed) ? slot.smoothSpeed : 6.0));
+  if (slot.targetKind === 'fixed') {
+    return {
+      x: Math.min(2600, Math.max(-1000, slot.x)),
+      y: Math.min(1800, Math.max(-1000, slot.y)),
+      zoom,
+      smoothSpeed,
+    };
+  }
+
+  let anchor: (typeof entities)[number] | undefined;
+  if (slot.targetKind === 'player') {
+    anchor =
+      (activePlayerId ? entities.find((e) => e.id === activePlayerId) : undefined) ??
+      entities.find((e) => e.role === 'player' && e.visible) ??
+      entities.find((e) => e.role === 'player');
+  } else if (slot.targetKind === 'opponent') {
+    anchor =
+      (activeOpponentId ? entities.find((e) => e.id === activeOpponentId) : undefined) ??
+      entities.find((e) => e.role === 'opponent' && e.visible) ??
+      entities.find((e) => e.role === 'opponent');
+  } else if (slot.targetKind === 'gf') {
+    anchor =
+      entities.find(
+        (e) =>
+          e.role === 'decoration' &&
+          (e.id.toLowerCase() === 'stage_speakers' ||
+            e.id.toLowerCase().includes('gf') ||
+            (e.displayName ?? '').toLowerCase().includes('cabina')),
+      ) ?? entities.find((e) => e.role === 'decoration' && e.visible);
+  } else if (slot.targetKind === 'entity') {
+    anchor =
+      (slot.targetEntityId ? entities.find((e) => e.id === slot.targetEntityId) : undefined) ??
+      entities[0];
+  }
+
+  if (!anchor) {
+    return {
+      x: Math.min(2600, Math.max(-1000, cam0X + slot.x)),
+      y: Math.min(1800, Math.max(-1000, cam0Y + slot.y)),
+      zoom,
+      smoothSpeed,
+    };
+  }
+
+  const camOff = anchor.cameraOffset ?? [0, 0];
+  const destX = anchor.x + camOff[0] + slot.x;
+  const destY = anchor.y + camOff[1] + slot.y;
+  const pan = Math.min(1, Math.max(0, Number.isFinite(slot.panStrength) ? slot.panStrength : 1.0));
+  return {
+    x: Math.min(2600, Math.max(-1000, cam0X + (destX - cam0X) * pan)),
+    y: Math.min(1800, Math.max(-1000, cam0Y + (destY - cam0Y) * pan)),
+    zoom,
+    smoothSpeed,
+  };
+}
+
+export type ParsedChartCameraAction =
+  | {
+      kind: 'select_camera';
+      slot: number | null;
+      focusGf: boolean;
+      offsetX: number;
+      offsetY: number;
+      zoom: number | null;
+      durationSec: number;
+      ease: string;
+    }
+  | {
+      kind: 'follow_pos';
+      x: number;
+      y: number;
+      zoom: number | null;
+      durationSec: number;
+      ease: string;
+    }
+  | { kind: 'clear_follow_pos' }
+  | {
+      kind: 'set_zoom';
+      zoom: number;
+      isDirectStage: boolean;
+      durationSec: number;
+      ease: string;
+    }
+  | {
+      kind: 'add_zoom_bump';
+      camZoomAdd: number;
+      hudZoomAdd: number;
+    };
+
+/**
+ * Interpreta eventos de cámara directos del `chart.json`
+ * (`Switch Camera`, `FocusCamera` V-Slice, `ZoomCamera`, `Camera Follow Pos`, `Add Camera Zoom`, `Camera Movement` Codename).
+ * Espejo exacto de `pulse_core::chart::parse_chart_camera_event`.
+ */
+export function parseChartCameraEvent(params: {
+  name: string;
+  value1: string;
+  value2: string;
+  activeBpm?: number;
+}): ParsedChartCameraAction | null {
+  const lower = params.name.trim().toLowerCase();
+  const v1 = params.value1.trim();
+  const v2 = params.value2.trim();
+  const safeBpm = Math.max(40, Number.isFinite(params.activeBpm) ? (params.activeBpm as number) : 120);
+  const stepSec = 60 / safeBpm / 4;
+
+  const parseKv = (raw: string): Array<[string, string]> =>
+    raw
+      .split(';')
+      .map((part) => part.trim())
+      .filter((part) => part.includes('='))
+      .map((part) => {
+        const idx = part.indexOf('=');
+        return [part.slice(0, idx).trim().toLowerCase(), part.slice(idx + 1).trim()];
+      });
+
+  if (
+    lower === 'switch camera' ||
+    lower === 'camera slot' ||
+    lower === 'set camera' ||
+    lower === 'cambiar camara' ||
+    lower === 'cambiar cámara'
+  ) {
+    if (/^-?\d+$/.test(v1)) {
+      const slotNum = Math.max(0, Number(v1));
+      const z = Number(v2);
+      const zoom = v2 !== '' && Number.isFinite(z) && z > 0.1 ? z : null;
+      return {
+        kind: 'select_camera',
+        slot: slotNum,
+        focusGf: false,
+        offsetX: 0,
+        offsetY: 0,
+        zoom,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+
+    let slot: number | null = null;
+    let zoom: number | null = null;
+    let dur = 0;
+    let ease = 'sineOut';
+    let clearLock = false;
+    let fx: number | null = null;
+    let fy: number | null = null;
+
+    for (const [k, v] of parseKv(v1)) {
+      if (k === 'cam' || k === 'slot' || k === 'camera') {
+        const n = Number(v);
+        if (Number.isFinite(n)) slot = Math.max(0, Math.round(n));
+      } else if (k === 'zoom' || k === 'fov') {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0.1) zoom = n;
+      } else if (k === 'dur' || k === 'duration') {
+        const n = Number(v);
+        if (Number.isFinite(n)) dur = Math.max(0, n);
+      } else if (k === 'ease' && v) {
+        ease = v;
+      } else if (k === 'x') {
+        const n = Number(v);
+        if (Number.isFinite(n)) fx = n;
+      } else if (k === 'y') {
+        const n = Number(v);
+        if (Number.isFinite(n)) fy = n;
+      } else if (k === 'clear' || k === 'unlock') {
+        clearLock = v === '1' || v === 'true' || v === 'yes' || v === 'si';
+      }
+    }
+
+    if (v2) {
+      for (const [k, v] of parseKv(v2)) {
+        if (k === 'zoom' || k === 'fov') {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0.1) zoom = n;
+        } else if (k === 'dur' || k === 'duration') {
+          const n = Number(v);
+          if (Number.isFinite(n)) dur = Math.max(0, n);
+        } else if (k === 'ease' && v) {
+          ease = v;
+        }
+      }
+      if (zoom === null && !v2.includes('=')) {
+        const n = Number(v2);
+        if (Number.isFinite(n) && n > 0.1) zoom = n;
+      }
+    }
+
+    if (clearLock && slot === null && fx === null && fy === null) {
+      return { kind: 'clear_follow_pos' };
+    }
+    if (fx !== null && fy !== null && slot === null) {
+      return { kind: 'follow_pos', x: fx, y: fy, zoom, durationSec: dur, ease };
+    }
+    return {
+      kind: 'select_camera',
+      slot: slot ?? 0,
+      focusGf: false,
+      offsetX: fx ?? 0,
+      offsetY: fy ?? 0,
+      zoom,
+      durationSec: dur,
+      ease,
+    };
+  }
+
+  if (lower === 'camera follow pos' || lower === 'camerafollowpos') {
+    if (!v1 && !v2) return { kind: 'clear_follow_pos' };
+    const x = Number(v1);
+    const y = Number(v2);
+    if (!v1 || !v2 || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { kind: 'follow_pos', x, y, zoom: null, durationSec: 0, ease: 'sineOut' };
+  }
+
+  if (lower === 'add camera zoom' || lower === 'addcamera zoom' || lower === 'add cam zoom') {
+    const c = v1 === '' ? 0.015 : Number(v1);
+    const h = v2 === '' ? 0.03 : Number(v2);
+    return {
+      kind: 'add_zoom_bump',
+      camZoomAdd: Number.isFinite(c) ? c : 0.015,
+      hudZoomAdd: Number.isFinite(h) ? h : 0.03,
+    };
+  }
+
+  if (lower === 'focuscamera' || lower === 'focus camera') {
+    if (v1.startsWith('{')) {
+      try {
+        const obj = JSON.parse(v1) as Record<string, unknown>;
+        const explicitCam = asFiniteNumber(obj.cam ?? obj.slot);
+        const charIdRaw = asFiniteNumber(obj.char);
+        const charId = charIdRaw !== null ? Math.round(charIdRaw) : null;
+        const ox = asFiniteNumber(obj.x) ?? 0;
+        const oy = asFiniteNumber(obj.y) ?? 0;
+        const durSteps = Math.max(0, asFiniteNumber(obj.duration) ?? 0);
+        const ease = typeof obj.ease === 'string' && obj.ease.trim() ? obj.ease : 'sineOut';
+        const rawZoom = asFiniteNumber(obj.zoom);
+        const zoom = rawZoom !== null && rawZoom > 0.1 ? rawZoom : null;
+        const durationSec = durSteps > 0 ? durSteps * stepSec : 0;
+
+        if (explicitCam !== null && explicitCam >= 0) {
+          return {
+            kind: 'select_camera',
+            slot: Math.round(explicitCam),
+            focusGf: false,
+            offsetX: ox,
+            offsetY: oy,
+            zoom,
+            durationSec,
+            ease,
+          };
+        }
+
+        if (charId === 0) {
+          return {
+            kind: 'select_camera',
+            slot: 1,
+            focusGf: false,
+            offsetX: ox,
+            offsetY: oy,
+            zoom,
+            durationSec,
+            ease,
+          };
+        }
+        if (charId === 1) {
+          return {
+            kind: 'select_camera',
+            slot: 2,
+            focusGf: false,
+            offsetX: ox,
+            offsetY: oy,
+            zoom,
+            durationSec,
+            ease,
+          };
+        }
+        if (charId === 2) {
+          return {
+            kind: 'select_camera',
+            slot: null,
+            focusGf: true,
+            offsetX: ox,
+            offsetY: oy,
+            zoom,
+            durationSec,
+            ease,
+          };
+        }
+        if (charId === -1 && Math.abs(ox) < 0.01 && Math.abs(oy) < 0.01 && obj.x === undefined) {
+          return {
+            kind: 'select_camera',
+            slot: 0,
+            focusGf: false,
+            offsetX: 0,
+            offsetY: 0,
+            zoom,
+            durationSec,
+            ease,
+          };
+        }
+        return { kind: 'follow_pos', x: ox, y: oy, zoom, durationSec, ease };
+      } catch {
+        return null;
+      }
+    }
+
+    const s = v1.toLowerCase();
+    if (s === '0' || s === 'bf' || s === 'boyfriend' || s === 'player' || s === 'jugador') {
+      return {
+        kind: 'select_camera',
+        slot: 1,
+        focusGf: false,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: null,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+    if (s === '1' || s === 'dad' || s === 'opponent' || s === 'enemigo' || s === 'rival') {
+      return {
+        kind: 'select_camera',
+        slot: 2,
+        focusGf: false,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: null,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+    if (s === '2' || s === 'gf' || s === 'girlfriend') {
+      return {
+        kind: 'select_camera',
+        slot: null,
+        focusGf: true,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: null,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+    if (s === '-1' || s === 'cam0' || s === 'stage') {
+      return {
+        kind: 'select_camera',
+        slot: 0,
+        focusGf: false,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: null,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+    return null;
+  }
+
+  if (lower === 'zoomcamera' || lower === 'zoom camera') {
+    if (v1.startsWith('{')) {
+      try {
+        const obj = JSON.parse(v1) as Record<string, unknown>;
+        const zoom = asFiniteNumber(obj.zoom);
+        if (zoom === null) return null;
+        const durSteps = Math.max(0, asFiniteNumber(obj.duration) ?? 4);
+        const mode = typeof obj.mode === 'string' ? obj.mode : 'direct';
+        const ease = typeof obj.ease === 'string' && obj.ease.trim() ? obj.ease : 'sineOut';
+        return {
+          kind: 'set_zoom',
+          zoom,
+          isDirectStage: mode.toLowerCase() === 'stage',
+          durationSec: durSteps * stepSec,
+          ease,
+        };
+      } catch {
+        return null;
+      }
+    }
+    const zoom = Number(v1);
+    if (!v1 || !Number.isFinite(zoom) || zoom <= 0.1) return null;
+    const dur = Number(v2);
+    return {
+      kind: 'set_zoom',
+      zoom,
+      isDirectStage: false,
+      durationSec: v2 && Number.isFinite(dur) && dur >= 0 ? dur : 0,
+      ease: 'sineOut',
+    };
+  }
+
+  if (lower === 'camera movement' || lower === 'cameramovement') {
+    const t = v1.toLowerCase();
+    if (t === '1' || t === 'boyfriend' || t === 'bf' || t === 'player') {
+      return {
+        kind: 'select_camera',
+        slot: 1,
+        focusGf: false,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: null,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+    if (t === '2' || t === 'gf' || t === 'girlfriend') {
+      return {
+        kind: 'select_camera',
+        slot: null,
+        focusGf: true,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: null,
+        durationSec: 0,
+        ease: 'sineOut',
+      };
+    }
+    return {
+      kind: 'select_camera',
+      slot: 2,
+      focusGf: false,
+      offsetX: 0,
+      offsetY: 0,
+      zoom: null,
+      durationSec: 0,
+      ease: 'sineOut',
+    };
+  }
+
+  return null;
+}
+
+/**
  * Genera el bloque de configuración sincronizado dentro de `camera_system.lua`.
  */
 export function renderCameraLuaConfigBlock(cfg: StageCameraConfigSpec): string {
+  const slots =
+    cfg.cameras && cfg.cameras.length >= 3
+      ? cfg.cameras
+      : defaultStageCameraSlots(cfg.baseX, cfg.baseY, cfg.baseZoom, cfg.smoothSpeed);
+  const activeIdx = Math.max(0, Math.min(slots.length - 1, Math.round(cfg.activeCameraIndex ?? 0)));
+  const slotLines = slots.map(
+    (s) =>
+      `--   Cam ${s.index}: ${s.name} (target=${s.targetKind}, x=${s.x.toFixed(0)}, y=${s.y.toFixed(0)}, zoom=${s.zoom.toFixed(2)})`,
+  );
   return [
     '-- [CAM_CFG_START]',
     `local CAM_ENABLED = ${cfg.enabled ? 'true' : 'false'}`,
@@ -1845,6 +2400,9 @@ export function renderCameraLuaConfigBlock(cfg: StageCameraConfigSpec): string {
     `local CAM_INTERVAL_BEATS = ${Math.max(1, Math.min(32, Math.round(cfg.followIntervalBeats)))}`,
     `local CAM_SMOOTH = ${cfg.smoothSpeed.toFixed(2)}`,
     `local CAM_PAN_STRENGTH = ${cfg.panStrength.toFixed(2)}`,
+    `local CAM_ACTIVE_INDEX = ${activeIdx}`,
+    `local CAM_COUNT = ${slots.length}`,
+    ...slotLines,
     '-- [CAM_CFG_END]',
   ].join('\n');
 }
@@ -1856,7 +2414,10 @@ export function parseCameraConfigFromLua(
   source: string,
   current: StageCameraConfigSpec,
 ): StageCameraConfigSpec {
-  const next: StageCameraConfigSpec = { ...current };
+  const next: StageCameraConfigSpec = {
+    ...current,
+    ...(current.cameras ? { cameras: current.cameras.map((c) => ({ ...c })) } : {}),
+  };
   for (const line of source.split(/\r?\n/)) {
     const noComment = line.trim().split('--')[0]?.trim() ?? '';
     const eqIdx = noComment.indexOf('=');
@@ -1878,7 +2439,12 @@ export function parseCameraConfigFromLua(
       if (Number.isFinite(n)) next.baseZoom = Math.min(2.5, Math.max(0.35, n));
     } else if (key === 'CAM_MODE') {
       const clean = val.replace(/^['"]|['"]$/g, '').toLowerCase();
-      next.followMode = clean.includes('section') || clean === 'chart' || clean === '1' ? 'sections' : 'beats';
+      next.followMode =
+        clean.includes('fix') || clean === 'fija' || clean === 'cam0' || clean === 'camera0'
+          ? 'fixed'
+          : clean.includes('beat') || clean === '0'
+            ? 'beats'
+            : 'sections';
     } else if (key === 'CAM_INTERVAL_BEATS') {
       const n = Number(val);
       if (Number.isFinite(n)) next.followIntervalBeats = Math.min(32, Math.max(1, Math.round(n)));
@@ -1888,7 +2454,22 @@ export function parseCameraConfigFromLua(
     } else if (key === 'CAM_PAN_STRENGTH') {
       const n = Number(val);
       if (Number.isFinite(n)) next.panStrength = Math.min(1, Math.max(0, n));
+    } else if (key === 'CAM_ACTIVE_INDEX') {
+      const n = Number(val);
+      if (Number.isFinite(n)) {
+        const maxIdx = Math.max(0, (next.cameras?.length ?? 3) - 1);
+        next.activeCameraIndex = Math.min(maxIdx, Math.max(0, Math.round(n)));
+      }
     }
+  }
+  if (next.cameras && next.cameras.length > 0) {
+    next.cameras[0] = {
+      ...next.cameras[0],
+      x: next.baseX,
+      y: next.baseY,
+      zoom: next.baseZoom,
+      smoothSpeed: next.smoothSpeed,
+    };
   }
   return next;
 }
@@ -3908,6 +4489,313 @@ export function computeStageImportDimensions(
     width: Math.min(640, Math.max(120, w * fit)),
     height: Math.min(420, Math.max(120, h * fit)),
   };
+}
+
+export interface RgbaAtlasFrameBox extends AtlasFrameBox {
+  x: number;
+  y: number;
+}
+
+export interface AlignedRgbaAtlasResult {
+  unifiedWidth: number;
+  unifiedHeight: number;
+  animations: Record<string, RgbaAtlasFrameBox[]>;
+}
+
+function medianNumber(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
+}
+
+function sampleFrameAlphaRgba(
+  f: RgbaAtlasFrameBox,
+  lx: number,
+  ly: number,
+  imgW: number,
+  imgH: number,
+  rgba: Uint8Array,
+): number {
+  const tx = f.rotated ? f.x + (f.width - 1 - ly) : f.x + lx;
+  const ty = f.rotated ? f.y + lx : f.y + ly;
+  if (tx < 0 || ty < 0 || tx >= imgW || ty >= imgH) return 0;
+  const idx = (ty * imgW + tx) * 4 + 3;
+  return rgba[idx] ?? 0;
+}
+
+function detectFrameFootAnchorRgba(
+  f: RgbaAtlasFrameBox,
+  imgW: number,
+  imgH: number,
+  rgba: Uint8Array,
+): { footX: number; floorY: number; hasOpaque: boolean } {
+  const vw = Math.max(1, f.rotated ? f.height : f.width);
+  const vh = Math.max(1, f.rotated ? f.width : f.height);
+  const stepX = vw > 640 ? 2 : 1;
+  const minRowHits = vw >= 8 && stepX === 1 ? 2 : 1;
+
+  for (const threshold of [28, 1]) {
+    let opMinY = Number.POSITIVE_INFINITY;
+    let opMaxYExcl = 0;
+
+    for (let ly = 0; ly < vh; ly += 1) {
+      let rowHits = 0;
+      for (let lx = 0; lx < vw; lx += stepX) {
+        if (sampleFrameAlphaRgba(f, lx, ly, imgW, imgH, rgba) >= threshold) {
+          rowHits += 1;
+          if (rowHits >= minRowHits) break;
+        }
+      }
+      if (rowHits >= minRowHits) {
+        opMinY = Math.min(opMinY, ly);
+        opMaxYExcl = ly + 1;
+      }
+    }
+
+    if (opMaxYExcl <= opMinY) continue;
+
+    const opH = opMaxYExcl - opMinY;
+    const bandH = Math.min(120, Math.max(6, Math.round(opH * 0.16)));
+    const bandY0 = Math.max(opMinY, opMaxYExcl - bandH);
+
+    let sumX = 0;
+    let count = 0;
+    for (let ly = bandY0; ly < opMaxYExcl; ly += 1) {
+      for (let lx = 0; lx < vw; lx += 1) {
+        if (sampleFrameAlphaRgba(f, lx, ly, imgW, imgH, rgba) >= threshold) {
+          sumX += lx + 0.5;
+          count += 1;
+        }
+      }
+    }
+
+    const footX = count > 0 ? sumX / count : vw * 0.5;
+    return { footX, floorY: opMaxYExcl, hasOpaque: true };
+  }
+
+  return { footX: vw * 0.5, floorY: vh, hasOpaque: false };
+}
+
+/**
+ * Alinea las animaciones de un atlas usando el análisis de píxeles opacos (centro de pies y suelo)
+ * sobre un lienzo simétrico centrado en `unifiedWidth / 2`. Espejo exacto de
+ * `pulse_core::sparrow::SparrowAtlas::align_animations_with_rgba`.
+ */
+export function alignAtlasAnimationsWithRgba(
+  animations: Record<string, RgbaAtlasFrameBox[]>,
+  imgW: number,
+  imgH: number,
+  rgba: Uint8Array,
+): AlignedRgbaAtlasResult {
+  if (imgW <= 0 || imgH <= 0 || rgba.length < imgW * imgH * 4) {
+    const fallback = normalizeAndCenterAtlasFrames(animations);
+    const out: Record<string, RgbaAtlasFrameBox[]> = {};
+    for (const [k, frames] of Object.entries(animations)) {
+      const aligned = fallback.animations[k] ?? [];
+      out[k] = frames.map((orig, i) => ({
+        ...orig,
+        ...(aligned[i] ?? {}),
+      }));
+    }
+    return {
+      unifiedWidth: fallback.unifiedWidth,
+      unifiedHeight: fallback.unifiedHeight,
+      animations: out,
+    };
+  }
+
+  type Group =
+    | {
+        kind: 'perAnim';
+        prefix: string;
+        footX: number;
+        floorY: number;
+        frames: Array<[number, number]>;
+      }
+    | {
+        kind: 'perFrame';
+        prefix: string;
+        frames: Array<[number, number]>;
+      };
+
+  const groups: Group[] = [];
+  let maxHalfW = 1;
+  let maxTopExtent = 1;
+  let maxBottomExtent = 0;
+
+  for (const [prefix, frames] of Object.entries(animations)) {
+    if (!frames || frames.length === 0) continue;
+
+    let hasOffsets = false;
+    const specs = frames.map((f) => {
+      const vw = Math.max(1, f.rotated ? f.height : f.width);
+      const vh = Math.max(1, f.rotated ? f.width : f.height);
+      if (f.frameX !== 0 || f.frameY !== 0 || f.frameWidth > vw || f.frameHeight > vh) {
+        hasOffsets = true;
+      }
+      const anchor = detectFrameFootAnchorRgba(f, imgW, imgH, rgba);
+      return {
+        vx0: -f.frameX,
+        vy0: -f.frameY,
+        vw,
+        vh,
+        ...anchor,
+      };
+    });
+
+    if (!hasOffsets) {
+      const perFrames: Array<[number, number]> = [];
+      for (const s of specs) {
+        const fx = Math.round(s.footX);
+        const fy = Math.round(s.floorY);
+        maxHalfW = Math.max(maxHalfW, Math.max(1, fx), Math.max(1, s.vw - fx));
+        maxTopExtent = Math.max(maxTopExtent, Math.max(1, fy));
+        maxBottomExtent = Math.max(maxBottomExtent, Math.max(0, s.vh - fy));
+        perFrames.push([fx, fy]);
+      }
+      groups.push({ kind: 'perFrame', prefix, frames: perFrames });
+    } else {
+      let rectMinX = Number.POSITIVE_INFINITY;
+      let rectMinY = Number.POSITIVE_INFINITY;
+      let rectMaxX = Number.NEGATIVE_INFINITY;
+      let rectMaxY = Number.NEGATIVE_INFINITY;
+      const footSamples: number[] = [];
+      const floorSamples: number[] = [];
+      const rawCoords: Array<[number, number]> = [];
+
+      for (const s of specs) {
+        rectMinX = Math.min(rectMinX, s.vx0);
+        rectMinY = Math.min(rectMinY, s.vy0);
+        rectMaxX = Math.max(rectMaxX, s.vx0 + s.vw);
+        rectMaxY = Math.max(rectMaxY, s.vy0 + s.vh);
+        rawCoords.push([s.vx0, s.vy0]);
+        if (s.hasOpaque) {
+          footSamples.push(s.vx0 + s.footX);
+          floorSamples.push(s.vy0 + s.floorY);
+        }
+      }
+
+      const animFootX =
+        footSamples.length > 0
+          ? Math.round(medianNumber(footSamples))
+          : Math.round((rectMinX + rectMaxX) * 0.5);
+      const animFloorY =
+        floorSamples.length > 0 ? Math.round(medianNumber(floorSamples)) : rectMaxY;
+
+      maxHalfW = Math.max(
+        maxHalfW,
+        Math.max(1, animFootX - rectMinX),
+        Math.max(1, rectMaxX - animFootX),
+      );
+      maxTopExtent = Math.max(maxTopExtent, Math.max(1, animFloorY - rectMinY));
+      maxBottomExtent = Math.max(maxBottomExtent, Math.max(0, rectMaxY - animFloorY));
+      groups.push({
+        kind: 'perAnim',
+        prefix,
+        footX: animFootX,
+        floorY: animFloorY,
+        frames: rawCoords,
+      });
+    }
+  }
+
+  const unifiedW = Math.max(1, maxHalfW * 2);
+  const unifiedH = Math.max(1, maxTopExtent + maxBottomExtent);
+
+  const out: Record<string, RgbaAtlasFrameBox[]> = {};
+  for (const [prefix, frames] of Object.entries(animations)) {
+    out[prefix] = frames.map((f) => ({ ...f }));
+  }
+
+  for (const g of groups) {
+    const frames = out[g.prefix];
+    if (!frames) continue;
+    if (g.kind === 'perAnim') {
+      const shiftX = maxHalfW - g.footX;
+      const shiftY = maxTopExtent - g.floorY;
+      for (let i = 0; i < frames.length; i += 1) {
+        const [vx0, vy0] = g.frames[i];
+        const fx = -(vx0 + shiftX);
+        const fy = -(vy0 + shiftY);
+        frames[i].frameX = fx === 0 ? 0 : fx;
+        frames[i].frameY = fy === 0 ? 0 : fy;
+        frames[i].frameWidth = unifiedW;
+        frames[i].frameHeight = unifiedH;
+      }
+    } else {
+      for (let i = 0; i < frames.length; i += 1) {
+        const [fxAnchor, fyAnchor] = g.frames[i];
+        const fx = -(maxHalfW - fxAnchor);
+        const fy = -(maxTopExtent - fyAnchor);
+        frames[i].frameX = fx === 0 ? 0 : fx;
+        frames[i].frameY = fy === 0 ? 0 : fy;
+        frames[i].frameWidth = unifiedW;
+        frames[i].frameHeight = unifiedH;
+      }
+    }
+  }
+
+  return { unifiedWidth: unifiedW, unifiedHeight: unifiedH, animations: out };
+}
+
+export type FlipAnimKind =
+  | 'idle'
+  | 'left'
+  | 'down'
+  | 'up'
+  | 'right'
+  | 'missLeft'
+  | 'missDown'
+  | 'missUp'
+  | 'missRight'
+  | 'deathStart'
+  | 'deathLoop'
+  | 'deathConfirm';
+
+/**
+ * Resuelve la animación horizontal de personaje cuando `flipX` está activo:
+ * al espejar el sprite en pantalla, `left <-> right` y `missLeft <-> missRight` se invierten
+ * salvo cuando un descriptor externo con `flip_x: true` ya asignó prefijos pre-invertidos.
+ * Espejo exacto de `pulse_android::session::resolve_anim_for_entity_flip`.
+ */
+export function resolveCharacterAnimWithFlipX(params: {
+  flipX: boolean;
+  anim: FlipAnimKind;
+  descriptorFlipX?: boolean | null;
+  leftPrefix?: string;
+  rightPrefix?: string;
+}): FlipAnimKind {
+  if (!params.flipX) return params.anim;
+
+  if (params.descriptorFlipX === true) {
+    const leftPref = (params.leftPrefix ?? '').toLowerCase();
+    const rightPref = (params.rightPrefix ?? '').toLowerCase();
+    const leftPointsRight =
+      (leftPref.includes('right') || leftPref.includes('der')) &&
+      !leftPref.includes('left') &&
+      !leftPref.includes('izq');
+    const rightPointsLeft =
+      (rightPref.includes('left') || rightPref.includes('izq')) &&
+      !rightPref.includes('right') &&
+      !rightPref.includes('der');
+    if (leftPointsRight && rightPointsLeft) {
+      return params.anim;
+    }
+  }
+
+  switch (params.anim) {
+    case 'left':
+      return 'right';
+    case 'right':
+      return 'left';
+    case 'missLeft':
+      return 'missRight';
+    case 'missRight':
+      return 'missLeft';
+    default:
+      return params.anim;
+  }
 }
 
 

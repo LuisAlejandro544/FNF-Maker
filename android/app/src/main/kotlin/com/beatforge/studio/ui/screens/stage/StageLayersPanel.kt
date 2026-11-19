@@ -240,11 +240,13 @@ private fun StageCameraLayerRow(
     onSelect: () -> Unit,
     onToggleEnabled: () -> Unit
 ) {
-    val zoomDisplay = ((stageCamera.baseZoom * 100f).roundToInt() / 100f)
-    val modeSummary = if (stageCamera.followMode == "sections") {
-        "Secciones"
-    } else {
-        "Cada ${stageCamera.followIntervalBeats}b"
+    val activeSlot = stageCamera.activeSlot()
+    val camCount = stageCamera.resolvedCameras().size
+    val zoomDisplay = ((activeSlot.zoom * 100f).roundToInt() / 100f)
+    val modeSummary = when (stageCamera.followMode) {
+        "fixed" -> "Cam 0 Fija"
+        "sections" -> "Chart+Ev"
+        else -> "Cada ${stageCamera.followIntervalBeats}b"
     }
 
     Surface(
@@ -271,7 +273,7 @@ private fun StageCameraLayerRow(
             Spacer(Modifier.width(5.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Cámara (.lua)",
+                    text = "Cámaras ($camCount) · C${activeSlot.index}",
                     color = StudioColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp,

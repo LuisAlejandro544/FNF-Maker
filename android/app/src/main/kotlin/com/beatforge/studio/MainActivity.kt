@@ -346,6 +346,9 @@ private fun BeatForgeRootContent(
                         onOpenUiBlackoutScript = { viewModel.openUiBlackoutScriptInStudio() },
                         onAddSection = { viewModel.addChartSection(it) },
                         onToggleSectionMustHit = { viewModel.toggleSectionMustHit(it) },
+                        onSetSectionCameraSlot = { secIdx, camSlot ->
+                            viewModel.setSectionCameraSlot(secIdx, camSlot)
+                        },
                         onToggleChartNote = { sec, step, col, sustain, noteType ->
                             viewModel.toggleChartNote(sec, step, col, sustain, noteType)
                         },
@@ -406,6 +409,14 @@ private fun BeatForgeRootContent(
                         onUpdateCamera = { enabled, bx, by, bz, mode, beats, smooth, pan, commit ->
                             viewModel.updateStageCamera(enabled, bx, by, bz, mode, beats, smooth, pan, commit)
                         },
+                        onSelectCameraSlot = { slotIdx -> viewModel.selectStageCamera(slotIdx) },
+                        onUpdateCameraSlot = { slotIdx, name, kind, entityId, x, y, zoom, smooth, pan, commit ->
+                            viewModel.updateCameraSlot(slotIdx, name, kind, entityId, x, y, zoom, smooth, pan, commit)
+                        },
+                        onAddCustomCamera = { name, kind, entityId, x, y, zoom, smooth, pan ->
+                            viewModel.addCustomCamera(name, kind, entityId, x, y, zoom, smooth, pan)
+                        },
+                        onRemoveCustomCamera = { slotIdx -> viewModel.removeCustomCamera(slotIdx) },
                         onOpenCameraScript = { viewModel.openCameraScriptInStudio() },
                         onImportStageConfig = { viewModel.requestImport(ImportKind.StageConfig) },
                         onOpenFilesGuide = { viewModel.setModFilesGuideDialogOpen(true) }

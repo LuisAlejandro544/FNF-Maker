@@ -158,6 +158,54 @@ impl LuaScriptVm {
                 })?,
             )?;
         }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "switchCamera",
+                lua.create_function(
+                    move |_, (slot, zoom, dur, ease): (i32, Option<f32>, Option<f32>, Option<String>)| {
+                        let slot_idx = slot.max(0) as usize;
+                        *h.active_camera_slot.lock() = slot_idx;
+                        h.push_command(ScriptCommand::SwitchCameraSlot {
+                            slot: slot_idx,
+                            zoom: zoom.filter(|z| z.is_finite() && *z > 0.1),
+                            duration_sec: dur.unwrap_or(0.0).max(0.0),
+                            ease: ease.unwrap_or_else(|| "sineOut".to_string()),
+                        });
+                        Ok(())
+                    },
+                )?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getActiveCamera",
+                lua.create_function(move |_, ()| Ok(*h.active_camera_slot.lock() as i32))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setCameraFollowPos",
+                lua.create_function(move |_, (x, y): (f32, f32)| {
+                    if x.is_finite() && y.is_finite() {
+                        h.push_command(ScriptCommand::SetCameraFollowLock { x, y });
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "clearCameraFollowPos",
+                lua.create_function(move |_, ()| {
+                    h.push_command(ScriptCommand::ClearCameraFollowLock);
+                    Ok(())
+                })?,
+            )?;
+        }
 
         // --- Entidades ---
         {
@@ -268,6 +316,13 @@ impl LuaScriptVm {
             globals.set(
                 "getMustHitSection",
                 lua.create_function(move |_, ()| Ok(*h.must_hit_section.lock()))?,
+            )?;
+        }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "getGfSection",
+                lua.create_function(move |_, ()| Ok(*h.gf_section.lock()))?,
             )?;
         }
         {

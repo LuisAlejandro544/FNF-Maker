@@ -391,6 +391,19 @@ mod jni_exports {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetSectionCameraSlot<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        sec_index: jint,
+        camera_slot: jint,
+    ) -> JString<'local> {
+        let json = session()
+            .lock()
+            .set_section_camera_slot(sec_index.max(0) as usize, camera_slot);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeToggleChartNote<'local>(
         mut env: JNIEnv<'local>,
         _cls: JClass<'local>,
@@ -740,6 +753,92 @@ mod jni_exports {
             pan_strength,
             commit_save != 0,
         );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSelectStageCamera<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        slot_index: jint,
+    ) -> JString<'local> {
+        let json = session()
+            .lock()
+            .select_stage_camera(slot_index.max(0) as usize);
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateCameraSlot<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        slot_index: jint,
+        name: JString<'local>,
+        target_kind: JString<'local>,
+        target_entity_id: JString<'local>,
+        x: jfloat,
+        y: jfloat,
+        zoom: jfloat,
+        smooth_speed: jfloat,
+        pan_strength: jfloat,
+        commit_save: jboolean,
+    ) -> JString<'local> {
+        let name_s = read_str(&mut env, &name);
+        let kind_s = read_str(&mut env, &target_kind);
+        let entity_s = read_str(&mut env, &target_entity_id);
+        let json = session().lock().update_camera_slot(
+            slot_index.max(0) as usize,
+            &name_s,
+            &kind_s,
+            &entity_s,
+            x,
+            y,
+            zoom,
+            smooth_speed,
+            pan_strength,
+            commit_save != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddCustomCamera<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        name: JString<'local>,
+        target_kind: JString<'local>,
+        target_entity_id: JString<'local>,
+        x: jfloat,
+        y: jfloat,
+        zoom: jfloat,
+        smooth_speed: jfloat,
+        pan_strength: jfloat,
+    ) -> JString<'local> {
+        let name_s = read_str(&mut env, &name);
+        let kind_s = read_str(&mut env, &target_kind);
+        let entity_s = read_str(&mut env, &target_entity_id);
+        let json = session().lock().add_custom_camera(
+            &name_s,
+            &kind_s,
+            &entity_s,
+            x,
+            y,
+            zoom,
+            smooth_speed,
+            pan_strength,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRemoveCustomCamera<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        slot_index: jint,
+    ) -> JString<'local> {
+        let json = session()
+            .lock()
+            .remove_custom_camera(slot_index.max(0) as usize);
         to_jstr(&mut env, &json)
     }
 

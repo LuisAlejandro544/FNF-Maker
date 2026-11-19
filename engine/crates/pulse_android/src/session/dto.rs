@@ -38,6 +38,20 @@ pub struct ProjectSummaryJson {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StageCameraSlotSnapshotJson {
+    pub index: usize,
+    pub name: String,
+    pub target_kind: String,
+    pub target_entity_id: Option<String>,
+    pub x: f32,
+    pub y: f32,
+    pub zoom: f32,
+    pub smooth_speed: f32,
+    pub pan_strength: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StageCameraSnapshotJson {
     pub enabled: bool,
     pub base_x: f32,
@@ -47,6 +61,8 @@ pub struct StageCameraSnapshotJson {
     pub follow_interval_beats: u32,
     pub smooth_speed: f32,
     pub pan_strength: f32,
+    pub active_camera_index: usize,
+    pub cameras: Vec<StageCameraSlotSnapshotJson>,
 }
 
 #[derive(Serialize)]
@@ -91,6 +107,7 @@ pub struct ChartSectionSnapshotJson {
     pub change_bpm: bool,
     pub alt_anim: bool,
     pub gf_section: bool,
+    pub camera_slot: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -431,6 +448,13 @@ pub struct GameplayRuntimeState {
     pub screen_blackout_alpha: f32,
     pub active_player_id: String,
     pub active_opponent_id: String,
+    pub active_camera_slot: usize,
+    pub camera_slot_zoom_override: Option<f32>,
+    pub camera_follow_lock: Option<[f32; 2]>,
+    pub camera_gf_override: bool,
+    pub camera_offset_override: [f32; 2],
+    pub last_section_idx: isize,
+    pub last_cam_beat_bucket: i32,
     pub flash_color_argb: u32,
     pub flash_alpha: f32,
     pub flash_decay_per_sec: f32,
@@ -621,6 +645,21 @@ impl EngineSession {
         });
 
         let cam_cfg = &self.project.stage.camera;
+        let cameras: Vec<StageCameraSlotSnapshotJson> = cam_cfg
+            .cameras
+            .iter()
+            .map(|c| StageCameraSlotSnapshotJson {
+                index: c.index,
+                name: c.name.clone(),
+                target_kind: c.target_kind.as_key().to_string(),
+                target_entity_id: c.target_entity_id.clone(),
+                x: c.x,
+                y: c.y,
+                zoom: c.zoom,
+                smooth_speed: c.smooth_speed,
+                pan_strength: c.pan_strength,
+            })
+            .collect();
         let stage_camera = StageCameraSnapshotJson {
             enabled: cam_cfg.enabled,
             base_x: cam_cfg.base_x,
@@ -630,6 +669,8 @@ impl EngineSession {
             follow_interval_beats: cam_cfg.follow_interval_beats,
             smooth_speed: cam_cfg.smooth_speed,
             pan_strength: cam_cfg.pan_strength,
+            active_camera_index: cam_cfg.active_camera_index,
+            cameras,
         };
 
         ProjectSnapshotJson {
@@ -674,6 +715,7 @@ impl EngineSession {
                         change_bpm: s.change_bpm,
                         alt_anim: s.alt_anim,
                         gf_section: s.gf_section,
+                        camera_slot: s.camera_slot,
                     })
                     .collect(),
                 notes: self

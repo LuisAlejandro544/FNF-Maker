@@ -1,7 +1,7 @@
 //! Archivo: engine/crates/pulse_android/src/session/sprite_ops.rs
 //! Propósito: Gestión de texturas `.png`/`.astc`, atlas Sparrow `.xml`, atlas JSON
 //! (TexturePacker, `spritemap1.json`, `Animation.json`), descriptores de personaje (`.json`/`.xml`),
-//! offsets por animación y horneado por software de rigs Adobe Animate.
+//! offsets por animación, alineación automática por píxeles de pies/suelo y horneado Adobe Animate.
 
 use super::{EngineSession, SparrowFrameJson, friendly_import_name, parse_anim_kind};
 use pulse_core::astc_loader::{
@@ -33,7 +33,8 @@ impl EngineSession {
         };
 
         let src_img = load_sprite_image(&raw_img_path)?;
-        let (baked_sheet, baked_atlas) = bake_animate_atlas(&doc, &spritemap, &src_img)?;
+        let (baked_sheet, mut baked_atlas) = bake_animate_atlas(&doc, &spritemap, &src_img)?;
+        baked_atlas.align_animations_with_image(&baked_sheet);
         let anim_count = baked_atlas.animations.len();
 
         let baked_dir = self.project_textures_dir().join("animate_baked");
@@ -66,7 +67,7 @@ impl EngineSession {
         }
 
         let is_astc = is_astc_path(&path);
-        let (adopted_raw_path, display_img_path, dims) = if is_astc {
+        let (adopted_raw_path, display_img_path, dims, preloaded_img) = if is_astc {
             let decoded = match load_sprite_image(&path) {
                 Ok(img) => img,
                 Err(e) => return self.err_response(format!("Error decodificando .astc: {}", e)),
@@ -83,7 +84,7 @@ impl EngineSession {
                 let _ = std::fs::remove_file(&adopted_raw);
                 return self.err_response(format!("Error guardando caché ASTC->WebP: {}", e));
             }
-            (adopted_raw, out_webp, dims)
+            (adopted_raw, out_webp, dims, Some(decoded))
         } else {
             let dims = read_sprite_dimensions(&path);
             if dims.is_none() {
@@ -93,7 +94,20 @@ impl EngineSession {
                 Ok(p) => p,
                 Err(e) => return self.err_response(e),
             };
-            (adopted_img.clone(), adopted_img, dims)
+            (adopted_img.clone(), adopted_img, dims, None)
+        };
+
+        let needs_atlas_align = self
+            .project
+            .stage
+            .entities
+            .iter()
+            .find(|e| e.id == entity_id)
+            .is_some_and(|e| e.atlas.is_some() && e.animate_doc.is_none());
+        let align_img = if needs_atlas_align {
+            preloaded_img.or_else(|| load_sprite_image(&display_img_path).ok())
+        } else {
+            None
         };
 
         let mut old_raw: Option<PathBuf> = None;
@@ -103,7 +117,14 @@ impl EngineSession {
             old_img = ent.image_path.take();
             ent.raw_image_path = Some(adopted_raw_path);
             ent.image_path = Some(display_img_path);
-            if ent.atlas.is_some() {
+            let mut has_atlas = false;
+            if let Some(atlas) = ent.atlas.as_mut() {
+                if let Some(img) = align_img.as_ref() {
+                    atlas.align_animations_with_image(img);
+                }
+                has_atlas = true;
+            }
+            if has_atlas {
                 ent.fit_dimensions_to_atlas();
             } else if let Some((w, h)) = dims {
                 ent.fit_dimensions_to_image(w, h);
@@ -148,7 +169,19 @@ impl EngineSession {
 
         if is_json {
             match parse_sprite_json_str(&raw) {
-                Ok(DetectedSpriteJson::DirectAtlas(atlas)) => {
+                Ok(DetectedSpriteJson::DirectAtlas(mut atlas)) => {
+                    let existing_img_path = self
+                        .project
+                        .stage
+                        .entities
+                        .iter()
+                        .find(|e| e.id == entity_id)
+                        .and_then(|e| e.image_path.clone());
+                    if let Some(img_path) = existing_img_path {
+                        if let Ok(img) = load_sprite_image(&img_path) {
+                            atlas.align_animations_with_image(&img);
+                        }
+                    }
                     let count = atlas.animations.len();
                     if let Some(ent) = self.project.stage.find_mut(entity_id) {
                         ent.xml_path = Some(display_descriptor_path);
@@ -232,7 +265,19 @@ impl EngineSession {
         }
 
         match SparrowAtlas::from_xml_str(&raw) {
-            Ok(atlas) => {
+            Ok(mut atlas) => {
+                let existing_img_path = self
+                    .project
+                    .stage
+                    .entities
+                    .iter()
+                    .find(|e| e.id == entity_id)
+                    .and_then(|e| e.image_path.clone());
+                if let Some(img_path) = existing_img_path {
+                    if let Ok(img) = load_sprite_image(&img_path) {
+                        atlas.align_animations_with_image(&img);
+                    }
+                }
                 let count = atlas.animations.len();
                 if let Some(ent) = self.project.stage.find_mut(entity_id) {
                     ent.xml_path = Some(display_descriptor_path);

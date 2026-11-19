@@ -472,7 +472,7 @@ fun ChartToolsPanel(
                             Icon(Icons.Rounded.AutoAwesome, null, tint = StudioColors.AccentPurple, modifier = Modifier.size(13.dp))
                             Spacer(Modifier.width(5.dp))
                             Text(
-                                text = "Poner Flash / Swap en #${currentTarget.stepRow.stepInSec}",
+                                text = "Evento / Cámara en #${currentTarget.stepRow.stepInSec}",
                                 color = StudioColors.TextPrimary,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -533,9 +533,17 @@ fun ChartToolsPanel(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
+                            val turnLabel = if (sec.mustHitSection) "Jugador" else "Oponente"
+                            val camTag = sec.cameraSlot?.let { " · Cam $it" } ?: ""
                             Text(
-                                text = if (sec.mustHitSection) "Jugador" else "Oponente",
-                                color = if (sec.mustHitSection) StudioColors.AccentEmerald else StudioColors.AccentCoral,
+                                text = "$turnLabel$camTag",
+                                color = if (sec.cameraSlot != null) {
+                                    StudioColors.AccentCyan
+                                } else if (sec.mustHitSection) {
+                                    StudioColors.AccentEmerald
+                                } else {
+                                    StudioColors.AccentCoral
+                                },
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold
                             )

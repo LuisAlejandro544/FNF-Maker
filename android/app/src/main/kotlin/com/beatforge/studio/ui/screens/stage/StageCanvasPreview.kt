@@ -1,8 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/stage/StageCanvasPreview.kt
 // Propósito: Lienzo interactivo central 16:9 (espacio virtual 1280x720) del editor de escenario,
-// con barra superior rápida (coordenadas, rejilla, vista amplia overscan 0.68x y bloqueo de capa)
-// y barra inferior de acciones rápidas al alcance del pulgar (`Visible`, `Espejo`, `Centrar`,
-// escala/zoom rápido y presets de cámara), manteniendo dibujo 60Hz sin recomposiciones globales.
+// con visualización y edición directa de múltiples ranuras de cámara (`Cam 0/1/2/3+`),
+// barra superior rápida (coordenadas, rejilla, vista amplia overscan 0.68x y bloqueo de capa)
+// y barra inferior de acciones rápidas al alcance del pulgar.
 
 package com.beatforge.studio.ui.screens.stage
 
@@ -100,6 +100,7 @@ fun StageCanvasPreview(
     onToggleSelectedLock: () -> Unit,
     onSelectEntity: (String) -> Unit,
     onSelectCamera: () -> Unit,
+    onSelectCameraSlot: (slotIndex: Int) -> Unit,
     onUpdateEntity: (
         entityId: String,
         name: String,
@@ -115,10 +116,16 @@ fun StageCanvasPreview(
         flipX: Boolean,
         commitSave: Boolean
     ) -> Unit,
-    onUpdateCamera: (
-        baseX: Float,
-        baseY: Float,
-        baseZoom: Float,
+    onUpdateCameraSlot: (
+        slotIndex: Int,
+        name: String,
+        targetKind: String,
+        targetEntityId: String?,
+        x: Float,
+        y: Float,
+        zoom: Float,
+        smoothSpeed: Float,
+        panStrength: Float,
         commitSave: Boolean
     ) -> Unit,
     modifier: Modifier = Modifier
@@ -131,7 +138,7 @@ fun StageCanvasPreview(
     val latestLockedIds by rememberUpdatedState(lockedEntityIds)
 
     val textMeasurer = rememberTextMeasurer()
-    // Pre-medir etiquetas una sola vez cuando cambian las entidades, nunca dentro de Canvas DrawScope
+    // Pre-medir etiquetas de entidades y ranuras de cámara fuera de Canvas DrawScope
     val preMeasuredLabels = remember(entities, textMeasurer) {
         entities.associate { ent ->
             ent.id to textMeasurer.measure(
@@ -144,6 +151,30 @@ fun StageCanvasPreview(
             )
         }
     }
+    val cameraSlots = stageCamera.resolvedCameras()
+    val preMeasuredCamLabels = remember(cameraSlots, textMeasurer) {
+        cameraSlots.associate { slot ->
+            slot.index to textMeasurer.measure(
+                text = "C${slot.index}",
+                style = TextStyle(
+                    color = StudioColors.AccentCyan,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+    }
+
+    val activeSlot = stageCamera.activeSlot()
+    val useLiveCam = liveTransform.isInteractingCamera && liveTransform.camSlotIndex == activeSlot.index
+    val activeSlotZoom = (if (useLiveCam) liveTransform.camZoom else activeSlot.zoom).coerceIn(0.35f, 2.5f)
+    val activeSlotX = if (useLiveCam) liveTransform.camSlotX else activeSlot.x
+    val activeSlotY = if (useLiveCam) liveTransform.camSlotY else activeSlot.y
+    val (resolvedCamX, resolvedCamY) = if (useLiveCam) {
+        liveTransform.camX to liveTransform.camY
+    } else {
+        resolveCameraSlotPreviewCenter(stageCamera, activeSlot, entities)
+    }
 
     val isSelectedLocked = !isCameraSelected && selected != null && lockedEntityIds.contains(selected.id)
 
@@ -154,7 +185,7 @@ fun StageCanvasPreview(
         border = BorderStroke(1.dp, StudioColors.BorderSubtle)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Barra superior compacta del lienzo: lectura en vivo + herramientas de vista
+            // Barra superior compacta del lienzo
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -163,10 +194,6 @@ fun StageCanvasPreview(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (isCameraSelected) {
-                    val effZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
-                        .coerceIn(0.35f, 2.5f)
-                    val effX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
-                    val effY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
                     Icon(
                         imageVector = Icons.Rounded.Videocam,
                         contentDescription = null,
@@ -174,7 +201,7 @@ fun StageCanvasPreview(
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "Cámara · (${effX.roundToInt()}, ${effY.roundToInt()}) · ${((effZoom * 100f).roundToInt() / 100f)}x",
+                        text = "Cam ${activeSlot.index} · (${resolvedCamX.roundToInt()}, ${resolvedCamY.roundToInt()}) · ${((activeSlotZoom * 100f).roundToInt() / 100f)}x",
                         color = StudioColors.AccentCyan,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -244,7 +271,7 @@ fun StageCanvasPreview(
 
             HorizontalDivider(color = StudioColors.BorderSubtle)
 
-            // Lienzo 16:9 ajustado al máximo disponible entre barras
+            // Lienzo 16:9
             BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
@@ -270,7 +297,7 @@ fun StageCanvasPreview(
                         .background(StudioColors.BgDark)
                         .border(1.dp, StudioColors.BorderSubtle, RoundedCornerShape(8.dp))
                         .clipToBounds()
-                        .pointerInput(selected?.id, isCameraSelected) {
+                        .pointerInput(selected?.id, isCameraSelected, stageCamera.activeCameraIndex) {
                             val handleHitRadiusPx = 30.dp.toPx()
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
@@ -286,11 +313,13 @@ fun StageCanvasPreview(
 
                                 val camMode = latestIsCameraSelected
                                 val camAtDown = latestCamera
+                                val entsAtDown = latestEntities
+                                val slotAtDown = camAtDown.activeSlot()
                                 val selAtDown = if (camMode) null else latestSelected
                                 val selLocked = selAtDown != null && latestLockedIds.contains(selAtDown.id)
 
                                 if (camMode) {
-                                    liveTransform.syncFromCamera(camAtDown)
+                                    liveTransform.syncFromCamera(camAtDown, entsAtDown)
                                 } else if (selAtDown != null) {
                                     liveTransform.syncFromEntity(selAtDown)
                                 }
@@ -299,9 +328,15 @@ fun StageCanvasPreview(
                                 var localY = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.y else (selAtDown?.y ?: 360f)
                                 var localScale = if (selAtDown != null && liveTransform.entityId == selAtDown.id) liveTransform.scale else (selAtDown?.scale ?: 1f)
 
-                                var localCamX = if (camMode) liveTransform.camX else camAtDown.baseX
-                                var localCamY = if (camMode) liveTransform.camY else camAtDown.baseY
-                                var localCamZoom = if (camMode) liveTransform.camZoom else camAtDown.baseZoom
+                                var localSlotX = slotAtDown.x
+                                var localSlotY = slotAtDown.y
+                                var localCamZoom = slotAtDown.zoom.coerceIn(0.35f, 2.5f)
+                                val panFactor = if (slotAtDown.targetKind == "fixed") {
+                                    1f
+                                } else {
+                                    slotAtDown.panStrength.coerceAtLeast(0.25f)
+                                }
+                                val (initCamPreviewX, initCamPreviewY) = resolveCameraSlotPreviewCenter(camAtDown, slotAtDown, entsAtDown)
 
                                 var resizeHandleMode = false
                                 var startScale = localScale
@@ -311,15 +346,15 @@ fun StageCanvasPreview(
                                 var cyPx = 0f
 
                                 if (camMode) {
-                                    cxPx = toPxX(localCamX)
-                                    cyPx = toPxY(localCamY)
+                                    cxPx = toPxX(initCamPreviewX)
+                                    cyPx = toPxY(initCamPreviewY)
                                     val hwPx = ((1280f / localCamZoom) * 0.5f) * sx
                                     val hhPx = ((720f / localCamZoom) * 0.5f) * sy
                                     val handleX = cxPx + hwPx
                                     val handleY = cyPx + hhPx
                                     if (hypot(down.position.x - handleX, down.position.y - handleY) <= handleHitRadiusPx) {
                                         resizeHandleMode = true
-                                        liveTransform.beginCameraInteraction(camAtDown)
+                                        liveTransform.beginCameraInteraction(camAtDown, entsAtDown)
                                         startCamZoom = localCamZoom
                                         startDistPx = hypot(down.position.x - cxPx, down.position.y - cyPx).coerceAtLeast(20f)
                                     }
@@ -356,13 +391,15 @@ fun StageCanvasPreview(
                                             val pan = event.calculatePan()
                                             if (!moved && (abs(zoom - 1f) > 0.01f || pan.getDistance() > touchSlop)) {
                                                 moved = true
-                                                liveTransform.beginCameraInteraction(camAtDown)
+                                                liveTransform.beginCameraInteraction(camAtDown, entsAtDown)
                                             }
                                             if (moved) {
                                                 localCamZoom = (localCamZoom / zoom).coerceIn(0.35f, 2.5f)
-                                                localCamX = (localCamX + pan.x * scaleToVirtX).coerceIn(-1000f, 2600f)
-                                                localCamY = (localCamY + pan.y * scaleToVirtY).coerceIn(-1000f, 1800f)
-                                                liveTransform.updateCamera(localCamX, localCamY, localCamZoom)
+                                                localSlotX = (localSlotX + (pan.x * scaleToVirtX) / panFactor).coerceIn(-1200f, 2600f)
+                                                localSlotY = (localSlotY + (pan.y * scaleToVirtY) / panFactor).coerceIn(-1200f, 1800f)
+                                                liveTransform.updateCameraSlotTransform(
+                                                    camAtDown, slotAtDown, entsAtDown, localSlotX, localSlotY, localCamZoom
+                                                )
                                                 didMutate = true
                                                 pressedChanges.forEach { ch ->
                                                     if (ch.positionChanged()) ch.consume()
@@ -376,9 +413,9 @@ fun StageCanvasPreview(
                                                 accumY += delta.y
                                                 if (hypot(accumX, accumY) > touchSlop) {
                                                     moved = true
-                                                    liveTransform.beginCameraInteraction(camAtDown)
-                                                    localCamX = (localCamX + accumX * scaleToVirtX).coerceIn(-1000f, 2600f)
-                                                    localCamY = (localCamY + accumY * scaleToVirtY).coerceIn(-1000f, 1800f)
+                                                    liveTransform.beginCameraInteraction(camAtDown, entsAtDown)
+                                                    localSlotX = (localSlotX + (accumX * scaleToVirtX) / panFactor).coerceIn(-1200f, 2600f)
+                                                    localSlotY = (localSlotY + (accumY * scaleToVirtY) / panFactor).coerceIn(-1200f, 1800f)
                                                 }
                                             }
                                             if (moved) {
@@ -386,10 +423,12 @@ fun StageCanvasPreview(
                                                     val currDist = hypot(ch.position.x - cxPx, ch.position.y - cyPx).coerceAtLeast(20f)
                                                     localCamZoom = (startCamZoom * (startDistPx / currDist)).coerceIn(0.35f, 2.5f)
                                                 } else if (delta != Offset.Zero) {
-                                                    localCamX = (localCamX + delta.x * scaleToVirtX).coerceIn(-1000f, 2600f)
-                                                    localCamY = (localCamY + delta.y * scaleToVirtY).coerceIn(-1000f, 1800f)
+                                                    localSlotX = (localSlotX + (delta.x * scaleToVirtX) / panFactor).coerceIn(-1200f, 2600f)
+                                                    localSlotY = (localSlotY + (delta.y * scaleToVirtY) / panFactor).coerceIn(-1200f, 1800f)
                                                 }
-                                                liveTransform.updateCamera(localCamX, localCamY, localCamZoom)
+                                                liveTransform.updateCameraSlotTransform(
+                                                    camAtDown, slotAtDown, entsAtDown, localSlotX, localSlotY, localCamZoom
+                                                )
                                                 didMutate = true
                                                 if (ch.positionChanged()) ch.consume()
                                             }
@@ -448,7 +487,18 @@ fun StageCanvasPreview(
 
                                 val selEnd = latestSelected
                                 if (camMode && didMutate) {
-                                    onUpdateCamera(localCamX, localCamY, localCamZoom, true)
+                                    onUpdateCameraSlot(
+                                        slotAtDown.index,
+                                        slotAtDown.name,
+                                        slotAtDown.targetKind,
+                                        slotAtDown.targetEntityId,
+                                        localSlotX,
+                                        localSlotY,
+                                        localCamZoom,
+                                        slotAtDown.smoothSpeed,
+                                        slotAtDown.panStrength,
+                                        true
+                                    )
                                 } else if (!camMode && didMutate && selEnd != null && !selLocked) {
                                     val effOpacity = if (liveTransform.entityId == selEnd.id) liveTransform.opacity else selEnd.opacity
                                     onUpdateEntity(
@@ -486,12 +536,18 @@ fun StageCanvasPreview(
                                             break
                                         }
                                     }
-                                    if (hitId != null) {
+                                    if (hitId != null && !camMode) {
                                         onSelectEntity(hitId)
                                     } else {
-                                        val camDistCenter = hypot(vx - camAtDown.baseX, vy - camAtDown.baseY)
-                                        if (camDistCenter <= 72f) {
+                                        val matchingSlot = camAtDown.resolvedCameras().firstOrNull { slot ->
+                                            val (sxPos, syPos) = resolveCameraSlotPreviewCenter(camAtDown, slot, entsAtDown)
+                                            hypot(vx - sxPos, vy - syPos) <= 72f
+                                        }
+                                        if (matchingSlot != null) {
                                             onSelectCamera()
+                                            onSelectCameraSlot(matchingSlot.index)
+                                        } else if (hitId != null) {
+                                            onSelectEntity(hitId)
                                         }
                                     }
                                 }
@@ -527,7 +583,6 @@ fun StageCanvasPreview(
                                 Offset(stageLeft + stageW, py)
                             )
                         }
-                        // Línea central horizontal y vertical del escenario
                         drawLine(
                             StudioColors.BorderSubtle.copy(alpha = 0.50f),
                             Offset(stageLeft, stageTop + stageH * 0.5f),
@@ -536,7 +591,6 @@ fun StageCanvasPreview(
                         )
                     }
 
-                    // Marco de área real 1280x720 visible especialmente en Vista Amplia
                     if (wideView) {
                         drawRect(
                             color = StudioColors.TextMuted.copy(alpha = 0.45f),
@@ -565,7 +619,6 @@ fun StageCanvasPreview(
                         val left = cx - w / 2f
                         val top = cy - h / 2f
 
-                        // Descartar objetos completamente fuera del lienzo visible
                         if (!isSel && (left + w < -24f || left > size.width + 24f || top + h < -24f || top > size.height + 24f)) {
                             continue
                         }
@@ -699,15 +752,46 @@ fun StageCanvasPreview(
                         }
                     }
 
-                    // Marco visual de captura de cámara (1280/zoom x 720/zoom centrado en camX, camY)
-                    val effCamX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
-                    val effCamY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
-                    val effCamZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
-                        .coerceIn(0.35f, 2.5f)
-                    val camBoxW = (1280f / effCamZoom) * sx
-                    val camBoxH = (720f / effCamZoom) * sy
-                    val camCxPx = stageLeft + effCamX * sx
-                    val camCyPx = stageTop + effCamY * sy
+                    // Marcos visuales de referencia de las demás ranuras de cámara (cuando la capa Cámara está seleccionada)
+                    if (isCameraSelected) {
+                        cameraSlots.forEach { slot ->
+                            if (slot.index != activeSlot.index) {
+                                val (otherX, otherY) = resolveCameraSlotPreviewCenter(stageCamera, slot, entities)
+                                val otherZoom = slot.zoom.coerceIn(0.35f, 2.5f)
+                                val oW = (1280f / otherZoom) * sx
+                                val oH = (720f / otherZoom) * sy
+                                val oCx = stageLeft + otherX * sx
+                                val oCy = stageTop + otherY * sy
+                                val ghostColor = when (slot.targetKind) {
+                                    "player" -> StudioColors.AccentEmerald
+                                    "opponent" -> StudioColors.AccentCoral
+                                    "gf" -> StudioColors.AccentAmber
+                                    "entity" -> StudioColors.AccentPurple
+                                    else -> StudioColors.AccentCyan
+                                }.copy(alpha = 0.36f)
+                                drawRect(
+                                    color = ghostColor,
+                                    topLeft = Offset(oCx - oW * 0.5f, oCy - oH * 0.5f),
+                                    size = Size(oW, oH),
+                                    style = Stroke(width = 1.4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f))
+                                )
+                                drawCircle(color = ghostColor, radius = 4f, center = Offset(oCx, oCy))
+                                preMeasuredCamLabels[slot.index]?.let { lbl ->
+                                    drawText(
+                                        textLayoutResult = lbl,
+                                        alpha = 0.65f,
+                                        topLeft = Offset(oCx + 6f, oCy - lbl.size.height - 2f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Marco visual de captura de la cámara activa (1280/zoom x 720/zoom)
+                    val camBoxW = (1280f / activeSlotZoom) * sx
+                    val camBoxH = (720f / activeSlotZoom) * sy
+                    val camCxPx = stageLeft + resolvedCamX * sx
+                    val camCyPx = stageTop + resolvedCamY * sy
                     val camLeft = camCxPx - camBoxW * 0.5f
                     val camTop = camCyPx - camBoxH * 0.5f
 
@@ -740,6 +824,14 @@ fun StageCanvasPreview(
                     drawLine(camColor, Offset(camCxPx - crossR, camCyPx), Offset(camCxPx + crossR, camCyPx), strokeWidth = 2f)
                     drawLine(camColor, Offset(camCxPx, camCyPx - crossR), Offset(camCxPx, camCyPx + crossR), strokeWidth = 2f)
 
+                    preMeasuredCamLabels[activeSlot.index]?.let { lbl ->
+                        drawText(
+                            textLayoutResult = lbl,
+                            alpha = if (isCameraSelected) 0.95f else 0.65f,
+                            topLeft = Offset(camCxPx + crossR + 4f, camCyPx - lbl.size.height - 2f)
+                        )
+                    }
+
                     if (isCameraSelected) {
                         val camHandleCenter = Offset(camLeft + camBoxW, camTop + camBoxH)
                         drawCircle(
@@ -768,44 +860,63 @@ fun StageCanvasPreview(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (isCameraSelected) {
-                    val opponentEnt = entities.firstOrNull { it.role == "opponent" }
-                    val playerEnt = entities.firstOrNull { it.role == "player" }
-                    val curZoom = (if (liveTransform.isInteractingCamera) liveTransform.camZoom else stageCamera.baseZoom)
-                        .coerceIn(0.35f, 2.5f)
-                    val curX = if (liveTransform.isInteractingCamera) liveTransform.camX else stageCamera.baseX
-                    val curY = if (liveTransform.isInteractingCamera) liveTransform.camY else stageCamera.baseY
-
-                    QuickActionChip(
-                        label = "Enemigo",
-                        onClick = {
-                            val tx = opponentEnt?.x ?: 300f
-                            val ty = (opponentEnt?.y ?: 420f) - 24f
-                            onUpdateCamera(tx, ty, curZoom, true)
+                    cameraSlots.forEach { slot ->
+                        val isSel = slot.index == activeSlot.index
+                        val accent = when (slot.targetKind) {
+                            "player" -> StudioColors.AccentEmerald
+                            "opponent" -> StudioColors.AccentCoral
+                            "gf" -> StudioColors.AccentAmber
+                            "entity" -> StudioColors.AccentPurple
+                            else -> StudioColors.AccentCyan
                         }
-                    )
-                    QuickActionChip(
-                        label = "Centro",
-                        onClick = { onUpdateCamera(640f, 360f, curZoom, true) }
-                    )
-                    QuickActionChip(
-                        label = "Jugador",
-                        onClick = {
-                            val tx = playerEnt?.x ?: 980f
-                            val ty = (playerEnt?.y ?: 430f) - 24f
-                            onUpdateCamera(tx, ty, curZoom, true)
-                        }
-                    )
+                        QuickActionChip(
+                            label = "Cam ${slot.index}",
+                            active = isSel,
+                            activeColor = accent,
+                            onClick = { onSelectCameraSlot(slot.index) }
+                        )
+                    }
                     QuickActionChip(
                         label = "-0.1x",
-                        onClick = { onUpdateCamera(curX, curY, (curZoom - 0.1f).coerceIn(0.35f, 2.5f), true) }
+                        onClick = {
+                            onUpdateCameraSlot(
+                                activeSlot.index, activeSlot.name, activeSlot.targetKind, activeSlot.targetEntityId,
+                                activeSlotX, activeSlotY, (activeSlotZoom - 0.1f).coerceIn(0.35f, 2.5f),
+                                activeSlot.smoothSpeed, activeSlot.panStrength, true
+                            )
+                        }
                     )
                     QuickActionChip(
                         label = "1.0x",
-                        onClick = { onUpdateCamera(curX, curY, 1.0f, true) }
+                        onClick = {
+                            onUpdateCameraSlot(
+                                activeSlot.index, activeSlot.name, activeSlot.targetKind, activeSlot.targetEntityId,
+                                activeSlotX, activeSlotY, 1.0f,
+                                activeSlot.smoothSpeed, activeSlot.panStrength, true
+                            )
+                        }
                     )
                     QuickActionChip(
                         label = "+0.1x",
-                        onClick = { onUpdateCamera(curX, curY, (curZoom + 0.1f).coerceIn(0.35f, 2.5f), true) }
+                        onClick = {
+                            onUpdateCameraSlot(
+                                activeSlot.index, activeSlot.name, activeSlot.targetKind, activeSlot.targetEntityId,
+                                activeSlotX, activeSlotY, (activeSlotZoom + 0.1f).coerceIn(0.35f, 2.5f),
+                                activeSlot.smoothSpeed, activeSlot.panStrength, true
+                            )
+                        }
+                    )
+                    QuickActionChip(
+                        icon = Icons.Rounded.MyLocation,
+                        label = if (activeSlot.targetKind == "fixed") "Centro" else "Reset",
+                        onClick = {
+                            val rx = if (activeSlot.targetKind == "fixed") 640f else 0f
+                            val ry = if (activeSlot.targetKind == "fixed") 360f else -24f
+                            onUpdateCameraSlot(
+                                activeSlot.index, activeSlot.name, activeSlot.targetKind, activeSlot.targetEntityId,
+                                rx, ry, activeSlotZoom, activeSlot.smoothSpeed, activeSlot.panStrength, true
+                            )
+                        }
                     )
                 } else if (selected != null) {
                     val curScale = if (liveTransform.entityId == selected.id) liveTransform.scale else selected.scale

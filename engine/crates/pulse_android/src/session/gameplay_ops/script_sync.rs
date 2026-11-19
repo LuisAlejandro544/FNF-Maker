@@ -200,6 +200,8 @@ pub(super) fn sync_script_host_state(
     song_pos_ms: f64,
     active_bpm: f64,
     must_hit: bool,
+    gf_section: bool,
+    active_camera_slot: usize,
     health: f32,
     score: i64,
     combo: u32,
@@ -223,6 +225,8 @@ pub(super) fn sync_script_host_state(
     *state.camera_zoom.lock() = stage.camera_zoom;
     *state.camera_base_zoom.lock() = stage.camera_base_zoom;
     *state.must_hit_section.lock() = must_hit;
+    *state.gf_section.lock() = gf_section;
+    *state.active_camera_slot.lock() = active_camera_slot;
     *state.health.lock() = health;
     *state.score.lock() = score;
     *state.combo.lock() = combo;
@@ -444,10 +448,76 @@ pub(super) fn drain_and_apply_script_commands(
                 stage.camera_zoom = z.clamp(0.35, 2.5);
             }
             ScriptCommand::SetCameraBaseZoom(z) => {
-                stage.camera_base_zoom = z.clamp(0.35, 2.5);
+                let clamped = z.clamp(0.35, 2.5);
+                stage.camera_base_zoom = clamped;
+                session.camera_slot_zoom_override = Some(clamped);
             }
             ScriptCommand::ShakeCamera { intensity } => {
                 stage.camera_shake = intensity.clamp(0.0, 25.0);
+            }
+            ScriptCommand::SwitchCameraSlot {
+                slot,
+                zoom,
+                duration_sec,
+                ease,
+            } => {
+                let max_slot = stage.camera.cameras.len().saturating_sub(1);
+                let clamped_slot = slot.min(max_slot);
+                session.active_camera_slot = clamped_slot;
+                session.camera_follow_lock = None;
+                session.camera_gf_override = false;
+                session.camera_offset_override = [0.0, 0.0];
+                let (tx, ty, slot_zoom, _) = stage.resolve_camera_slot_target(
+                    clamped_slot,
+                    &session.active_player_id,
+                    &session.active_opponent_id,
+                );
+                let z_override = zoom.map(|z| z.clamp(0.35, 2.5));
+                session.camera_slot_zoom_override = z_override;
+                let final_zoom = z_override.unwrap_or(slot_zoom);
+                stage.camera_base_zoom = final_zoom;
+                if duration_sec > 0.01 {
+                    session.active_tweens.retain(|t| {
+                        !matches!(
+                            t.target,
+                            TweenTarget::CameraPosX | TweenTarget::CameraPosY | TweenTarget::CameraZoom
+                        )
+                    });
+                    session.active_tweens.push(ActiveTweenState {
+                        tag: "__cam_slot_x".to_string(),
+                        target: TweenTarget::CameraPosX,
+                        start_val: stage.camera_x,
+                        end_val: tx,
+                        elapsed_sec: 0.0,
+                        duration_sec,
+                        ease: ease.clone(),
+                    });
+                    session.active_tweens.push(ActiveTweenState {
+                        tag: "__cam_slot_y".to_string(),
+                        target: TweenTarget::CameraPosY,
+                        start_val: stage.camera_y,
+                        end_val: ty,
+                        elapsed_sec: 0.0,
+                        duration_sec,
+                        ease: ease.clone(),
+                    });
+                    session.active_tweens.push(ActiveTweenState {
+                        tag: "__cam_slot_z".to_string(),
+                        target: TweenTarget::CameraZoom,
+                        start_val: stage.camera_zoom,
+                        end_val: final_zoom,
+                        elapsed_sec: 0.0,
+                        duration_sec,
+                        ease,
+                    });
+                }
+            }
+            ScriptCommand::SetCameraFollowLock { x, y } => {
+                session.camera_follow_lock =
+                    Some([x.clamp(-1000.0, 2600.0), y.clamp(-1000.0, 1800.0)]);
+            }
+            ScriptCommand::ClearCameraFollowLock => {
+                session.camera_follow_lock = None;
             }
             ScriptCommand::SetEntityProp {
                 entity_id,

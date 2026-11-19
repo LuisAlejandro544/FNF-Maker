@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -60,6 +61,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.beatforge.studio.StageCameraSnapshot
 import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.ui.screens.chart.ChartTimelineRow
 import com.beatforge.studio.ui.screens.chart.parseHexColorOrWhite
@@ -87,6 +89,7 @@ private val FLASH_PRESET_COLORS = listOf(
 fun ChartStepCueDialog(
     stepRow: ChartTimelineRow.StepRow,
     entities: List<StageEntitySnapshot>,
+    stageCamera: StageCameraSnapshot,
     onAddChartEvent: (timeMs: Double, name: String, value1: String, value2: String) -> Unit,
     onRemoveChartEvent: (globalIndex: Int) -> Unit,
     onMovePlayheadHere: (Double) -> Unit,
@@ -94,7 +97,7 @@ fun ChartStepCueDialog(
     onOpenUiBlackoutScript: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var activeTab by remember { mutableIntStateOf(0) } // 0=Escena/Visibilidad, 1=Flash, 2=Personajes/Precarga, 3=UI/Negro
+    var activeTab by remember { mutableIntStateOf(0) } // 0=Escena/Visibilidad, 1=Flash, 2=Personajes/Precarga, 3=UI/Negro, 4=Cámara
 
     // Tab 0: Visibilidad & Swap
     val visibilityChoices = remember(stepRow.globalStepIndex) {
@@ -123,6 +126,18 @@ fun ChartStepCueDialog(
     var uiHideArrows by remember { mutableStateOf(true) }
     var uiFadeSec by remember { mutableFloatStateOf(0.65f) }
     var uiIntroDelayMs by remember { mutableFloatStateOf(0.0f) }
+
+    // Tab 4: Eventos de Cámara en chart.json
+    val cameraSlots = stageCamera.resolvedCameras()
+    var camTargetSlot by remember { mutableIntStateOf(stageCamera.activeCameraIndex.coerceIn(0, (cameraSlots.size - 1).coerceAtLeast(0))) }
+    var camOverrideZoom by remember { mutableStateOf(false) }
+    var camCustomZoom by remember { mutableFloatStateOf(cameraSlots.getOrNull(camTargetSlot)?.zoom ?: stageCamera.baseZoom) }
+    var camTransDurSec by remember { mutableFloatStateOf(0.0f) }
+    var camEase by remember { mutableStateOf("sineOut") }
+    var camFollowPosX by remember { mutableStateOf(stageCamera.baseX.roundToInt().toString()) }
+    var camFollowPosY by remember { mutableStateOf(stageCamera.baseY.roundToInt().toString()) }
+    var camZoomOnly by remember { mutableFloatStateOf(1.20f) }
+    var camZoomSteps by remember { mutableIntStateOf(4) }
 
     val secNum = stepRow.section.index + 1
     val secTimeText = String.format(Locale.US, "%.2fs", stepRow.stepTimeMs / 1000.0)
@@ -191,7 +206,7 @@ fun ChartStepCueDialog(
                 // Selector de pestañas modular
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     CueTabButton(
                         label = "Visibilidad",
@@ -212,14 +227,21 @@ fun ChartStepCueDialog(
                         selected = activeTab == 2,
                         accent = StudioColors.AccentPurple,
                         onClick = { activeTab = 2 },
-                        modifier = Modifier.weight(0.85f)
+                        modifier = Modifier.weight(0.9f)
                     )
                     CueTabButton(
-                        label = "UI / Negro",
+                        label = "UI/Negro",
                         selected = activeTab == 3,
                         accent = StudioColors.AccentCoral,
                         onClick = { activeTab = 3 },
-                        modifier = Modifier.weight(0.85f)
+                        modifier = Modifier.weight(0.8f)
+                    )
+                    CueTabButton(
+                        label = "Cámara",
+                        selected = activeTab == 4,
+                        accent = StudioColors.AccentCyan,
+                        onClick = { activeTab = 4 },
+                        modifier = Modifier.weight(0.75f)
                     )
                 }
 
@@ -703,6 +725,279 @@ fun ChartStepCueDialog(
                             Icon(Icons.Rounded.Code, null, tint = StudioColors.AccentCoral, modifier = Modifier.size(15.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("Editar script ui_blackout.lua", fontSize = 11.sp)
+                        }
+                    }
+
+                    4 -> {
+                        Text(
+                            text = "Controla cámaras directamente desde chart.json: cambia entre Cam 0/1/2/3+, bloquea coordenadas (Camera Follow Pos), ajusta FOV (ZoomCamera) o lanza golpes de zoom.",
+                            color = StudioColors.TextMuted,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp
+                        )
+
+                        Text("1. Cambiar Ranura de Cámara (Switch Camera):", color = StudioColors.AccentCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            cameraSlots.take(5).forEach { slot ->
+                                val isSel = camTargetSlot == slot.index
+                                ActionChip(
+                                    label = "Cam ${slot.index}",
+                                    selected = isSel,
+                                    color = StudioColors.AccentCyan,
+                                    onClick = {
+                                        camTargetSlot = slot.index
+                                        camCustomZoom = slot.zoom
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                        if (cameraSlots.size > 5) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                cameraSlots.drop(5).take(5).forEach { slot ->
+                                    val isSel = camTargetSlot == slot.index
+                                    ActionChip(
+                                        label = "Cam ${slot.index}",
+                                        selected = isSel,
+                                        color = StudioColors.AccentCyan,
+                                        onClick = {
+                                            camTargetSlot = slot.index
+                                            camCustomZoom = slot.zoom
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                        val chosenSlotInfo = cameraSlots.firstOrNull { it.index == camTargetSlot }
+                        if (chosenSlotInfo != null) {
+                            Text(
+                                text = "Seleccionada: ${chosenSlotInfo.name} · FOV base ${((chosenSlotInfo.zoom * 100f).roundToInt() / 100f)}x",
+                                color = StudioColors.TextMuted,
+                                fontSize = 10.sp
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Forzar FOV/Zoom específico en este evento", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                            Switch(checked = camOverrideZoom, onCheckedChange = { camOverrideZoom = it })
+                        }
+                        if (camOverrideZoom) {
+                            Text(
+                                text = "Zoom FOV: ${((camCustomZoom * 100f).roundToInt() / 100f)}x",
+                                color = StudioColors.AccentCyan,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Slider(
+                                value = camCustomZoom.coerceIn(0.35f, 2.5f),
+                                onValueChange = { camCustomZoom = it },
+                                valueRange = 0.35f..2.5f
+                            )
+                        }
+
+                        Text("Duración e interpolación (paneo):", color = StudioColors.TextPrimary, fontSize = 11.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            listOf(0.0f to "Corte/Suave", 0.25f to "0.25s", 0.5f to "0.50s", 1.0f to "1.0s").forEach { (sec, label) ->
+                                ActionChip(
+                                    label = label,
+                                    selected = kotlin.math.abs(camTransDurSec - sec) < 0.05f,
+                                    color = StudioColors.AccentCyan,
+                                    onClick = { camTransDurSec = sec },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            listOf("sineOut" to "SineOut", "quadInOut" to "QuadInOut", "linear" to "Lineal").forEach { (key, label) ->
+                                ActionChip(
+                                    label = label,
+                                    selected = camEase == key,
+                                    color = StudioColors.AccentIndigo,
+                                    onClick = { camEase = key },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                val parts = mutableListOf("cam=$camTargetSlot")
+                                if (camOverrideZoom) {
+                                    parts.add(String.format(Locale.US, "zoom=%.2f", camCustomZoom))
+                                }
+                                if (camTransDurSec > 0.01f) {
+                                    parts.add(String.format(Locale.US, "dur=%.2f", camTransDurSec))
+                                    parts.add("ease=$camEase")
+                                }
+                                onAddChartEvent(stepRow.stepTimeMs, "Switch Camera", parts.joinToString(";"), "")
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StudioColors.AccentCyan,
+                                contentColor = Color(0xFF041C24)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.Videocam, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Cambiar a Cam $camTargetSlot en Paso #${stepRow.stepInSec}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        HorizontalDivider(color = StudioColors.BorderSubtle)
+                        Text("2. Posición Fija en Escenario (Camera Follow Pos):", color = StudioColors.AccentEmerald, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = camFollowPosX,
+                                onValueChange = { camFollowPosX = it },
+                                label = { Text("X (ej. 640)", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = camFollowPosY,
+                                onValueChange = { camFollowPosY = it },
+                                label = { Text("Y (ej. 360)", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            ActionChip(
+                                label = "Cam 0",
+                                selected = false,
+                                color = StudioColors.AccentCyan,
+                                onClick = {
+                                    camFollowPosX = stageCamera.baseX.roundToInt().toString()
+                                    camFollowPosY = stageCamera.baseY.roundToInt().toString()
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ActionChip(
+                                label = "Enemigo",
+                                selected = false,
+                                color = StudioColors.AccentCoral,
+                                onClick = {
+                                    val opp = entities.firstOrNull { it.role == "opponent" }
+                                    camFollowPosX = (opp?.x ?: 300f).roundToInt().toString()
+                                    camFollowPosY = ((opp?.y ?: 415f) - 24f).roundToInt().toString()
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ActionChip(
+                                label = "Jugador",
+                                selected = false,
+                                color = StudioColors.AccentEmerald,
+                                onClick = {
+                                    val pl = entities.firstOrNull { it.role == "player" }
+                                    camFollowPosX = (pl?.x ?: 980f).roundToInt().toString()
+                                    camFollowPosY = ((pl?.y ?: 420f) - 24f).roundToInt().toString()
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    val xVal = camFollowPosX.trim().toFloatOrNull() ?: stageCamera.baseX
+                                    val yVal = camFollowPosY.trim().toFloatOrNull() ?: stageCamera.baseY
+                                    onAddChartEvent(
+                                        stepRow.stepTimeMs,
+                                        "Camera Follow Pos",
+                                        xVal.roundToInt().toString(),
+                                        yVal.roundToInt().toString()
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StudioColors.AccentEmerald,
+                                    contentColor = Color(0xFF042117)
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Fijar Pos", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    onAddChartEvent(stepRow.stepTimeMs, "Camera Follow Pos", "", "")
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Liberar Pos", fontSize = 11.sp)
+                            }
+                        }
+
+                        HorizontalDivider(color = StudioColors.BorderSubtle)
+                        Text("3. Campo de Visión / Zoom (ZoomCamera):", color = StudioColors.AccentAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Zoom destino: ${((camZoomOnly * 100f).roundToInt() / 100f)}x · Duración ${camZoomSteps}p",
+                            color = StudioColors.TextPrimary,
+                            fontSize = 11.sp
+                        )
+                        Slider(
+                            value = camZoomOnly.coerceIn(0.4f, 2.2f),
+                            onValueChange = { camZoomOnly = it },
+                            valueRange = 0.4f..2.2f
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            listOf(0, 4, 8, 16).forEach { st ->
+                                ActionChip(
+                                    label = if (st == 0) "Corte" else "${st}p",
+                                    selected = camZoomSteps == st,
+                                    color = StudioColors.AccentAmber,
+                                    onClick = { camZoomSteps = st },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val payload = String.format(
+                                    Locale.US,
+                                    "{\"zoom\":%.2f,\"duration\":%d,\"mode\":\"direct\",\"ease\":\"%s\"}",
+                                    camZoomOnly,
+                                    camZoomSteps,
+                                    camEase
+                                )
+                                onAddChartEvent(stepRow.stepTimeMs, "ZoomCamera", payload, "")
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Aplicar ZoomCamera (${((camZoomOnly * 100f).roundToInt() / 100f)}x)", fontSize = 11.sp)
+                        }
+
+                        HorizontalDivider(color = StudioColors.BorderSubtle)
+                        Text("4. Golpe / Pulso de Zoom (Add Camera Zoom):", color = StudioColors.TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            ActionChip(
+                                label = "Suave +0.015",
+                                selected = false,
+                                color = StudioColors.AccentCyan,
+                                onClick = { onAddChartEvent(stepRow.stepTimeMs, "Add Camera Zoom", "0.015", "0.03") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ActionChip(
+                                label = "Medio +0.04",
+                                selected = false,
+                                color = StudioColors.AccentAmber,
+                                onClick = { onAddChartEvent(stepRow.stepTimeMs, "Add Camera Zoom", "0.04", "0.02") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ActionChip(
+                                label = "Fuerte +0.08",
+                                selected = false,
+                                color = StudioColors.AccentCoral,
+                                onClick = { onAddChartEvent(stepRow.stepTimeMs, "Add Camera Zoom", "0.08", "0.04") },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                     }
                 }

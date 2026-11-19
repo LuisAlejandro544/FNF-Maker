@@ -1,7 +1,8 @@
 //! Archivo: engine/crates/pulse_android/src/session/gameplay_ops/packet_encoder.rs
 //! Propósito: Serialización de cada frame de gameplay hacia Kotlin Compose, tanto en JSON
 //! (`step_gameplay`, usado en inicialización/pausa) como en paquete binario Little-Endian
-//! `BFGP` v2 (`step_gameplay_binary`, sin asignaciones GC por frame a 60 FPS).
+//! `BFGP` v2 (`step_gameplay_binary`, sin asignaciones GC por frame a 60 FPS), respetando
+//! el espejado horizontal de offsets cuando `flip_x` está activo.
 
 use super::{
     BINARY_ENTITY_SIZE, BINARY_FRAME_MAGIC, BINARY_HEADER_SIZE, BINARY_NOTE_SIZE,
@@ -63,11 +64,16 @@ fn compute_entity_frame_render<'a>(
     } else {
         ent.scale
     };
-    let [off_x, off_y] = ent
+    let [raw_off_x, off_y] = ent
         .anim_offsets
         .get(&ent.active_anim)
         .copied()
         .unwrap_or([0.0, 0.0]);
+    let off_x = if ent.flip_x && !crate::session::has_pre_swapped_flip_descriptor(ent) {
+        -raw_off_x
+    } else {
+        raw_off_x
+    };
     let offset_fit = if let Some(f) = frame {
         let vis_w = if f.rotated { f.height } else { f.width }.max(1);
         let vis_h = if f.rotated { f.width } else { f.height }.max(1);

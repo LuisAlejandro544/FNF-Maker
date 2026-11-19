@@ -32,6 +32,7 @@ data class IndexedChartEvent(
 )
 
 enum class StepCueKind {
+    Camera,
     Swap,
     Flash,
     Character,
@@ -92,6 +93,22 @@ private data class FlashSpan(
 fun classifyChartEvent(event: ChartEventSnapshot): StepCueKind {
     val lower = event.name.trim().lowercase()
     return when {
+        lower == "switch camera" ||
+            lower == "camera slot" ||
+            lower == "set camera" ||
+            lower == "cambiar camara" ||
+            lower == "cambiar cámara" ||
+            lower == "focuscamera" ||
+            lower == "focus camera" ||
+            lower == "zoomcamera" ||
+            lower == "zoom camera" ||
+            lower == "camera follow pos" ||
+            lower == "camerafollowpos" ||
+            lower == "add camera zoom" ||
+            lower == "addcamera zoom" ||
+            lower == "add cam zoom" ||
+            lower == "camera movement" ||
+            lower == "cameramovement" -> StepCueKind.Camera
         lower == "flash effect" || lower == "flash hud" || lower == "flash camera" || lower == "camera flash" ->
             StepCueKind.Flash
         lower == "preload sprite" -> StepCueKind.Preload
@@ -122,6 +139,41 @@ fun classifyChartEvent(event: ChartEventSnapshot): StepCueKind {
 fun summarizeChartEvent(event: ChartEventSnapshot): String {
     val lower = event.name.trim().lowercase()
     return when (classifyChartEvent(event)) {
+        StepCueKind.Camera -> {
+            when {
+                lower == "camera follow pos" || lower == "camerafollowpos" -> {
+                    if (event.value1.isBlank() && event.value2.isBlank()) {
+                        "Cámara · Liberar posición fija"
+                    } else {
+                        "Cámara Pos Fija (${event.value1}, ${event.value2})"
+                    }
+                }
+                lower == "add camera zoom" || lower == "addcamera zoom" || lower == "add cam zoom" -> {
+                    val camAdd = event.value1.ifBlank { "0.015" }
+                    val hudAdd = event.value2.ifBlank { "0.03" }
+                    "Pulso Zoom · Cam +$camAdd / HUD +$hudAdd"
+                }
+                lower == "zoomcamera" || lower == "zoom camera" -> {
+                    val zMatch = Regex("\"zoom\"\\s*:\\s*([0-9.]+)").find(event.value1)?.groupValues?.get(1)
+                    val zoomTxt = zMatch ?: event.value1.ifBlank { "1.0" }
+                    "Zoom Cámara → ${zoomTxt}x"
+                }
+                lower == "focuscamera" || lower == "focus camera" -> {
+                    "FocusCamera: ${event.value1.take(36)}"
+                }
+                else -> {
+                    val params = parseSemiKv(event.value1)
+                    val camIdx = params["cam"] ?: params["slot"] ?: event.value1.trim()
+                    val zoomTxt = params["zoom"] ?: params["fov"]
+                    val durTxt = params["dur"] ?: params["duration"]
+                    val extras = buildList {
+                        if (!zoomTxt.isNullOrBlank()) add("${zoomTxt}x")
+                        if (!durTxt.isNullOrBlank() && durTxt != "0.00" && durTxt != "0") add("${durTxt}s")
+                    }
+                    if (extras.isEmpty()) "Cámara → Cam $camIdx" else "Cámara → Cam $camIdx (${extras.joinToString(", ")})"
+                }
+            }
+        }
         StepCueKind.Flash -> {
             val col = event.value1.ifBlank { "#FFFFFF" }
             val params = parseSemiKv(event.value2)

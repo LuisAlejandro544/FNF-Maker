@@ -302,19 +302,61 @@ impl StageEntity {
     }
 }
 
+/// Objetivo al que apunta una cámara individual (`Cam 0`, `Cam 1`, `Cam 2`, `Cam 3+`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CameraTargetKind {
+    /// Coordenadas fijas en el mundo (`x, y`) sin seguir automáticamente a un personaje.
+    #[default]
+    Fixed,
+    /// Apunta al Jugador activo aplicando `(x, y)` como desplazamiento de encuadre.
+    Player,
+    /// Apunta al Enemigo activo aplicando `(x, y)` como desplazamiento de encuadre.
+    Opponent,
+    /// Apunta a la Cabina / GF aplicando `(x, y)` como desplazamiento de encuadre.
+    Gf,
+    /// Apunta a una entidad específica del escenario (`target_entity_id`) con desplazamiento `(x, y)`.
+    Entity,
+}
+
+impl CameraTargetKind {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            CameraTargetKind::Fixed => "fixed",
+            CameraTargetKind::Player => "player",
+            CameraTargetKind::Opponent => "opponent",
+            CameraTargetKind::Gf => "gf",
+            CameraTargetKind::Entity => "entity",
+        }
+    }
+
+    pub fn from_str_loose(raw: &str) -> Self {
+        let low = raw.trim().to_ascii_lowercase();
+        match low.as_str() {
+            "player" | "jugador" | "bf" | "boyfriend" | "1" => CameraTargetKind::Player,
+            "opponent" | "enemigo" | "rival" | "dad" | "2" => CameraTargetKind::Opponent,
+            "gf" | "girlfriend" | "cabina" | "speakers" => CameraTargetKind::Gf,
+            "entity" | "entidad" | "objeto" | "target" => CameraTargetKind::Entity,
+            _ => CameraTargetKind::Fixed,
+        }
+    }
+}
+
 /// Modo de seguimiento automático de la cámara durante la partida.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CameraFollowMode {
-    /// Alterna entre Enemigo y Jugador cada N beats configurados.
-    #[default]
+    /// Inicia en Cámara 0 fija y solo cambia cuando hay acciones/eventos de cámara en el chart o scripts.
+    Camera0Fixed,
+    /// Alterna entre Enemigo (Cam 2) y Jugador (Cam 1) cada N beats configurados.
     BeatsInterval,
-    /// Sigue automáticamente `mustHitSection` definido en cada sección del `chart.json`.
+    /// Sigue automáticamente `mustHitSection`, `gfSection`, `cameraSlot` y eventos del `chart.json`.
+    #[default]
     ChartSections,
 }
 
 impl CameraFollowMode {
     pub fn as_lua_str(self) -> &'static str {
         match self {
+            CameraFollowMode::Camera0Fixed => "fixed",
             CameraFollowMode::BeatsInterval => "beats",
             CameraFollowMode::ChartSections => "sections",
         }
@@ -322,15 +364,115 @@ impl CameraFollowMode {
 
     pub fn from_str_loose(raw: &str) -> Self {
         let low = raw.trim().to_ascii_lowercase();
-        if low.contains("section") || low == "chart" || low == "1" {
-            CameraFollowMode::ChartSections
-        } else {
+        if low.contains("fix") || low == "fija" || low == "cam0" || low == "camera0" {
+            CameraFollowMode::Camera0Fixed
+        } else if low.contains("beat") || low == "0" {
             CameraFollowMode::BeatsInterval
+        } else {
+            CameraFollowMode::ChartSections
         }
     }
 }
 
-/// Configuración persistente de cámara vinculada al script `camera_system.lua`.
+/// Ranura individual dentro del sistema multicámara (`Cam 0` Fija, `Cam 1` Player, `Cam 2` Enemigo, `Cam 3+` personalizadas).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageCameraSlot {
+    pub index: usize,
+    pub name: String,
+    #[serde(default)]
+    pub target_kind: CameraTargetKind,
+    #[serde(default)]
+    pub target_entity_id: Option<String>,
+    /// Coordenada X del mundo en modo `Fixed` o desplazamiento X de encuadre sobre el objetivo.
+    pub x: f32,
+    /// Coordenada Y del mundo en modo `Fixed` o desplazamiento Y de encuadre sobre el objetivo.
+    pub y: f32,
+    /// Campo de visión (zoom) específico para esta cámara (`0.35..2.5`).
+    pub zoom: f32,
+    /// Velocidad de transición suave al enfocarse esta cámara (`1.0..20.0`).
+    pub smooth_speed: f32,
+    /// Fuerza de seguimiento sobre el objetivo (`0.0` = permanece en Cámara 0, `1.0` = directo al objetivo).
+    pub pan_strength: f32,
+}
+
+impl StageCameraSlot {
+    pub fn sanitize(&mut self) {
+        self.x = if self.x.is_finite() {
+            self.x.clamp(-1000.0, 2600.0)
+        } else {
+            0.0
+        };
+        self.y = if self.y.is_finite() {
+            self.y.clamp(-1000.0, 1800.0)
+        } else {
+            0.0
+        };
+        self.zoom = if self.zoom.is_finite() {
+            self.zoom.clamp(0.35, 2.5)
+        } else {
+            1.0
+        };
+        self.smooth_speed = if self.smooth_speed.is_finite() {
+            self.smooth_speed.clamp(1.0, 20.0)
+        } else {
+            6.0
+        };
+        self.pan_strength = if self.pan_strength.is_finite() {
+            self.pan_strength.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if self.target_entity_id.as_deref().is_some_and(|s| s.trim().is_empty()) {
+            self.target_entity_id = None;
+        }
+    }
+}
+
+/// Construye las 3 cámaras base (`Cam 0`, `Cam 1`, `Cam 2`).
+pub fn default_camera_slots(
+    base_x: f32,
+    base_y: f32,
+    base_zoom: f32,
+    smooth_speed: f32,
+) -> Vec<StageCameraSlot> {
+    vec![
+        StageCameraSlot {
+            index: 0,
+            name: "Cam 0 · Inicial Fija".to_string(),
+            target_kind: CameraTargetKind::Fixed,
+            target_entity_id: None,
+            x: base_x.clamp(-1000.0, 2600.0),
+            y: base_y.clamp(-1000.0, 1800.0),
+            zoom: base_zoom.clamp(0.35, 2.5),
+            smooth_speed: smooth_speed.clamp(1.0, 20.0),
+            pan_strength: 0.0,
+        },
+        StageCameraSlot {
+            index: 1,
+            name: "Cam 1 · Jugador".to_string(),
+            target_kind: CameraTargetKind::Player,
+            target_entity_id: None,
+            x: 0.0,
+            y: -24.0,
+            zoom: base_zoom.clamp(0.35, 2.5),
+            smooth_speed: smooth_speed.clamp(1.0, 20.0),
+            pan_strength: 1.0,
+        },
+        StageCameraSlot {
+            index: 2,
+            name: "Cam 2 · Enemigo".to_string(),
+            target_kind: CameraTargetKind::Opponent,
+            target_entity_id: None,
+            x: 0.0,
+            y: -24.0,
+            zoom: base_zoom.clamp(0.35, 2.5),
+            smooth_speed: smooth_speed.clamp(1.0, 20.0),
+            pan_strength: 1.0,
+        },
+    ]
+}
+
+/// Configuración persistente del sistema multicámara vinculada a `camera_system.lua`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageCameraConfig {
     pub enabled: bool,
@@ -341,19 +483,71 @@ pub struct StageCameraConfig {
     pub follow_interval_beats: u32,
     pub smooth_speed: f32,
     pub pan_strength: f32,
+    #[serde(default)]
+    pub active_camera_index: usize,
+    #[serde(default)]
+    pub cameras: Vec<StageCameraSlot>,
 }
 
 impl Default for StageCameraConfig {
     fn default() -> Self {
+        let base_x = 640.0;
+        let base_y = 360.0;
+        let base_zoom = 1.0;
+        let smooth_speed = 6.0;
         Self {
             enabled: true,
-            base_x: 640.0,
-            base_y: 360.0,
-            base_zoom: 1.0,
-            follow_mode: CameraFollowMode::BeatsInterval,
+            base_x,
+            base_y,
+            base_zoom,
+            follow_mode: CameraFollowMode::ChartSections,
             follow_interval_beats: 4,
-            smooth_speed: 6.0,
-            pan_strength: 0.72,
+            smooth_speed,
+            pan_strength: 0.85,
+            active_camera_index: 0,
+            cameras: default_camera_slots(base_x, base_y, base_zoom, smooth_speed),
+        }
+    }
+}
+
+impl StageCameraConfig {
+    /// Garantiza que existan al menos `Cam 0` (Fija), `Cam 1` (Jugador) y `Cam 2` (Enemigo)
+    /// y normaliza índices y límites numéricos en todas las ranuras.
+    pub fn ensure_default_cameras(&mut self) {
+        let defaults = default_camera_slots(self.base_x, self.base_y, self.base_zoom, self.smooth_speed);
+        if self.cameras.is_empty() {
+            self.cameras = defaults;
+        } else {
+            while self.cameras.len() < 3 {
+                let next_idx = self.cameras.len();
+                self.cameras.push(defaults[next_idx].clone());
+            }
+        }
+        for (idx, cam) in self.cameras.iter_mut().enumerate() {
+            cam.index = idx;
+            if cam.name.trim().is_empty() {
+                cam.name = match idx {
+                    0 => "Cam 0 · Inicial Fija".to_string(),
+                    1 => "Cam 1 · Jugador".to_string(),
+                    2 => "Cam 2 · Enemigo".to_string(),
+                    _ => format!("Cam {} · Personalizada", idx),
+                };
+            }
+            cam.sanitize();
+        }
+        if self.active_camera_index >= self.cameras.len() {
+            self.active_camera_index = 0;
+        }
+    }
+
+    /// Sincroniza `Cam 0` desde `base_x`, `base_y`, `base_zoom` y `smooth_speed` cuando provienen de legacy/Lua.
+    pub fn sync_slot0_from_base(&mut self) {
+        self.ensure_default_cameras();
+        if let Some(cam0) = self.cameras.first_mut() {
+            cam0.x = self.base_x.clamp(-1000.0, 2600.0);
+            cam0.y = self.base_y.clamp(-1000.0, 1800.0);
+            cam0.zoom = self.base_zoom.clamp(0.35, 2.5);
+            cam0.smooth_speed = self.smooth_speed.clamp(1.0, 20.0);
         }
     }
 }
@@ -424,7 +618,7 @@ impl Default for StageScene {
 }
 
 impl StageScene {
-    /// Aplica una nueva configuración de cámara validando límites y sincronizando la vista base.
+    /// Aplica una nueva configuración de cámara validando límites, asegurando `Cam 0/1/2` y sincronizando la vista base.
     pub fn apply_camera_config(&mut self, mut cfg: StageCameraConfig) {
         cfg.base_x = if cfg.base_x.is_finite() {
             cfg.base_x.clamp(-1000.0, 2600.0)
@@ -450,14 +644,257 @@ impl StageScene {
         cfg.pan_strength = if cfg.pan_strength.is_finite() {
             cfg.pan_strength.clamp(0.0, 1.0)
         } else {
-            0.72
+            0.85
         };
 
-        self.camera_x = cfg.base_x;
-        self.camera_y = cfg.base_y;
-        self.camera_base_zoom = cfg.base_zoom;
-        self.camera_zoom = cfg.base_zoom;
+        cfg.ensure_default_cameras();
+        let (rx, ry, rzoom, _) =
+            Self::resolve_slot_against_entities(&cfg, &self.entities, cfg.active_camera_index, "", "");
+
+        self.camera_x = rx;
+        self.camera_y = ry;
+        self.camera_base_zoom = rzoom;
+        self.camera_zoom = rzoom;
         self.camera = cfg;
+    }
+
+    fn resolve_entity_anchor<'a>(
+        entities: &'a [StageEntity],
+        kind: CameraTargetKind,
+        target_entity_id: Option<&str>,
+        active_player_id: &str,
+        active_opponent_id: &str,
+    ) -> Option<&'a StageEntity> {
+        match kind {
+            CameraTargetKind::Fixed => None,
+            CameraTargetKind::Player => {
+                if !active_player_id.is_empty() {
+                    if let Some(e) = entities.iter().find(|e| e.id == active_player_id) {
+                        return Some(e);
+                    }
+                }
+                entities
+                    .iter()
+                    .find(|e| e.role == EntityRole::Player && e.visible)
+                    .or_else(|| entities.iter().find(|e| e.role == EntityRole::Player))
+            }
+            CameraTargetKind::Opponent => {
+                if !active_opponent_id.is_empty() {
+                    if let Some(e) = entities.iter().find(|e| e.id == active_opponent_id) {
+                        return Some(e);
+                    }
+                }
+                entities
+                    .iter()
+                    .find(|e| e.role == EntityRole::Opponent && e.visible)
+                    .or_else(|| entities.iter().find(|e| e.role == EntityRole::Opponent))
+            }
+            CameraTargetKind::Gf => entities
+                .iter()
+                .find(|e| {
+                    e.role == EntityRole::Decoration
+                        && (e.id.eq_ignore_ascii_case("stage_speakers")
+                            || e.id.to_ascii_lowercase().contains("gf")
+                            || e.display_name.to_ascii_lowercase().contains("cabina"))
+                })
+                .or_else(|| {
+                    entities
+                        .iter()
+                        .find(|e| e.role == EntityRole::Decoration && e.visible)
+                }),
+            CameraTargetKind::Entity => target_entity_id
+                .and_then(|id| entities.iter().find(|e| e.id == id))
+                .or_else(|| entities.first()),
+        }
+    }
+
+    fn resolve_slot_against_entities(
+        cfg: &StageCameraConfig,
+        entities: &[StageEntity],
+        slot_idx: usize,
+        active_player_id: &str,
+        active_opponent_id: &str,
+    ) -> (f32, f32, f32, f32) {
+        let cam0_x = cfg
+            .cameras
+            .first()
+            .filter(|c| c.target_kind == CameraTargetKind::Fixed)
+            .map(|c| c.x)
+            .unwrap_or(cfg.base_x);
+        let cam0_y = cfg
+            .cameras
+            .first()
+            .filter(|c| c.target_kind == CameraTargetKind::Fixed)
+            .map(|c| c.y)
+            .unwrap_or(cfg.base_y);
+
+        let Some(slot) = cfg.cameras.get(slot_idx).or_else(|| cfg.cameras.first()) else {
+            return (
+                cfg.base_x.clamp(-1000.0, 2600.0),
+                cfg.base_y.clamp(-1000.0, 1800.0),
+                cfg.base_zoom.clamp(0.35, 2.5),
+                cfg.smooth_speed.clamp(1.0, 20.0),
+            );
+        };
+
+        let zoom = slot.zoom.clamp(0.35, 2.5);
+        let smooth = slot.smooth_speed.clamp(1.0, 20.0);
+
+        if slot.target_kind == CameraTargetKind::Fixed {
+            return (
+                slot.x.clamp(-1000.0, 2600.0),
+                slot.y.clamp(-1000.0, 1800.0),
+                zoom,
+                smooth,
+            );
+        }
+
+        if let Some(ent) = Self::resolve_entity_anchor(
+            entities,
+            slot.target_kind,
+            slot.target_entity_id.as_deref(),
+            active_player_id,
+            active_opponent_id,
+        ) {
+            let dest_x = ent.x + ent.camera_offset[0] + slot.x;
+            let dest_y = ent.y + ent.camera_offset[1] + slot.y;
+            let pan = slot.pan_strength.clamp(0.0, 1.0);
+            let tx = (cam0_x + (dest_x - cam0_x) * pan).clamp(-1000.0, 2600.0);
+            let ty = (cam0_y + (dest_y - cam0_y) * pan).clamp(-1000.0, 1800.0);
+            (tx, ty, zoom, smooth)
+        } else {
+            (
+                (cam0_x + slot.x).clamp(-1000.0, 2600.0),
+                (cam0_y + slot.y).clamp(-1000.0, 1800.0),
+                zoom,
+                smooth,
+            )
+        }
+    }
+
+    /// Resuelve coordenadas `(x, y, zoom, smooth_speed)` reales en escena para la cámara `slot_idx`.
+    pub fn resolve_camera_slot_target(
+        &self,
+        slot_idx: usize,
+        active_player_id: &str,
+        active_opponent_id: &str,
+    ) -> (f32, f32, f32, f32) {
+        Self::resolve_slot_against_entities(
+            &self.camera,
+            &self.entities,
+            slot_idx,
+            active_player_id,
+            active_opponent_id,
+        )
+    }
+
+    /// Actualiza los parámetros de una ranura de cámara (`Cam 0/1/2/3+`) y sincroniza los campos base si es `Cam 0`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_camera_slot(
+        &mut self,
+        slot_index: usize,
+        name: &str,
+        target_kind: CameraTargetKind,
+        target_entity_id: Option<String>,
+        x: f32,
+        y: f32,
+        zoom: f32,
+        smooth_speed: f32,
+        pan_strength: f32,
+    ) -> bool {
+        self.camera.ensure_default_cameras();
+        let Some(slot) = self.camera.cameras.get_mut(slot_index) else {
+            return false;
+        };
+        if !name.trim().is_empty() {
+            slot.name = name.trim().to_string();
+        }
+        slot.target_kind = target_kind;
+        slot.target_entity_id = target_entity_id.filter(|s| !s.trim().is_empty());
+        slot.x = x;
+        slot.y = y;
+        slot.zoom = zoom;
+        slot.smooth_speed = smooth_speed;
+        slot.pan_strength = pan_strength;
+        slot.sanitize();
+
+        if slot_index == 0 {
+            self.camera.base_x = slot.x;
+            self.camera.base_y = slot.y;
+            self.camera.base_zoom = slot.zoom;
+            self.camera.smooth_speed = slot.smooth_speed;
+        }
+        self.camera.active_camera_index = slot_index;
+        let (rx, ry, rzoom, _) = self.resolve_camera_slot_target(slot_index, "", "");
+        self.camera_x = rx;
+        self.camera_y = ry;
+        self.camera_base_zoom = rzoom;
+        self.camera_zoom = rzoom;
+        true
+    }
+
+    /// Añade una nueva cámara personalizada (`Cam 3`, `Cam 4`, ...) y devuelve su índice asignado.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_custom_camera(
+        &mut self,
+        name: &str,
+        target_kind: CameraTargetKind,
+        target_entity_id: Option<String>,
+        x: f32,
+        y: f32,
+        zoom: f32,
+        smooth_speed: f32,
+        pan_strength: f32,
+    ) -> usize {
+        self.camera.ensure_default_cameras();
+        let idx = self.camera.cameras.len();
+        let clean_name = if name.trim().is_empty() {
+            format!("Cam {} · Personalizada", idx)
+        } else {
+            name.trim().to_string()
+        };
+        let mut slot = StageCameraSlot {
+            index: idx,
+            name: clean_name,
+            target_kind,
+            target_entity_id: target_entity_id.filter(|s| !s.trim().is_empty()),
+            x,
+            y,
+            zoom,
+            smooth_speed,
+            pan_strength,
+        };
+        slot.sanitize();
+        self.camera.cameras.push(slot);
+        self.camera.active_camera_index = idx;
+        let (rx, ry, rzoom, _) = self.resolve_camera_slot_target(idx, "", "");
+        self.camera_x = rx;
+        self.camera_y = ry;
+        self.camera_base_zoom = rzoom;
+        self.camera_zoom = rzoom;
+        idx
+    }
+
+    /// Elimina una cámara personalizada (`index >= 3`) preservando intactas `Cam 0`, `Cam 1` y `Cam 2`.
+    pub fn remove_custom_camera(&mut self, slot_index: usize) -> bool {
+        self.camera.ensure_default_cameras();
+        if slot_index < 3 || slot_index >= self.camera.cameras.len() {
+            return false;
+        }
+        self.camera.cameras.remove(slot_index);
+        for (i, cam) in self.camera.cameras.iter_mut().enumerate() {
+            cam.index = i;
+        }
+        if self.camera.active_camera_index >= self.camera.cameras.len() {
+            self.camera.active_camera_index = self.camera.cameras.len().saturating_sub(1);
+        }
+        let active_idx = self.camera.active_camera_index;
+        let (rx, ry, rzoom, _) = self.resolve_camera_slot_target(active_idx, "", "");
+        self.camera_x = rx;
+        self.camera_y = ry;
+        self.camera_base_zoom = rzoom;
+        self.camera_zoom = rzoom;
+        true
     }
 
     /// Ordena las entidades por `z_index` ascendente para dibujar correctamente qué está encima y qué debajo.
@@ -531,5 +968,50 @@ mod tests {
         bg.fit_dimensions_to_image(800, 600);
         assert!(bg.width >= 1280.0 && bg.height >= 720.0);
     }
+
+    #[test]
+    fn multi_camera_slots_resolve_targets_and_protect_base_three() {
+        let mut stage = StageScene::default();
+        stage.camera.ensure_default_cameras();
+        assert_eq!(stage.camera.cameras.len(), 3);
+
+        // Cam 0 fija en (640, 360)
+        let (x0, y0, z0, _) = stage.resolve_camera_slot_target(0, "", "");
+        assert_eq!((x0, y0, z0), (640.0, 360.0, 1.0));
+
+        // Cam 1 sigue al Player (980, 420) + offset (0, -24)
+        let (x1, y1, _, _) = stage.resolve_camera_slot_target(1, "player_main", "opponent_main");
+        assert!((x1 - 980.0).abs() < 0.01);
+        assert!((y1 - 396.0).abs() < 0.01);
+
+        // Cam 2 sigue al Enemigo (300, 415) + offset (0, -24)
+        let (x2, y2, _, _) = stage.resolve_camera_slot_target(2, "player_main", "opponent_main");
+        assert!((x2 - 300.0).abs() < 0.01);
+        assert!((y2 - 391.0).abs() < 0.01);
+
+        // Crear Cam 3 personalizada apuntando a la Cabina/GF con zoom 1.35
+        let idx3 = stage.add_custom_camera(
+            "Cam 3 · Cabina",
+            CameraTargetKind::Gf,
+            None,
+            0.0,
+            -30.0,
+            1.35,
+            8.0,
+            1.0,
+        );
+        assert_eq!(idx3, 3);
+        let (x3, y3, z3, _) = stage.resolve_camera_slot_target(3, "", "");
+        assert!((x3 - 640.0).abs() < 0.01);
+        assert!((y3 - 385.0).abs() < 0.01);
+        assert!((z3 - 1.35).abs() < 0.01);
+
+        // No permite borrar Cam 0..2, sí permite borrar Cam 3
+        assert!(!stage.remove_custom_camera(0));
+        assert!(!stage.remove_custom_camera(2));
+        assert!(stage.remove_custom_camera(3));
+        assert_eq!(stage.camera.cameras.len(), 3);
+    }
 }
+
 

@@ -9,12 +9,15 @@ use super::script_sync::{
     update_active_tweens,
 };
 use crate::session::{
-    EngineSession, GameplayRuntimeState, dir_to_anim, dir_to_miss_anim, trigger_character_anim,
+    ActiveTweenState, EngineSession, GameplayRuntimeState, TweenTarget, dir_to_anim,
+    dir_to_miss_anim, trigger_character_anim,
 };
-use pulse_core::chart::{ChartEvent, ChartNote, NoteSpecialKind};
+use pulse_core::chart::{ChartEvent, ChartNote, NoteSpecialKind, ParsedChartCameraAction};
 use pulse_core::frame_memory::{ArenaSpan, FrameVisibleNote, NotePlayState};
 use pulse_core::sparrow::CharacterAnimKind;
-use pulse_core::{EntityRole, StageEntity};
+use pulse_core::{
+    CameraFollowMode, EntityRole, StageEntity, StageScene, parse_chart_camera_event,
+};
 use std::sync::atomic::Ordering;
 
 const PRELOAD_LOOKAHEAD_MS: f64 = 4000.0;
@@ -56,6 +59,262 @@ fn collect_preload_targets_from_event(ev: &ChartEvent, entities: &[StageEntity],
 const HIT_WINDOW_SICK_MS: f64 = 55.0;
 const HIT_WINDOW_GOOD_MS: f64 = 105.0;
 const HIT_WINDOW_BAD_MS: f64 = 155.0;
+
+fn push_camera_pos_tween(
+    session: &mut GameplayRuntimeState,
+    stage: &StageScene,
+    tx: f32,
+    ty: f32,
+    duration_sec: f32,
+    ease: &str,
+) {
+    session
+        .active_tweens
+        .retain(|t| !matches!(t.target, TweenTarget::CameraPosX | TweenTarget::CameraPosY));
+    session.active_tweens.push(ActiveTweenState {
+        tag: "__chart_cam_x".to_string(),
+        target: TweenTarget::CameraPosX,
+        start_val: stage.camera_x,
+        end_val: tx.clamp(-1000.0, 2600.0),
+        elapsed_sec: 0.0,
+        duration_sec: duration_sec.max(0.001),
+        ease: ease.to_string(),
+    });
+    session.active_tweens.push(ActiveTweenState {
+        tag: "__chart_cam_y".to_string(),
+        target: TweenTarget::CameraPosY,
+        start_val: stage.camera_y,
+        end_val: ty.clamp(-1000.0, 1800.0),
+        elapsed_sec: 0.0,
+        duration_sec: duration_sec.max(0.001),
+        ease: ease.to_string(),
+    });
+}
+
+fn push_camera_zoom_tween(
+    session: &mut GameplayRuntimeState,
+    stage: &StageScene,
+    target_zoom: f32,
+    duration_sec: f32,
+    ease: &str,
+) {
+    session
+        .active_tweens
+        .retain(|t| !matches!(t.target, TweenTarget::CameraZoom));
+    session.active_tweens.push(ActiveTweenState {
+        tag: "__chart_cam_z".to_string(),
+        target: TweenTarget::CameraZoom,
+        start_val: stage.camera_zoom,
+        end_val: target_zoom.clamp(0.35, 2.5),
+        elapsed_sec: 0.0,
+        duration_sec: duration_sec.max(0.001),
+        ease: ease.to_string(),
+    });
+}
+
+fn resolve_gf_target(stage: &StageScene) -> (f32, f32) {
+    let cam0 = stage.resolve_camera_slot_target(0, "", "");
+    if let Some(gf) = stage.entities.iter().find(|e| {
+        e.role == EntityRole::Decoration
+            && (e.id.eq_ignore_ascii_case("stage_speakers")
+                || e.id.to_ascii_lowercase().contains("gf")
+                || e.display_name.to_ascii_lowercase().contains("cabina"))
+    }) {
+        let dest_x = gf.x + gf.camera_offset[0];
+        let dest_y = gf.y + gf.camera_offset[1] - 20.0;
+        let pan = stage.camera.pan_strength.clamp(0.0, 1.0);
+        let tx = (cam0.0 + (dest_x - cam0.0) * pan).clamp(-1000.0, 2600.0);
+        let ty = (cam0.1 + (dest_y - cam0.1) * pan).clamp(-1000.0, 1800.0);
+        (tx, ty)
+    } else {
+        (cam0.0, cam0.1)
+    }
+}
+
+fn apply_chart_camera_action(
+    session: &mut GameplayRuntimeState,
+    stage: &mut StageScene,
+    action: ParsedChartCameraAction,
+) {
+    match action {
+        ParsedChartCameraAction::SelectCamera {
+            slot,
+            focus_gf,
+            offset_x,
+            offset_y,
+            zoom,
+            duration_sec,
+            ease,
+        } => {
+            session.camera_follow_lock = None;
+            session.camera_gf_override = focus_gf;
+            session.camera_offset_override = [offset_x, offset_y];
+
+            let max_slot = stage.camera.cameras.len().saturating_sub(1);
+            let target_slot = slot.unwrap_or(session.active_camera_slot).min(max_slot);
+            if slot.is_some() {
+                session.active_camera_slot = target_slot;
+            }
+
+            let (base_tx, base_ty, slot_zoom, _) = if focus_gf {
+                let (gx, gy) = resolve_gf_target(stage);
+                let (_, _, z, s) = stage.resolve_camera_slot_target(
+                    session.active_camera_slot,
+                    &session.active_player_id,
+                    &session.active_opponent_id,
+                );
+                (gx, gy, z, s)
+            } else {
+                stage.resolve_camera_slot_target(
+                    target_slot,
+                    &session.active_player_id,
+                    &session.active_opponent_id,
+                )
+            };
+
+            let tx = (base_tx + offset_x).clamp(-1000.0, 2600.0);
+            let ty = (base_ty + offset_y).clamp(-1000.0, 1800.0);
+            let z_override = zoom.map(|z| z.clamp(0.35, 2.5));
+            session.camera_slot_zoom_override = z_override;
+            let final_zoom = z_override.unwrap_or(slot_zoom);
+            stage.camera_base_zoom = final_zoom;
+
+            if duration_sec > 0.01 {
+                push_camera_pos_tween(session, stage, tx, ty, duration_sec, &ease);
+                if z_override.is_some() {
+                    push_camera_zoom_tween(session, stage, final_zoom, duration_sec, &ease);
+                }
+            } else {
+                session
+                    .active_tweens
+                    .retain(|t| !matches!(t.target, TweenTarget::CameraPosX | TweenTarget::CameraPosY));
+            }
+        }
+        ParsedChartCameraAction::FollowPos {
+            x,
+            y,
+            zoom,
+            duration_sec,
+            ease,
+        } => {
+            let cx = x.clamp(-1000.0, 2600.0);
+            let cy = y.clamp(-1000.0, 1800.0);
+            session.camera_follow_lock = Some([cx, cy]);
+            session.camera_gf_override = false;
+            session.camera_offset_override = [0.0, 0.0];
+            if let Some(z) = zoom {
+                let cz = z.clamp(0.35, 2.5);
+                session.camera_slot_zoom_override = Some(cz);
+                stage.camera_base_zoom = cz;
+                if duration_sec > 0.01 {
+                    push_camera_zoom_tween(session, stage, cz, duration_sec, &ease);
+                }
+            }
+            if duration_sec > 0.01 {
+                push_camera_pos_tween(session, stage, cx, cy, duration_sec, &ease);
+            }
+        }
+        ParsedChartCameraAction::ClearFollowPos => {
+            session.camera_follow_lock = None;
+            session.camera_offset_override = [0.0, 0.0];
+        }
+        ParsedChartCameraAction::SetZoom {
+            zoom,
+            is_direct_stage,
+            duration_sec,
+            ease,
+        } => {
+            let final_zoom = if is_direct_stage {
+                (stage.camera.base_zoom * zoom).clamp(0.35, 2.5)
+            } else {
+                zoom.clamp(0.35, 2.5)
+            };
+            session.camera_slot_zoom_override = Some(final_zoom);
+            stage.camera_base_zoom = final_zoom;
+            if duration_sec > 0.01 {
+                push_camera_zoom_tween(session, stage, final_zoom, duration_sec, &ease);
+            } else {
+                session
+                    .active_tweens
+                    .retain(|t| !matches!(t.target, TweenTarget::CameraZoom));
+                stage.camera_zoom = final_zoom;
+            }
+        }
+        ParsedChartCameraAction::AddZoomBump {
+            cam_zoom_add,
+            hud_zoom_add,
+        } => {
+            stage.camera_zoom = (stage.camera_zoom + cam_zoom_add).clamp(0.35, 2.5);
+            session.hud_zoom = (session.hud_zoom + hud_zoom_add).clamp(0.35, 2.5);
+        }
+    }
+}
+
+fn update_native_camera_follow(
+    session: &mut GameplayRuntimeState,
+    stage: &mut StageScene,
+    dt: f32,
+) {
+    let (_, _, slot_zoom, slot_smooth) = stage.resolve_camera_slot_target(
+        session.active_camera_slot,
+        &session.active_player_id,
+        &session.active_opponent_id,
+    );
+    let desired_base_zoom = session
+        .camera_slot_zoom_override
+        .unwrap_or(slot_zoom)
+        .clamp(0.35, 2.5);
+    stage.camera_base_zoom = desired_base_zoom;
+
+    if stage.camera.enabled {
+        let pos_tween_active = session
+            .active_tweens
+            .iter()
+            .any(|t| matches!(t.target, TweenTarget::CameraPosX | TweenTarget::CameraPosY));
+        if !pos_tween_active {
+            let (target_x, target_y) = if let Some([lx, ly]) = session.camera_follow_lock {
+                (lx, ly)
+            } else if session.camera_gf_override {
+                let (gx, gy) = resolve_gf_target(stage);
+                (
+                    (gx + session.camera_offset_override[0]).clamp(-1000.0, 2600.0),
+                    (gy + session.camera_offset_override[1]).clamp(-1000.0, 1800.0),
+                )
+            } else {
+                let (tx, ty, _, _) = stage.resolve_camera_slot_target(
+                    session.active_camera_slot,
+                    &session.active_player_id,
+                    &session.active_opponent_id,
+                );
+                (
+                    (tx + session.camera_offset_override[0]).clamp(-1000.0, 2600.0),
+                    (ty + session.camera_offset_override[1]).clamp(-1000.0, 1800.0),
+                )
+            };
+            let lerp_t = (dt * slot_smooth.clamp(1.0, 20.0)).min(1.0);
+            stage.camera_x += (target_x - stage.camera_x) * lerp_t;
+            stage.camera_y += (target_y - stage.camera_y) * lerp_t;
+        }
+    }
+
+    let zoom_tween_active = session
+        .active_tweens
+        .iter()
+        .any(|t| matches!(t.target, TweenTarget::CameraZoom));
+    if !zoom_tween_active {
+        stage.camera_zoom += (desired_base_zoom - stage.camera_zoom) * (dt * 6.0).min(1.0);
+    }
+
+    let hud_zoom_tween_active = session
+        .active_tweens
+        .iter()
+        .any(|t| matches!(t.target, TweenTarget::HudProp { ref prop } if prop == "zoom"));
+    if !hud_zoom_tween_active {
+        session.hud_zoom += (1.0 - session.hud_zoom) * (dt * 6.0).min(1.0);
+    }
+
+    stage.camera_shake *= (1.0 - dt * 10.0).max(0.0);
+}
 
 pub(super) struct StepSimOutput {
     pub song_pos_ms: f64,
@@ -387,7 +646,8 @@ impl EngineSession {
         let beat_phase = (song_pos_ms.rem_euclid(beat_ms) / beat_ms) as f32;
         let current_beat = (song_pos_ms / beat_ms).floor() as i32;
         let current_step = (song_pos_ms / step_ms).floor() as i32;
-        let must_hit_now = self.project.chart.must_hit_at_ms(song_pos_ms.max(0.0));
+        let (sec_idx, must_hit_now, gf_section_now, section_cam_slot) =
+            self.project.chart.camera_state_at_ms(song_pos_ms.max(0.0));
 
         let (countdown_stage, countdown_label, countdown_progress) = if in_countdown {
             let cd_beat_ms = 60_000.0 / self.project.chart.bpm.max(40.0);
@@ -489,6 +749,42 @@ impl EngineSession {
                 session.next_preload_event_idx += 1;
             }
 
+            if !in_countdown {
+                if sec_idx as isize != session.last_section_idx {
+                    session.last_section_idx = sec_idx as isize;
+                    if let Some(explicit_slot) = section_cam_slot {
+                        let max_slot = self.project.stage.camera.cameras.len().saturating_sub(1);
+                        session.active_camera_slot = explicit_slot.min(max_slot);
+                        session.camera_follow_lock = None;
+                        session.camera_gf_override = false;
+                        session.camera_offset_override = [0.0, 0.0];
+                        session.camera_slot_zoom_override = None;
+                    } else if self.project.stage.camera.follow_mode == CameraFollowMode::ChartSections
+                    {
+                        session.camera_gf_override = gf_section_now;
+                        session.camera_offset_override = [0.0, 0.0];
+                        session.camera_slot_zoom_override = None;
+                        if !gf_section_now {
+                            session.active_camera_slot = if must_hit_now { 1 } else { 2 };
+                        }
+                    }
+                }
+                if self.project.stage.camera.follow_mode == CameraFollowMode::BeatsInterval
+                    && section_cam_slot.is_none()
+                    && session.camera_follow_lock.is_none()
+                {
+                    let interval = self.project.stage.camera.follow_interval_beats.max(1) as i32;
+                    let bucket = current_beat.div_euclid(interval);
+                    if bucket != session.last_cam_beat_bucket {
+                        session.last_cam_beat_bucket = bucket;
+                        session.active_camera_slot = if bucket.rem_euclid(2) == 0 { 2 } else { 1 };
+                        session.camera_gf_override = false;
+                        session.camera_offset_override = [0.0, 0.0];
+                        session.camera_slot_zoom_override = None;
+                    }
+                }
+            }
+
             sync_script_host_state(
                 &session.runtime.state,
                 &self.project.stage,
@@ -500,6 +796,8 @@ impl EngineSession {
                 song_pos_ms,
                 active_bpm,
                 must_hit_now,
+                gf_section_now,
+                session.active_camera_slot,
                 session.health,
                 session.score,
                 session.combo,
@@ -526,6 +824,11 @@ impl EngineSession {
                 let ev = &self.project.chart.events[session.next_event_idx];
                 if song_pos_ms < ev.time_ms {
                     break;
+                }
+                if let Some(cam_action) =
+                    parse_chart_camera_event(&ev.name, &ev.value1, &ev.value2, active_bpm)
+                {
+                    apply_chart_camera_action(session, &mut self.project.stage, cam_action);
                 }
                 session
                     .runtime
@@ -566,10 +869,7 @@ impl EngineSession {
                 &self.audio_engine,
             );
 
-            let target_base_zoom = self.project.stage.camera_base_zoom.clamp(0.35, 2.5);
-            self.project.stage.camera_zoom +=
-                (target_base_zoom - self.project.stage.camera_zoom) * (dt * 6.0);
-            self.project.stage.camera_shake *= (1.0 - dt * 10.0).max(0.0);
+            update_native_camera_follow(session, &mut self.project.stage, dt);
 
             let (p_hold, o_hold, any_recent_miss, triggered_instakill) = process_chart_notes(
                 session,

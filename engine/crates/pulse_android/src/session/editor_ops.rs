@@ -19,8 +19,8 @@ use pulse_core::svg_skin::{
     ArrowSkinSet, default_hurt_arrow_x_svg, import_arrow_sparrow_atlas, rasterize_svg_str,
 };
 use pulse_core::{
-    CameraFollowMode, ChartData, EntityRole, NoteDirection, ScriptAsset, ScriptLanguage,
-    StageCameraConfig, StageEntity,
+    CameraFollowMode, CameraTargetKind, ChartData, EntityRole, NoteDirection, ScriptAsset,
+    ScriptLanguage, StageCameraConfig, StageEntity,
 };
 use pulse_scripting::validate_script_syntax;
 use std::io::Cursor;
@@ -133,6 +133,21 @@ impl EngineSession {
         self.project.chart.toggle_section_must_hit(sec_index);
         self.save_active_project_now();
         self.ok_response("Foco de sección actualizado")
+    }
+
+    pub fn set_section_camera_slot(&mut self, sec_index: usize, camera_slot: i32) -> String {
+        let slot_opt = if camera_slot < 0 {
+            None
+        } else {
+            Some(camera_slot as usize)
+        };
+        self.project.chart.set_section_camera_slot(sec_index, slot_opt);
+        self.save_active_project_now();
+        let label = match slot_opt {
+            None => "Automático (mustHit / gfSection)".to_string(),
+            Some(s) => format!("Cam {}", s),
+        };
+        self.ok_response(format!("Sección {} asignada a {}", sec_index + 1, label))
     }
 
     pub fn toggle_chart_note(
@@ -331,6 +346,22 @@ impl EngineSession {
         self.ok_response("Orden Z actualizado")
     }
 
+    fn sync_camera_lua_script(&mut self) {
+        self.project.ensure_camera_script();
+        let applied_cfg = self.project.stage.camera.clone();
+        if let Some(cam_script) = self
+            .project
+            .scripts
+            .iter_mut()
+            .find(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME)
+        {
+            cam_script.enabled = applied_cfg.enabled;
+            cam_script.source_code =
+                render_camera_lua_script(&applied_cfg, Some(&cam_script.source_code));
+            cam_script.precompiled_bytecode = None;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_stage_camera(
         &mut self,
@@ -344,29 +375,19 @@ impl EngineSession {
         pan_strength: f32,
         commit_save: bool,
     ) -> String {
-        let cfg = StageCameraConfig {
-            enabled,
-            base_x,
-            base_y,
-            base_zoom,
-            follow_mode: CameraFollowMode::from_str_loose(follow_mode_key),
-            follow_interval_beats: follow_interval_beats.clamp(1, 32) as u32,
-            smooth_speed,
-            pan_strength,
-        };
+        let mut cfg = self.project.stage.camera.clone();
+        cfg.enabled = enabled;
+        cfg.base_x = base_x;
+        cfg.base_y = base_y;
+        cfg.base_zoom = base_zoom;
+        cfg.follow_mode = CameraFollowMode::from_str_loose(follow_mode_key);
+        cfg.follow_interval_beats = follow_interval_beats.clamp(1, 32) as u32;
+        cfg.smooth_speed = smooth_speed;
+        cfg.pan_strength = pan_strength;
+        cfg.sync_slot0_from_base();
         self.project.stage.apply_camera_config(cfg);
-        self.project.ensure_camera_script();
-
-        let applied_cfg = self.project.stage.camera.clone();
-        if let Some(cam_script) = self
-            .project
-            .scripts
-            .iter_mut()
-            .find(|s| s.id == CAMERA_SCRIPT_ID || s.name == CAMERA_SCRIPT_NAME)
-        {
-            cam_script.enabled = applied_cfg.enabled;
-            cam_script.source_code =
-                render_camera_lua_script(&applied_cfg, Some(&cam_script.source_code));
+        if commit_save {
+            self.sync_camera_lua_script();
         }
 
         self.mark_dirty_and_maybe_save(commit_save);
@@ -375,6 +396,118 @@ impl EngineSession {
         } else {
             "{\"ok\":true,\"message\":\"Cámara actualizada\",\"data\":null}".to_string()
         }
+    }
+
+    pub fn select_stage_camera(&mut self, slot_index: usize) -> String {
+        self.project.stage.camera.ensure_default_cameras();
+        let max_idx = self.project.stage.camera.cameras.len().saturating_sub(1);
+        let idx = slot_index.min(max_idx);
+        self.project.stage.camera.active_camera_index = idx;
+        let (rx, ry, rzoom, _) = self.project.stage.resolve_camera_slot_target(idx, "", "");
+        self.project.stage.camera_x = rx;
+        self.project.stage.camera_y = ry;
+        self.project.stage.camera_base_zoom = rzoom;
+        self.project.stage.camera_zoom = rzoom;
+        self.sync_camera_lua_script();
+        self.mark_dirty_and_maybe_save(true);
+        self.ok_response(format!("Previsualizando Cam {}", idx))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_camera_slot(
+        &mut self,
+        slot_index: usize,
+        name: &str,
+        target_kind_key: &str,
+        target_entity_id: &str,
+        x: f32,
+        y: f32,
+        zoom: f32,
+        smooth_speed: f32,
+        pan_strength: f32,
+        commit_save: bool,
+    ) -> String {
+        let kind = CameraTargetKind::from_str_loose(target_kind_key);
+        let entity_opt = if target_entity_id.trim().is_empty() {
+            None
+        } else {
+            Some(target_entity_id.trim().to_string())
+        };
+        if !self.project.stage.update_camera_slot(
+            slot_index,
+            name,
+            kind,
+            entity_opt,
+            x,
+            y,
+            zoom,
+            smooth_speed,
+            pan_strength,
+        ) {
+            return self.err_response("Ranura de cámara no encontrada");
+        }
+        if commit_save {
+            self.sync_camera_lua_script();
+        }
+        self.mark_dirty_and_maybe_save(commit_save);
+        if commit_save {
+            self.ok_response(format!("Cam {} actualizada", slot_index))
+        } else {
+            "{\"ok\":true,\"message\":\"Camara actualizada\",\"data\":null}".to_string()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_custom_camera(
+        &mut self,
+        name: &str,
+        target_kind_key: &str,
+        target_entity_id: &str,
+        x: f32,
+        y: f32,
+        zoom: f32,
+        smooth_speed: f32,
+        pan_strength: f32,
+    ) -> String {
+        let kind = CameraTargetKind::from_str_loose(target_kind_key);
+        let entity_opt = if target_entity_id.trim().is_empty() {
+            None
+        } else {
+            Some(target_entity_id.trim().to_string())
+        };
+        let new_idx = self.project.stage.add_custom_camera(
+            name,
+            kind,
+            entity_opt,
+            x,
+            y,
+            zoom,
+            smooth_speed,
+            pan_strength,
+        );
+        self.sync_camera_lua_script();
+        self.save_active_project_now();
+        self.ok_response(format!("Nueva cámara Cam {} añadida", new_idx))
+    }
+
+    pub fn remove_custom_camera(&mut self, slot_index: usize) -> String {
+        if !self.project.stage.remove_custom_camera(slot_index) {
+            return self.err_response(
+                "Cam 0, Cam 1 y Cam 2 son cámaras base; solo puedes eliminar Cam 3 o superiores",
+            );
+        }
+        for sec in &mut self.project.chart.sections {
+            if let Some(s) = sec.camera_slot {
+                if s == slot_index {
+                    sec.camera_slot = None;
+                } else if s > slot_index {
+                    sec.camera_slot = Some(s - 1);
+                }
+            }
+        }
+        self.sync_camera_lua_script();
+        self.save_active_project_now();
+        self.ok_response(format!("Cámara Cam {} eliminada", slot_index))
     }
 
     /// Importa un archivo de escenario (`stages/*.json` o `stages/*.xml`) para ubicar
@@ -402,6 +535,7 @@ impl EngineSession {
                 cam_cfg.base_y = cy.clamp(-1000.0, 1800.0);
             }
         }
+        cam_cfg.sync_slot0_from_base();
         self.project.stage.apply_camera_config(cam_cfg);
         self.project.ensure_camera_script();
         let applied_cfg = self.project.stage.camera.clone();

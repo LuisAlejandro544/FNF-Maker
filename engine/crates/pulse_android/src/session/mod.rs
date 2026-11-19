@@ -5,8 +5,8 @@
 //! - `editor_ops`: Edición de charts, audio, escenario, scripts y skins SVG.
 //! - `sprite_ops`: Carga de texturas `.png`/`.astc`, XML Sparrow y horneado Adobe Animate.
 //! - `gameplay_ops`: Compilación en caliente (`rayon`) y simulación frame a frame con cuenta regresiva BPM.
-
 //! - `persistence_ops`: Persistencia automática instantánea en `filesDir` y menú de proyectos.
+//! - Espejo `flip_x`: intercambia `Left <-> Right` y `MissLeft <-> MissRight` al disparar notas.
 
 pub mod dto;
 pub mod editor_ops;
@@ -20,8 +20,8 @@ pub use dto::{
     ChartEventJson, ChartSectionSnapshotJson, ChartSnapshotJson, CompileReportJson,
     DynamicDrawableState, DynamicScriptItemJson, GameplayEntityFrameJson, GameplayRuntimeState,
     GameplayStepJson, ProjectSnapshotJson, ProjectSummaryJson, ScriptSnapshotJson,
-    SparrowFrameJson, StageEntitySnapshotJson, StrumOverrideJson, StrumOverrideState,
-    TweenTarget, VisibleNoteJson,
+    SparrowFrameJson, StageCameraSlotSnapshotJson, StageEntitySnapshotJson, StrumOverrideJson,
+    StrumOverrideState, TweenTarget, VisibleNoteJson,
 };
 
 use pulse_audio::{AudioEngineHandle, DecodedTrack};
@@ -247,6 +247,59 @@ pub(super) fn dir_to_miss_anim(dir: NoteDirection) -> CharacterAnimKind {
     }
 }
 
+/// Detecta si un descriptor externo (`character.json`/`<character>.xml`) con `flip_x = true`
+/// ya asignó explícitamente prefijos invertidos (`singLEFT` -> `*right*`, `singRIGHT` -> `*left*`)
+/// para evitar invertir las direcciones dos veces.
+pub(super) fn has_pre_swapped_flip_descriptor(ent: &StageEntity) -> bool {
+    let desc_wants_flip = ent
+        .pending_character_desc
+        .as_ref()
+        .and_then(|d| d.flip_x)
+        == Some(true);
+    if !desc_wants_flip {
+        return false;
+    }
+    let Some(atlas) = ent.atlas.as_ref() else {
+        return false;
+    };
+    let left_pref = atlas
+        .bindings
+        .get(&CharacterAnimKind::Left)
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let right_pref = atlas
+        .bindings
+        .get(&CharacterAnimKind::Right)
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let left_points_right = (left_pref.contains("right") || left_pref.contains("der"))
+        && !left_pref.contains("left")
+        && !left_pref.contains("izq");
+    let right_points_left = (right_pref.contains("left") || right_pref.contains("izq"))
+        && !right_pref.contains("right")
+        && !right_pref.contains("der");
+    left_points_right && right_points_left
+}
+
+/// Resuelve la animación horizontal correcta cuando la entidad está volteada (`flip_x == true`):
+/// al reflejar el sprite en pantalla, la pose `Left` se ve inclinada hacia la derecha y viceversa,
+/// por lo que intercambiamos `Left <-> Right` y `MissLeft <-> MissRight`.
+pub(super) fn resolve_anim_for_entity_flip(
+    ent: &StageEntity,
+    anim: CharacterAnimKind,
+) -> CharacterAnimKind {
+    if !ent.flip_x || has_pre_swapped_flip_descriptor(ent) {
+        return anim;
+    }
+    match anim {
+        CharacterAnimKind::Left => CharacterAnimKind::Right,
+        CharacterAnimKind::Right => CharacterAnimKind::Left,
+        CharacterAnimKind::MissLeft => CharacterAnimKind::MissRight,
+        CharacterAnimKind::MissRight => CharacterAnimKind::MissLeft,
+        other => other,
+    }
+}
+
 pub(super) fn trigger_character_anim(
     entities: &mut [StageEntity],
     role: EntityRole,
@@ -257,7 +310,7 @@ pub(super) fn trigger_character_anim(
     if !active_id.is_empty() {
         for ent in entities.iter_mut() {
             if ent.id == active_id {
-                ent.active_anim = anim;
+                ent.active_anim = resolve_anim_for_entity_flip(ent, anim);
                 ent.anim_timer_sec = 0.0;
                 matched_active = true;
             }
@@ -266,7 +319,7 @@ pub(super) fn trigger_character_anim(
     if !matched_active {
         for ent in entities.iter_mut() {
             if ent.role == role && ent.visible {
-                ent.active_anim = anim;
+                ent.active_anim = resolve_anim_for_entity_flip(ent, anim);
                 ent.anim_timer_sec = 0.0;
             }
         }
@@ -276,6 +329,7 @@ pub(super) fn trigger_character_anim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pulse_core::SparrowAtlas;
 
     #[test]
     fn engine_session_hot_compile_and_gameplay_step_work() {
@@ -292,5 +346,71 @@ mod tests {
 
         let receptor_png = session.rasterize_receptor_png_bytes(0);
         assert!(receptor_png.starts_with(&[0x89, b'P', b'N', b'G']));
+    }
+
+    #[test]
+    fn flip_x_swaps_horizontal_note_and_miss_anims_without_affecting_vertical() {
+        let mut ent = StageEntity::new("opponent_main", "Rival", EntityRole::Opponent);
+        ent.flip_x = false;
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Left),
+            CharacterAnimKind::Left
+        );
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::MissRight),
+            CharacterAnimKind::MissRight
+        );
+
+        ent.flip_x = true;
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Left),
+            CharacterAnimKind::Right
+        );
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Right),
+            CharacterAnimKind::Left
+        );
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::MissLeft),
+            CharacterAnimKind::MissRight
+        );
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::MissRight),
+            CharacterAnimKind::MissLeft
+        );
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Up),
+            CharacterAnimKind::Up
+        );
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Down),
+            CharacterAnimKind::Down
+        );
+
+        // Si el JSON de personaje con flip_x ya pre-asignó singLEFT -> Right y singRIGHT -> Left, no duplicar inversión
+        let xml = r#"
+        <TextureAtlas imagePath="pico.png">
+            <SubTexture name="Pico Idle Dance0000" x="0" y="0" width="100" height="100" />
+            <SubTexture name="Pico NOTE LEFT0000" x="100" y="0" width="100" height="100" />
+            <SubTexture name="Pico Note Right0000" x="200" y="0" width="100" height="100" />
+        </TextureAtlas>
+        "#;
+        ent.atlas = Some(SparrowAtlas::from_xml_str(xml).unwrap());
+        let desc = pulse_core::mod_descriptors::parse_character_descriptor_str(
+            r#"{
+                "flip_x": true,
+                "animations": [
+                    { "anim": "idle", "name": "Pico Idle Dance" },
+                    { "anim": "singLEFT", "name": "Pico Note Right" },
+                    { "anim": "singRIGHT", "name": "Pico NOTE LEFT" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        ent.apply_character_descriptor(&desc, false);
+        assert_eq!(
+            resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Left),
+            CharacterAnimKind::Left
+        );
     }
 }

@@ -64,6 +64,7 @@ fun ChartScreen(
     onOpenUiBlackoutScript: () -> Unit,
     onAddSection: (mustHit: Boolean) -> Unit,
     onToggleSectionMustHit: (secIndex: Int) -> Unit,
+    onSetSectionCameraSlot: (secIndex: Int, cameraSlot: Int?) -> Unit,
     onToggleChartNote: (secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int, noteType: String) -> Unit,
     onSetAudioPreviewTransport: (play: Boolean, seekMs: Double) -> Unit,
     onReadAudioPreviewState: suspend () -> AudioPreviewTransportState
@@ -259,6 +260,7 @@ fun ChartScreen(
         ChartTimelineGrid(
             rows = rows,
             listState = listState,
+            stageCamera = snapshot.stageCamera,
             selectedSustainSteps = selectedSustainSteps,
             audioPreviewPlaying = audioPreviewPlaying,
             playheadState = playheadState,
@@ -268,6 +270,7 @@ fun ChartScreen(
             onScrubPlayheadMs = scrubPlayheadMs,
             onSeekPlayheadAndPauseOrKeep = seekPlayheadToStepMs,
             onToggleSectionMustHit = onToggleSectionMustHit,
+            onSetSectionCameraSlot = onSetSectionCameraSlot,
             onSelectSection = { selectedSectionIdx = it },
             onToggleChartNote = { sec, step, col, sustain ->
                 onToggleChartNote(sec, step, col, sustain, selectedNoteType.key)
@@ -293,6 +296,7 @@ fun ChartScreen(
         ChartStepCueDialog(
             stepRow = activeCueStepRow,
             entities = snapshot.stageEntities,
+            stageCamera = snapshot.stageCamera,
             onAddChartEvent = onAddChartEvent,
             onRemoveChartEvent = onRemoveChartEvent,
             onMovePlayheadHere = seekPlayheadToStepMs,
