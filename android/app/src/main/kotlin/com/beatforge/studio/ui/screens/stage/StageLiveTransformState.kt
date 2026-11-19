@@ -137,6 +137,14 @@ class StageLiveTransformState {
         scale = nextScale.coerceIn(0.1f, 5.0f)
     }
 
+    fun updateScale(nextScale: Float) {
+        scale = nextScale.coerceIn(0.1f, 5.0f)
+    }
+
+    fun updateOpacity(nextOpacity: Float) {
+        opacity = nextOpacity.coerceIn(0f, 1f)
+    }
+
     fun updateCameraSlotTransform(
         camera: StageCameraSnapshot,
         slot: StageCameraSlotSnapshot,

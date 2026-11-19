@@ -12,7 +12,7 @@ use pulse_core::mod_descriptors::{
     DetectedModDescriptor, parse_character_descriptor_str, parse_mod_descriptor_str,
 };
 use pulse_core::sparrow::CharacterAnimKind;
-use pulse_core::{EntityRole, SparrowAtlas};
+use pulse_core::SparrowAtlas;
 use std::path::PathBuf;
 
 impl EngineSession {
