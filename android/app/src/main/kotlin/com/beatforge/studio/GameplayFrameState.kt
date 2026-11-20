@@ -43,6 +43,8 @@ data class GameplayHudState(
     val hudVisible: Boolean = true,
     val hudOpacity: Float = 1f,
     val hudZoom: Float = 1f,
+    val arrowsVisible: Boolean = true,
+    val arrowsOpacity: Float = 1f,
     val activePlayerIdx: Int = -1,
     val activeOpponentIdx: Int = -1,
     val scriptError: String = "",
@@ -389,6 +391,8 @@ class GameplayFrameState {
             hudVisible = step.hudVisible,
             hudOpacity = step.hudOpacity,
             hudZoom = step.hudZoom,
+            arrowsVisible = step.arrowsVisible,
+            arrowsOpacity = step.arrowsOpacity,
             activePlayerIdx = step.activePlayerIdx,
             activeOpponentIdx = step.activeOpponentIdx,
             scriptError = cachedScriptError,
@@ -570,6 +574,8 @@ class GameplayFrameState {
         val prevHudOp = (prev.hudOpacity * 50f).toInt()
         val quantizedHudZoom = (hudZoomVal * 100f).toInt()
         val prevHudZoom = (prev.hudZoom * 100f).toInt()
+        val quantizedArrowsOp = (arrowsOpacity * 50f).toInt()
+        val prevArrowsOp = (prev.arrowsOpacity * 50f).toInt()
         val countdownAnimating = cdStage in 0..3 && !paused && !finished && !gameOver
 
         val hudNeedsUpdate = hasHudStrings ||
@@ -588,12 +594,14 @@ class GameplayFrameState {
             prev.misses != missesVal ||
             prev.hits != hitsVal ||
             prev.hudVisible != hudVisible ||
+            prev.arrowsVisible != arrowsVisible ||
             prev.activePlayerIdx != activePlayerIdx ||
             prev.activeOpponentIdx != activeOpponentIdx ||
             prevHealth != quantizedHealth ||
             prevAcc != quantizedAcc ||
             prevHudOp != quantizedHudOp ||
             prevHudZoom != quantizedHudZoom ||
+            prevArrowsOp != quantizedArrowsOp ||
             countdownAnimating
 
         if (hudNeedsUpdate) {
@@ -622,6 +630,8 @@ class GameplayFrameState {
                 hudVisible = hudVisible,
                 hudOpacity = hudOpVal,
                 hudZoom = hudZoomVal,
+                arrowsVisible = arrowsVisible,
+                arrowsOpacity = arrowsOpacity,
                 activePlayerIdx = activePlayerIdx,
                 activeOpponentIdx = activeOpponentIdx,
                 scriptError = cachedScriptError,
