@@ -25,7 +25,14 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │   ├── Cargo.toml
 │       │   └── src/
 │       │       ├── lib.rs               # Exportaciones públicas y pruebas unitarias Rust
-│       │       ├── chart.rs             # Parser y exportador universal `chart.json` (`cameraSlot` por sección, `parse_chart_camera_event` V-Slice/Psych/Codename, notas especiales `Hurt`/`Instakill`/`Dodge`, eventos)
+│       │       ├── chart/               # Parser, editor y serializador universal `chart.json` modularizado
+│       │       │   ├── mod.rs           # Reexportaciones públicas del módulo `chart`
+│       │       │   ├── models.rs        # Tipos de chart, notas especiales (`Hurt`/`Instakill`/`Dodge`), secciones (`cameraSlot`) y eventos
+│       │       │   ├── editor.rs        # Helpers y mutadores del editor de chart (`toggle_note`, BPM, secciones)
+│       │       │   ├── parser.rs        # Parsers de formatos `chart.json` (Psych, V-Slice, Codename y eventos)
+│       │       │   ├── serializer.rs    # Exportación universal limpia a `chart.json`
+│       │       │   ├── camera_events.rs # Parser de eventos de cámara (`parse_chart_camera_event` V-Slice/Psych/Codename)
+│       │       │   └── tests.rs         # Pruebas unitarias de parsing, serialización y eventos de cámara
 │       │       ├── sparrow.rs           # Lector XML Sparrow, centrado universal (`normalize_and_center_animations`) y auto-armado de Idle/Direcciones + Miss + Death
 │       │       ├── astc_loader.rs       # Decodificador puro Rust `.astc` (`texture2ddecoder`) y codificador WebP lossless (`save_lossless_webp`)
 │       │       ├── atlas_json/          # Lectores `.json` y baker `Animation.json` divididos modularmente (con centrado unificado por defecto)
@@ -38,11 +45,23 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── mod_descriptors.rs   # Parsers `.json`/`.xml` de personaje (`characters/*`) y escenario (`stages/*`: Psych/V-Slice/Codename)
 │       │       ├── svg_skin.rs          # Flechas (incl. nota X `default_hurt_arrow_x_svg`), importador `NOTE_assets.png+.xml`, barra, íconos, ratings y Note Splash SVG vía resvg
 │       │       ├── gfx_backend.rs       # Tipos base `RenderBackendKind` (`Canvas2d`/`Gles2`/`Gles3`/`Vulkan`) y `GfxCapabilities`
-│       │       ├── project.rs           # Modelo ModProject (incl. `render_backend`), `camera_system.lua` V2 (`-- [CAM_RUNTIME_V2]`) y `stage_events.lua`
+│       │       ├── project/             # Modelo `ModProject` y generadores de scripts Lua predeterminados
+│       │       │   ├── mod.rs           # Reexportaciones públicas del módulo `project`
+│       │       │   ├── models.rs        # Estructuras `ModProject`, metadatos, pistas de audio y `render_backend`
+│       │       │   ├── lua_helpers.rs   # Utilidades compartidas de formato e interpolación para plantillas Lua
+│       │       │   ├── camera_lua.rs    # Generador `camera_system.lua` V2 (`-- [CAM_RUNTIME_V2]`)
+│       │       │   ├── stage_events_lua.rs # Generador `stage_events.lua` para eventos de escenario y cámara
+│       │       │   └── ui_blackout_lua.rs  # Generador `ui_blackout.lua` para apagones e intro HUD (`3-2-1-GO`)
 │       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
 │       │       ├── script_optimizer.rs  # Poda segura preservando API completa (flashes, swap, preload/retire, personaje)
 │       │       ├── atlas_repack.rs      # Optimizador y reempaquetador (`crunch`): alpha-trim, frames muertos `(0,0) 1x1`, deduplicación exacta y poda segura
-│       │       ├── hot_compile.rs       # Compilación incremental (`HotCompileManifest` v4, FNV-1a, WebP lossless, reuso de `repacked_atlas` y preservación Full HD en fondos)
+│       │       ├── hot_compile/         # Compilación incremental modularizada (`HotCompileManifest` v4)
+│       │       │   ├── mod.rs           # Orquestación pública y reexportaciones de compilación en caliente
+│       │       │   ├── fingerprints.rs  # Huellas FNV-1a de texturas, audio, scripts y configuración
+│       │       │   ├── manifest.rs      # Lectura/escritura atómica de `HotCompileManifest` v4 en disco
+│       │       │   ├── analysis.rs      # Planificación de cambios incrementales y detección de reuso (`repacked_atlas`)
+│       │       │   ├── pipeline.rs      # Conversión WebP lossless, preservación Full HD de fondos, caché `.bfaud`/`.luac` y reporte
+│       │       │   └── tests.rs         # Pruebas unitarias de huellas, invalidación y pipeline incremental
 │       │       ├── disk_cache.rs        # Presupuestos 65%/35% por cuota del sistema, limpieza plana heredada y desalojo LRU en disco
 │       │       └── vanilla.rs           # Contenedor portátil Vanilla (`.mod`) con Zstandard, PNG->WebP lossless, dedup y FNV-1a
 │       │
@@ -61,15 +80,32 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │   └── src/
 │       │       ├── lib.rs               # ModScriptRuntime, `precompile_scripts_with_cache` (`.luac`/`.js`), hooks (`onGameOver`, `noteType`) y validador
 │       │       ├── bridge.rs            # Cola thread-safe de ScriptCommand (multicámara, modcharts, flashes, Game Over, swap/RAM, personaje, tweens, HUD/audio)
-│       │       ├── lua_vm.rs            # VM Lua 5.4 (mlua) con `precompile_bytecode`, API completa (incl. `switchCamera`, `setCameraFollowPos`, `getGfSection`) y watchdog
+│       │       ├── lua_vm/              # VM Lua 5.4 (`mlua`) modularizada por categoría de API
+│       │       │   ├── mod.rs           # Inicialización Lua 5.4, `precompile_bytecode`, ejecución de hooks y watchdog
+│       │       │   ├── bindings_world.rs  # Bindings Lua de cámara (`switchCamera`, `setCameraFollowPos`, `getGfSection`), escenario y sprites
+│       │       │   ├── bindings_hud_fx.rs # Bindings Lua de HUD, flashes, UI blackout, tweens, notas especiales, Game Over y audio
+│       │       │   └── tests.rs         # Pruebas unitarias de ejecución Lua y watchdog
 │       │       ├── ts_transpiler.rs     # Compilador TS -> ES2022 JS y validador de sintaxis (`validate_js_syntax`) vía oxc 0.158
-│       │       └── js_vm.rs             # VM ES2022 (rquickjs) con API completa multicámara y `set_interrupt_handler` watchdog (250ms/25ms)
+│       │       └── js_vm/               # VM ES2022 (`rquickjs`) modularizada con worker dedicado
+│       │           ├── mod.rs           # Interfaz pública `JsVm` y despacho hacia el worker QuickJS-NG
+│       │           ├── bindings_world.rs  # Bindings JS de cámara multicámara, escenario, personaje y sprites
+│       │           ├── bindings_hud_fx.rs # Bindings JS de HUD, flashes, UI blackout, tweens, Game Over y audio
+│       │           ├── worker.rs        # Hilo worker `rquickjs` con `set_interrupt_handler` watchdog (250ms/25ms)
+│       │           └── tests.rs         # Pruebas unitarias de VM JS/TS y límites del watchdog
 │       │
 │       └── pulse_android/               # Puente nativo Android (`libpulse_android.so`)
 │           ├── Cargo.toml               # Crate cdylib + rlib con jni, android_logger, serde_json e image
 │           ├── build.rs                 # Script de compilación limpio (sin C++ ni GameActivity)
 │           └── src/
-│               ├── lib.rs               # Exportaciones JNI (multicámara `Cam 0..3+`, `section.cameraSlot`, Game Over, Debug Botplay/Práctica, Arrow Atlas y `gfx` probe)
+│               ├── lib.rs               # Punto de entrada crate `pulse_android`: estado global `SESSION`, `JNI_OnLoad` y registro modular
+│               ├── jni/                 # Puentes JNI (`Java_com_beatforge_studio_NativeEngineBridge_*`) separados por dominio
+│               │   ├── mod.rs           # Registro de submódulos JNI (activado bajo `target_os = "android"`)
+│               │   ├── project_ops.rs   # JNI de ciclo de vida del motor, proyectos, caché y exportación Vanilla `.mod`
+│               │   ├── chart_ops.rs     # JNI de chart, secciones (`cameraSlot`), notas especiales, eventos y metadata JSON
+│               │   ├── audio_ops.rs     # JNI de pistas de audio, formas de onda, volumen/mute y reproducción del editor
+│               │   ├── stage_sprite_ops.rs # JNI de escenario, multicámara (`Cam 0..3+`), sprites Sparrow/Animate y offsets
+│               │   ├── script_skin_ops.rs  # JNI de scripts Lua/TS/JS, flechas SVG/`NOTE_assets`, íconos y barra de vida
+│               │   └── gameplay_gfx_ops.rs # JNI de compilación incremental, simulación gameplay `BFGP` v2, debug y probe GPU (`gfx`)
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
 │                   ├── dto.rs           # DTOs hacia Kotlin (incl. `StageCameraSlotSnapshotJson`, `cameraSlot`, `clamp_to_background`, `repacked_entity_ids`, `render_backend`, `anim_offsets`)
