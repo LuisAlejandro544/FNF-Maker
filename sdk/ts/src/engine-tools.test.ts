@@ -95,6 +95,9 @@ import {
   defaultStageCameraSlots,
   resolveCameraSlotTarget,
   parseChartCameraEvent,
+  computeBackgroundBounds,
+  clampCameraToBackground,
+  optimizeSparrowAtlasPlan,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -1937,6 +1940,303 @@ test('chart.json preserves section.cameraSlot and parseChartCameraEvent handles 
   assert.equal(loopRes.neutralizedLoops, 1);
   assert.ok(loopRes.optimizedSource.includes('switchCamera'));
 });
+
+test('camera clamping keeps viewport inside background bounds and Hot Compile preserves Full HD backgrounds', () => {
+  const bgEntities = [
+    {
+      id: 'stage_bg',
+      role: 'background' as const,
+      x: 640,
+      y: 360,
+      width: 1280,
+      height: 720,
+      scale: 1,
+      opacity: 1,
+      visible: true,
+    },
+    {
+      id: 'opponent_main',
+      role: 'opponent' as const,
+      x: 120,
+      y: 420,
+      visible: true,
+    },
+    {
+      id: 'player_main',
+      role: 'player' as const,
+      x: 1160,
+      y: 420,
+      visible: true,
+    },
+  ];
+
+  const bounds = computeBackgroundBounds(bgEntities);
+  assert.deepEqual(bounds, [0, 0, 1280, 720]);
+
+  const slots = defaultStageCameraSlots(640, 360, 1.0, 6.0).map((s) =>
+    s.index === 2 ? { ...s, zoom: 1.25 } : s,
+  );
+  const clampedCfg = {
+    enabled: true,
+    baseX: 640,
+    baseY: 360,
+    baseZoom: 1.0,
+    followMode: 'sections' as const,
+    followIntervalBeats: 4,
+    smoothSpeed: 6.0,
+    panStrength: 1.0,
+    clampToBackground: true,
+    cameras: slots,
+  };
+
+  // Zoom 1.25 -> halfVw = 640 / 1.25 = 512, así que Cam 2 (enemigo en X=120) se detiene en X=512 sin bordes negros
+  const clampedOpp = resolveCameraSlotTarget({ camera: clampedCfg, entities: bgEntities, slotIndex: 2 });
+  assert.equal(clampedOpp.x, 512);
+  assert.ok(clampedOpp.y >= 288 && clampedOpp.y <= 432);
+
+  // Zoom-out mayor que el tamaño del fondo centra la cámara en el punto medio del fondo (640, 360)
+  const zoomedOut = clampCameraToBackground({ x: 180, y: 120, zoom: 0.75, bounds });
+  assert.deepEqual(zoomedOut, { x: 640, y: 360 });
+
+  // Con clampToBackground = false conserva exactamente la coordenada cruda del personaje
+  const unclampedOpp = resolveCameraSlotTarget({
+    camera: { ...clampedCfg, clampToBackground: false },
+    entities: bgEntities,
+    slotIndex: 2,
+  });
+  assert.equal(unclampedOpp.x, 120);
+
+  const luaBlock = renderCameraLuaConfigBlock({ ...clampedCfg, clampToBackground: false });
+  assert.ok(luaBlock.includes('local CAM_CLAMP_BG = false'));
+  const parsedLua = parseCameraConfigFromLua(luaBlock, clampedCfg);
+  assert.equal(parsedLua.clampToBackground, false);
+
+  const clampApiLoop = optimizeScriptLoops(
+    'lua',
+    'for i = 1, 2000 do setCameraClamp(false) end',
+  );
+  assert.equal(clampApiLoop.discardedLoops, 0);
+  assert.ok(clampApiLoop.optimizedSource.includes('setCameraClamp'));
+
+  // Fondos 1920x1080 en gama LowRam32Bit conservan escala 1:1 (sin inSampleSize=2 / pixelado), mientras 4K se reduce limpio
+  const bg1080p = computeSmartTextureScale({
+    origWidth: 1920,
+    origHeight: 1080,
+    entityWidth: 1280,
+    entityHeight: 720,
+    entityScale: 1.0,
+    hasAtlas: false,
+    isBackground: true,
+    tier: 'low_32bit',
+  });
+  assert.equal(bg1080p, 1.0);
+
+  const bg4k = computeSmartTextureScale({
+    origWidth: 4096,
+    origHeight: 2048,
+    entityWidth: 1280,
+    entityHeight: 720,
+    entityScale: 1.0,
+    hasAtlas: false,
+    isBackground: true,
+    tier: 'low_32bit',
+  });
+  assert.ok(bg4k <= 1920 / 4096 + 0.0001);
+});
+
+test('optimizeSparrowAtlasPlan deduplicates repeated frames, neutralizes dead frames safely, trims alpha and prunes unbound anims', () => {
+  // Hoja sintética 20x10:
+  // - Frame A (x=0, y=0, 6x6): bloque opaco rojo 2x2 en (2..4, 1..3) dentro de margen transparente (suciedad RGB con alpha=0)
+  // - Frame B (x=6, y=0, 6x6): mismo bloque opaco rojo 2x2 (copia exacta tras alfa trim + canonización RGB cero-alfa)
+  // - Frame Dead (x=12, y=0, 6x6): 100% transparente (alpha <= 1)
+  const imgW = 20;
+  const imgH = 10;
+  const rgba = new Uint8Array(imgW * imgH * 4);
+  const paintRgba = (x: number, y: number, r: number, g: number, b: number, a: number) => {
+    const idx = (y * imgW + x) * 4;
+    rgba[idx] = r;
+    rgba[idx + 1] = g;
+    rgba[idx + 2] = b;
+    rgba[idx + 3] = a;
+  };
+
+  // Frame A: suciedad RGB invisible en (0,0) con alpha=0, y bloque rojo 2x2 en (2..3, 1..2)
+  paintRgba(0, 0, 123, 45, 67, 0);
+  for (let dy = 1; dy <= 2; dy += 1) {
+    for (let dx = 2; dx <= 3; dx += 1) {
+      paintRgba(dx, dy, 255, 24, 32, 255);
+    }
+  }
+
+  // Frame B: desplazado dentro de su propio cuadro (dx 1..2, dy 2..3) con otra suciedad alpha=1 (bajo umbral 2)
+  paintRgba(6, 0, 10, 220, 99, 1);
+  for (let dy = 2; dy <= 3; dy += 1) {
+    for (let dx = 1; dx <= 2; dx += 1) {
+      paintRgba(6 + dx, dy, 255, 24, 32, 255);
+    }
+  }
+
+  // Frame Dead: todo transparente
+  paintRgba(14, 2, 200, 200, 200, 0);
+
+  const plan = optimizeSparrowAtlasPlan({
+    imgW,
+    imgH,
+    rgba,
+    bindings: { idle: 'idle_anim' },
+    referencedPrefixes: ['script_bonus'],
+    animations: {
+      idle_anim: [
+        { x: 0, y: 0, width: 6, height: 6, frameX: 0, frameY: 0, frameWidth: 6, frameHeight: 6, rotated: false },
+        { x: 6, y: 0, width: 6, height: 6, frameX: -1, frameY: 1, frameWidth: 6, frameHeight: 6, rotated: false },
+        { x: 12, y: 0, width: 6, height: 6, frameX: 0, frameY: 0, frameWidth: 6, frameHeight: 6, rotated: false },
+      ],
+      script_bonus: [
+        { x: 0, y: 0, width: 6, height: 6, frameX: 0, frameY: 0, frameWidth: 6, frameHeight: 6, rotated: false },
+      ],
+      unused_extra: [
+        { x: 0, y: 0, width: 6, height: 6, frameX: 0, frameY: 0, frameWidth: 6, frameHeight: 6, rotated: false },
+      ],
+    },
+  });
+
+  assert.equal(plan.modified, true);
+  assert.equal(plan.deadFramesRemoved, 1);
+  // Frame B + Frame de script_bonus reutilizan ambos el mismo bloque 2x2 de Frame A -> 2 fusiones
+  assert.equal(plan.duplicateFramesMerged, 2);
+  assert.equal(plan.trimmedFrames, 3);
+  assert.equal(plan.prunedUnusedAnims, 1);
+  assert.equal(plan.uniqueSpriteCount, 1);
+
+  // El frame muerto conserva su lugar temporal (3 frames en idle_anim) apuntando a (0,0) 1x1
+  assert.equal(plan.animations.idle_anim.length, 3);
+  assert.equal(plan.animations.idle_anim[0].width, 2);
+  assert.equal(plan.animations.idle_anim[0].height, 2);
+  assert.equal(plan.animations.idle_anim[0].frameX, -2);
+  assert.equal(plan.animations.idle_anim[0].frameY, -1);
+  assert.equal(plan.animations.idle_anim[1].uniqueSlot, plan.animations.idle_anim[0].uniqueSlot);
+  assert.equal(plan.animations.idle_anim[1].frameX, -2);
+  assert.equal(plan.animations.idle_anim[1].frameY, -1);
+  assert.equal(plan.animations.idle_anim[2].dead, true);
+  assert.equal(plan.animations.idle_anim[2].x, 0);
+  assert.equal(plan.animations.idle_anim[2].y, 0);
+  assert.equal(plan.animations.idle_anim[2].width, 1);
+  assert.equal(plan.animations.idle_anim[2].height, 1);
+
+  // script_bonus se conserva y unused_extra se poda
+  assert.ok(plan.animations.script_bonus);
+  assert.equal(plan.animations.unused_extra, undefined);
+});
+
+test('parseChartJson & serializeChartJson preserve uiBlackout / introUi declarative config and parseUiBlackoutEvent supports arrow cues', () => {
+  const raw = JSON.stringify({
+    song: {
+      song: 'Dark Intro',
+      bpm: 130,
+      speed: 2.3,
+      uiBlackout: {
+        startBlackout: true,
+        blackoutAlpha: 0.9,
+        hideHud: true,
+        hideArrows: true,
+        revealOnSongStart: false,
+        revealDelayMs: 1200,
+        fadeSec: 0.85,
+      },
+      notes: [
+        {
+          mustHitSection: true,
+          sectionNotes: [[500, 0, 0]],
+        },
+      ],
+    },
+  });
+
+  const parsed = parseChartJson(raw);
+  assert.deepEqual(parsed.introUi, {
+    startBlackout: true,
+    blackoutAlpha: 0.9,
+    hideHud: true,
+    hideArrows: true,
+    revealOnSongStart: false,
+    revealDelayMs: 1200,
+    fadeSec: 0.85,
+  });
+
+  const roundTripped = parseChartJson(serializeChartJson(parsed));
+  assert.deepEqual(roundTripped.introUi, parsed.introUi);
+
+  // Atajos en raíz/song (ej. hideArrowsOnStart sin bloque uiBlackout)
+  const shorthand = parseChartJson(
+    JSON.stringify({
+      song: {
+        song: 'Hidden Arrows Only',
+        bpm: 120,
+        hideArrows: true,
+        introRevealOnStart: false,
+        notes: [{ mustHitSection: true, sectionNotes: [[500, 0, 0]] }],
+      },
+    }),
+  );
+  assert.equal(shorthand.introUi?.startBlackout, false);
+  assert.equal(shorthand.introUi?.hideHud, false);
+  assert.equal(shorthand.introUi?.hideArrows, true);
+  assert.equal(shorthand.introUi?.revealOnSongStart, false);
+
+  // Evento "Hide Arrows" en frame 0 solo oculta flechas, sin pantalla negra ni ocultar HUD
+  const hideArrowsStart = parseUiBlackoutEvent({
+    timeMs: 0,
+    name: 'Hide Arrows',
+    value1: '',
+    value2: '0.5',
+  });
+  assert.equal(hideArrowsStart.isUiBlackoutEvent, true);
+  assert.equal(hideArrowsStart.isIntroBlackout, true);
+  assert.equal(hideArrowsStart.action, 'hide');
+  assert.equal(hideArrowsStart.blackAlpha, -1);
+  assert.equal(hideArrowsStart.hudAlpha, -1);
+  assert.equal(hideArrowsStart.arrowsAlpha, 0);
+  assert.equal(hideArrowsStart.durationSec, 0.5);
+
+  const showArrows = parseUiBlackoutEvent({
+    timeMs: 8000,
+    name: 'Mostrar Flechas',
+    value1: '',
+    value2: '0.4',
+  });
+  assert.equal(showArrows.isUiBlackoutEvent, true);
+  assert.equal(showArrows.isIntroBlackout, false);
+  assert.equal(showArrows.action, 'show');
+  assert.equal(showArrows.blackAlpha, -1);
+  assert.equal(showArrows.hudAlpha, -1);
+  assert.equal(showArrows.arrowsAlpha, 1);
+
+  const toggleArrows = parseUiBlackoutEvent({
+    timeMs: 12000,
+    name: 'Toggle Arrows',
+    value1: '',
+    value2: '0.35',
+  });
+  assert.equal(toggleArrows.isUiBlackoutEvent, true);
+  assert.equal(toggleArrows.action, 'toggle');
+  assert.equal(toggleArrows.durationSec, 0.35);
+
+  const fadeArrows = parseUiBlackoutEvent({
+    timeMs: 16000,
+    name: 'Fade Arrows',
+    value1: '0.25',
+    value2: '0.75',
+  });
+  assert.equal(fadeArrows.isUiBlackoutEvent, true);
+  assert.equal(fadeArrows.action, 'fade');
+  assert.equal(fadeArrows.blackAlpha, -1);
+  assert.equal(fadeArrows.hudAlpha, -1);
+  assert.equal(fadeArrows.arrowsAlpha, 0.25);
+  assert.equal(fadeArrows.durationSec, 0.75);
+});
+
+
+
 
 
 

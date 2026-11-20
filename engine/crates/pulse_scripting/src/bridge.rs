@@ -176,6 +176,7 @@ pub enum ScriptCommand {
     },
     SetCameraFollowLock { x: f32, y: f32 },
     ClearCameraFollowLock,
+    SetCameraClamp { enabled: bool },
     SetEntityProp {
         entity_id: String,
         prop: String,

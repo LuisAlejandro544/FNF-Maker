@@ -17,14 +17,14 @@ pub mod sprite_ops;
 
 pub use dto::{
     ActionResultJson, ActiveTimerState, ActiveTweenState, AudioTrackSnapshotJson,
-    ChartEventJson, ChartSectionSnapshotJson, ChartSnapshotJson, CompileReportJson,
-    DynamicDrawableState, DynamicScriptItemJson, GameplayEntityFrameJson, GameplayRuntimeState,
-    GameplayStepJson, ProjectSnapshotJson, ProjectSummaryJson, ScriptSnapshotJson,
-    SparrowFrameJson, StageCameraSlotSnapshotJson, StageEntitySnapshotJson, StrumOverrideJson,
-    StrumOverrideState, TweenTarget, VisibleNoteJson,
+    ChartEventJson, ChartIntroUiSnapshotJson, ChartSectionSnapshotJson, ChartSnapshotJson,
+    CompileReportJson, DynamicDrawableState, DynamicScriptItemJson, GameplayEntityFrameJson,
+    GameplayRuntimeState, GameplayStepJson, ProjectSnapshotJson, ProjectSummaryJson,
+    ScriptSnapshotJson, SparrowFrameJson, StageCameraSlotSnapshotJson, StageEntitySnapshotJson,
+    StrumOverrideJson, StrumOverrideState, TweenTarget, VisibleNoteJson,
 };
 
-use pulse_audio::{AudioEngineHandle, DecodedTrack};
+use pulse_audio::{AudioEngineHandle, AudioMixerState, DecodedTrack};
 use pulse_core::disk_cache::{
     CacheBudgetSplit, DEFAULT_TOTAL_CACHE_QUOTA_BYTES, compute_cache_budget_split,
     evict_lru_files, evict_lru_subdirs,
@@ -35,8 +35,12 @@ use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
+
+/// Referencia atómica compartida al `AudioMixerState` para leer el playhead del Chart Editor
+/// sin bloquear jamás el mutex global `SESSION`.
+pub static PREVIEW_MIXER: OnceLock<Arc<AudioMixerState>> = OnceLock::new();
 
 pub struct EngineSession {
     pub cache_dir: PathBuf,
@@ -88,8 +92,22 @@ impl EngineSession {
             dirty: false,
             last_save_at: Instant::now(),
         };
+        let _ = PREVIEW_MIXER.set(Arc::clone(&sess.audio_engine.mixer));
         sess.load_initial_project();
+        sess.sync_mixer_chart_duration();
         sess
+    }
+
+    /// Publica la duración total calculada del chart hacia los atómicos lock-free del mezclador.
+    pub(crate) fn sync_mixer_chart_duration(&self) {
+        self.audio_engine
+            .mixer
+            .set_chart_duration_ms(self.project.chart.total_timeline_duration_ms());
+    }
+
+    /// Invalida el bundle precompilado en memoria cuando cambian chart, scripts o entidades.
+    pub(crate) fn invalidate_compiled_bundle(&mut self) {
+        self.compiled_bundle = None;
     }
 
     pub fn cache_budget(&self) -> CacheBudgetSplit {
@@ -412,5 +430,40 @@ mod tests {
             resolve_anim_for_entity_flip(&ent, CharacterAnimKind::Left),
             CharacterAnimKind::Left
         );
+    }
+
+    #[test]
+    fn chart_intro_ui_hides_blackout_hud_and_arrows_on_frame_zero_even_after_hot_compile() {
+        let tmp = std::env::temp_dir().join("beatforge_intro_ui_frame0_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut session = EngineSession::new_with_dirs(tmp.clone(), tmp.clone());
+
+        // Precompilar primero para verificar que editar `intro_ui` invalida el bundle antiguo.
+        let compile_json = session.hot_compile(1);
+        assert!(compile_json.contains("\"ok\":true"));
+        assert!(session.compiled_bundle.is_some());
+
+        // Caso A: Solo ocultar flechas al entrar (sin pantalla negra ni ocultar HUD).
+        let res_a = session.update_chart_intro_ui(false, 1.0, false, true, false, 0.0, 0.5);
+        assert!(res_a.contains("\"ok\":true"));
+        assert!(session.compiled_bundle.is_none());
+
+        let step0_a = session.start_gameplay();
+        assert!(step0_a.contains("\"arrowsVisible\":false"));
+        assert!(step0_a.contains("\"arrowsOpacity\":0.0"));
+        assert!(step0_a.contains("\"hudVisible\":true"));
+        assert!(step0_a.contains("\"screenBlackoutAlpha\":0.0"));
+        let _ = session.stop_gameplay();
+
+        // Caso B: Pantalla negra + HUD oculto + Flechas ocultas declaradas en el chart.
+        let res_b = session.update_chart_intro_ui(true, 1.0, true, true, true, 400.0, 0.65);
+        assert!(res_b.contains("\"ok\":true"));
+        let step0_b = session.start_gameplay();
+        assert!(step0_b.contains("\"screenBlackoutAlpha\":1.0"));
+        assert!(step0_b.contains("\"hudVisible\":false"));
+        assert!(step0_b.contains("\"arrowsVisible\":false"));
+        let _ = session.stop_gameplay();
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

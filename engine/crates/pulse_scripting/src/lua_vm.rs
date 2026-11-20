@@ -206,6 +206,16 @@ impl LuaScriptVm {
                 })?,
             )?;
         }
+        {
+            let h = Arc::clone(&host);
+            globals.set(
+                "setCameraClamp",
+                lua.create_function(move |_, enabled: bool| {
+                    h.push_command(ScriptCommand::SetCameraClamp { enabled });
+                    Ok(())
+                })?,
+            )?;
+        }
 
         // --- Entidades ---
         {

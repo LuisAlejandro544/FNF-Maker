@@ -17,9 +17,82 @@ import com.beatforge.studio.StageCameraSnapshot
 import com.beatforge.studio.StageEntitySnapshot
 
 /**
+ * Calcula el rectángulo delimitador `[minX, minY, maxX, maxY]` cubierto por las capas
+ * de fondo del escenario, replicando `StageScene::compute_background_bounds` en Rust.
+ */
+fun resolveStageBackgroundBounds(entities: List<StageEntitySnapshot>): FloatArray? {
+    var candidates = entities.filter { it.role == "background" && it.visible && it.opacity > 0.01f }
+    if (candidates.isEmpty()) {
+        candidates = entities.filter { it.role == "background" }
+    }
+    if (candidates.isEmpty()) return null
+
+    val largeOnly = candidates.filter {
+        kotlin.math.abs(it.width * it.scale) >= 320f && kotlin.math.abs(it.height * it.scale) >= 180f
+    }
+    val chosen = largeOnly.ifEmpty { candidates }
+
+    var minX = Float.POSITIVE_INFINITY
+    var minY = Float.POSITIVE_INFINITY
+    var maxX = Float.NEGATIVE_INFINITY
+    var maxY = Float.NEGATIVE_INFINITY
+    for (bg in chosen) {
+        val hw = kotlin.math.abs(bg.width * bg.scale) * 0.5f
+        val hh = kotlin.math.abs(bg.height * bg.scale) * 0.5f
+        minX = minOf(minX, bg.x - hw)
+        maxX = maxOf(maxX, bg.x + hw)
+        minY = minOf(minY, bg.y - hh)
+        maxY = maxOf(maxY, bg.y + hh)
+    }
+
+    return if (minX.isFinite() && minY.isFinite() && maxX > minX && maxY > minY) {
+        floatArrayOf(minX, minY, maxX, maxY)
+    } else {
+        null
+    }
+}
+
+/**
+ * Restringe `(x, y)` al área cubierta por el fondo del escenario según el `zoom` activo,
+ * evitando mostrar márgenes negros fuera del escenario.
+ */
+fun clampCameraToBackground(
+    x: Float,
+    y: Float,
+    zoom: Float,
+    bounds: FloatArray?,
+    virtualW: Float = 1280f,
+    virtualH: Float = 720f
+): Pair<Float, Float> {
+    val cx = if (x.isFinite()) x.coerceIn(-1000f, 2600f) else 640f
+    val cy = if (y.isFinite()) y.coerceIn(-1000f, 1800f) else 360f
+    if (bounds == null || bounds.size < 4) return cx to cy
+
+    val minX = bounds[0]
+    val minY = bounds[1]
+    val maxX = bounds[2]
+    val maxY = bounds[3]
+    val z = if (zoom.isFinite()) zoom.coerceIn(0.35f, 2.5f) else 1f
+    val halfVw = (virtualW.coerceAtLeast(320f) * 0.5f) / z
+    val halfVh = (virtualH.coerceAtLeast(180f) * 0.5f) / z
+
+    val clampedX = if (minX + halfVw <= maxX - halfVw) {
+        cx.coerceIn(minX + halfVw, maxX - halfVw)
+    } else {
+        (minX + maxX) * 0.5f
+    }
+    val clampedY = if (minY + halfVh <= maxY - halfVh) {
+        cy.coerceIn(minY + halfVh, maxY - halfVh)
+    } else {
+        (minY + maxY) * 0.5f
+    }
+    return clampedX.coerceIn(-1000f, 2600f) to clampedY.coerceIn(-1000f, 1800f)
+}
+
+/**
  * Calcula las coordenadas virtuales `(x, y)` reales en escenario (1280x720) donde apunta
  * una ranura de cámara (`Cam 0/1/2/3+`), replicando exactamente la mezcla `panStrength`
- * del motor Rust (`StageScene::resolve_slot_against_entities`).
+ * y el recorte al fondo del motor Rust (`StageScene::resolve_slot_against_entities`).
  */
 fun resolveCameraSlotPreviewCenter(
     camera: StageCameraSnapshot,
@@ -29,37 +102,44 @@ fun resolveCameraSlotPreviewCenter(
     val cam0 = camera.resolvedCameras().firstOrNull { it.targetKind == "fixed" }
     val cam0X = cam0?.x ?: camera.baseX
     val cam0Y = cam0?.y ?: camera.baseY
+    val slotZoom = slot.zoom.coerceIn(0.35f, 2.5f)
 
-    if (slot.targetKind == "fixed") {
-        return slot.x.coerceIn(-1000f, 2600f) to slot.y.coerceIn(-1000f, 1800f)
-    }
-
-    val anchor = when (slot.targetKind) {
-        "player" -> entities.firstOrNull { it.role == "player" && it.visible }
-            ?: entities.firstOrNull { it.role == "player" }
-        "opponent" -> entities.firstOrNull { it.role == "opponent" && it.visible }
-            ?: entities.firstOrNull { it.role == "opponent" }
-        "gf" -> entities.firstOrNull {
-            it.role == "decoration" && (
-                it.id.equals("stage_speakers", ignoreCase = true) ||
-                    it.id.contains("gf", ignoreCase = true) ||
-                    it.displayName.contains("cabina", ignoreCase = true)
-                )
-        } ?: entities.firstOrNull { it.role == "decoration" && it.visible }
-        "entity" -> slot.targetEntityId?.let { tid -> entities.firstOrNull { it.id == tid } }
-            ?: entities.firstOrNull()
-        else -> null
-    }
-
-    return if (anchor != null) {
-        val destX = anchor.x + slot.x
-        val destY = anchor.y + slot.y
-        val pan = slot.panStrength.coerceIn(0f, 1f)
-        val tx = (cam0X + (destX - cam0X) * pan).coerceIn(-1000f, 2600f)
-        val ty = (cam0Y + (destY - cam0Y) * pan).coerceIn(-1000f, 1800f)
-        tx to ty
+    val (rawX, rawY) = if (slot.targetKind == "fixed") {
+        slot.x.coerceIn(-1000f, 2600f) to slot.y.coerceIn(-1000f, 1800f)
     } else {
-        (cam0X + slot.x).coerceIn(-1000f, 2600f) to (cam0Y + slot.y).coerceIn(-1000f, 1800f)
+        val anchor = when (slot.targetKind) {
+            "player" -> entities.firstOrNull { it.role == "player" && it.visible }
+                ?: entities.firstOrNull { it.role == "player" }
+            "opponent" -> entities.firstOrNull { it.role == "opponent" && it.visible }
+                ?: entities.firstOrNull { it.role == "opponent" }
+            "gf" -> entities.firstOrNull {
+                it.role == "decoration" && (
+                    it.id.equals("stage_speakers", ignoreCase = true) ||
+                        it.id.contains("gf", ignoreCase = true) ||
+                        it.displayName.contains("cabina", ignoreCase = true)
+                    )
+            } ?: entities.firstOrNull { it.role == "decoration" && it.visible }
+            "entity" -> slot.targetEntityId?.let { tid -> entities.firstOrNull { it.id == tid } }
+                ?: entities.firstOrNull()
+            else -> null
+        }
+
+        if (anchor != null) {
+            val destX = anchor.x + slot.x
+            val destY = anchor.y + slot.y
+            val pan = slot.panStrength.coerceIn(0f, 1f)
+            val tx = (cam0X + (destX - cam0X) * pan).coerceIn(-1000f, 2600f)
+            val ty = (cam0Y + (destY - cam0Y) * pan).coerceIn(-1000f, 1800f)
+            tx to ty
+        } else {
+            (cam0X + slot.x).coerceIn(-1000f, 2600f) to (cam0Y + slot.y).coerceIn(-1000f, 1800f)
+        }
+    }
+
+    return if (camera.clampToBackground) {
+        clampCameraToBackground(rawX, rawY, slotZoom, resolveStageBackgroundBounds(entities))
+    } else {
+        rawX to rawY
     }
 }
 

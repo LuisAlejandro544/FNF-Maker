@@ -57,6 +57,7 @@ sealed class ChartTimelineRow {
         val rowNotesByCol: Map<Int, VisibleNote>,
         val sustainPassesByCol: Map<Int, ChartSustainPass>,
         val rowEvents: List<IndexedChartEvent>,
+        val eventKinds: List<StepCueKind>,
         val activeFlashColor: Color?
     ) : ChartTimelineRow()
 }
@@ -123,7 +124,16 @@ fun classifyChartEvent(event: ChartEventSnapshot): StepCueKind {
             lower == "fade ui" ||
             lower == "hud fade" ||
             lower == "hide hud" ||
-            lower == "show hud" -> StepCueKind.UiBlackout
+            lower == "show hud" ||
+            lower == "hide arrows" ||
+            lower == "show arrows" ||
+            lower == "toggle arrows" ||
+            lower == "fade arrows" ||
+            lower == "arrows fade" ||
+            lower == "hide strums" ||
+            lower == "show strums" ||
+            lower == "ocultar flechas" ||
+            lower == "mostrar flechas" -> StepCueKind.UiBlackout
         lower == "stage swap" || lower == "swap stage" -> {
             val v1Lower = event.value1.lowercase()
             if (v1Lower.contains("player=") || v1Lower.contains("opp=") || v1Lower.contains("opponent=")) {
@@ -184,7 +194,12 @@ fun summarizeChartEvent(event: ChartEventSnapshot): String {
         StepCueKind.UiBlackout -> {
             val params = parseSemiKv(event.value2)
             val v1Lower = event.value1.trim().lowercase()
-            val action = params["action"] ?: v1Lower.ifBlank { lower }
+            val action = params["action"] ?: when {
+                lower == "hide arrows" || lower == "hide strums" || lower == "ocultar flechas" -> "hide_arrows"
+                lower == "show arrows" || lower == "show strums" || lower == "mostrar flechas" -> "show_arrows"
+                lower == "toggle arrows" -> "toggle_arrows"
+                else -> v1Lower.ifBlank { lower }
+            }
             val dur = params["dur"] ?: params["duration"] ?: event.value2.trim().takeIf { it.toDoubleOrNull() != null } ?: "0.60"
             when (action) {
                 "intro" -> {
@@ -192,6 +207,9 @@ fun summarizeChartEvent(event: ChartEventSnapshot): String {
                     val delayTag = if (delayMs > 0.0) " +${String.format(java.util.Locale.US, "%.1fs", delayMs / 1000.0)}" else ""
                     "Intro Negra (3-2-1-¡YA! visible)$delayTag · fade ${dur}s"
                 }
+                "hide_arrows" -> "Ocultar Flechas · ${dur}s"
+                "show_arrows" -> "Mostrar Flechas · ${dur}s"
+                "toggle_arrows" -> "Alternar Flechas · ${dur}s"
                 "show", "reveal", "show ui", "show hud" -> "Mostrar Escena y UI/Flechas · ${dur}s"
                 "toggle", "toggle ui" -> "Alternar UI y Flechas · ${dur}s"
                 else -> {
@@ -392,6 +410,11 @@ fun buildChartTimeline(chart: ChartSnapshot): Pair<List<ChartTimelineRow>, Map<I
 
         for (sIdx in firstStepIdx until nextFirstStepIdx) {
             val st = steps[sIdx]
+            val kinds = if (st.events.isEmpty()) {
+                emptyList()
+            } else {
+                st.events.map { classifyChartEvent(it.event) }.distinct()
+            }
             rows.add(
                 ChartTimelineRow.StepRow(
                     section = st.section,
@@ -402,6 +425,7 @@ fun buildChartTimeline(chart: ChartSnapshot): Pair<List<ChartTimelineRow>, Map<I
                     rowNotesByCol = st.notesByCol,
                     sustainPassesByCol = st.sustainByCol,
                     rowEvents = st.events,
+                    eventKinds = kinds,
                     activeFlashColor = st.activeFlashColor
                 )
             )

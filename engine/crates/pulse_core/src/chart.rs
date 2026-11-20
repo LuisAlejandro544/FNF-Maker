@@ -165,6 +165,78 @@ pub struct ChartSection {
     pub camera_slot: Option<usize>,
 }
 
+/// Configuración declarativa de inicio del mod (pantalla negra, HUD oculto, flechas ocultas)
+/// persistida dentro de `chart.json` (`song.uiBlackout`) para activarse desde el frame 0 (`onCreate`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartIntroUiConfig {
+    #[serde(default)]
+    pub start_blackout: bool,
+    #[serde(default = "default_intro_blackout_alpha")]
+    pub blackout_alpha: f32,
+    #[serde(default)]
+    pub hide_hud: bool,
+    #[serde(default)]
+    pub hide_arrows: bool,
+    #[serde(default = "default_true_flag")]
+    pub reveal_on_song_start: bool,
+    #[serde(default)]
+    pub reveal_delay_ms: f64,
+    #[serde(default = "default_intro_fade_sec")]
+    pub fade_sec: f32,
+}
+
+fn default_intro_blackout_alpha() -> f32 {
+    1.0
+}
+
+fn default_true_flag() -> bool {
+    true
+}
+
+fn default_intro_fade_sec() -> f32 {
+    0.65
+}
+
+impl Default for ChartIntroUiConfig {
+    fn default() -> Self {
+        Self {
+            start_blackout: false,
+            blackout_alpha: 1.0,
+            hide_hud: false,
+            hide_arrows: false,
+            reveal_on_song_start: true,
+            reveal_delay_ms: 0.0,
+            fade_sec: 0.65,
+        }
+    }
+}
+
+impl ChartIntroUiConfig {
+    pub fn normalized(mut self) -> Self {
+        self.blackout_alpha = if self.blackout_alpha.is_finite() {
+            self.blackout_alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.reveal_delay_ms = if self.reveal_delay_ms.is_finite() {
+            self.reveal_delay_ms.clamp(0.0, 60_000.0)
+        } else {
+            0.0
+        };
+        self.fade_sec = if self.fade_sec.is_finite() {
+            self.fade_sec.clamp(0.0, 25.0)
+        } else {
+            0.65
+        };
+        self
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.start_blackout || self.hide_hud || self.hide_arrows
+    }
+}
+
 /// Estadísticas calculadas automáticamente al importar o editar un chart para mostrar en la UI.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChartStats {
@@ -190,6 +262,8 @@ pub struct ChartData {
     pub arrow_skin: String,
     pub splash_skin: String,
     pub valid_score: bool,
+    #[serde(default)]
+    pub intro_ui: ChartIntroUiConfig,
     pub sections: Vec<ChartSection>,
     pub notes: Vec<ChartNote>,
     pub events: Vec<ChartEvent>,
@@ -475,6 +549,7 @@ impl ChartData {
         notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
         events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
 
+        let intro_ui = parse_chart_intro_ui(song_obj, &root);
         let stats = Self::compute_stats(&notes, cursor_ms);
 
         Ok(Self {
@@ -489,6 +564,7 @@ impl ChartData {
             arrow_skin,
             splash_skin,
             valid_score,
+            intro_ui,
             sections,
             notes,
             events,
@@ -597,6 +673,7 @@ impl ChartData {
                 "arrowSkin": self.arrow_skin,
                 "splashSkin": self.splash_skin,
                 "validScore": self.valid_score,
+                "uiBlackout": self.intro_ui,
                 "events": grouped_events,
                 "notes": json_sections
             }
@@ -698,6 +775,7 @@ impl ChartData {
             arrow_skin: String::new(),
             splash_skin: String::new(),
             valid_score: true,
+            intro_ui: ChartIntroUiConfig::default(),
             sections,
             notes,
             events: vec![ChartEvent {
@@ -783,6 +861,24 @@ impl ChartData {
             self.stage = stage.trim().to_string();
         }
         self.needs_voices = needs_voices;
+    }
+
+    /// Actualiza la configuración declarativa de pantalla en negro / HUD oculto / flechas ocultas al iniciar.
+    pub fn set_intro_ui(&mut self, cfg: ChartIntroUiConfig) {
+        self.intro_ui = cfg.normalized();
+    }
+
+    /// Devuelve la duración total del timeline incluyendo secciones vacías al final del chart.
+    pub fn total_timeline_duration_ms(&self) -> f64 {
+        let sections_end_ms = self
+            .sections
+            .last()
+            .map(|sec| {
+                let step_ms = (60_000.0 / sec.bpm.max(40.0)) / 4.0;
+                sec.start_ms + (sec.length_in_steps.max(4) as f64) * step_ms
+            })
+            .unwrap_or(0.0);
+        sections_end_ms.max(self.stats.duration_ms).max(0.0)
     }
 
     pub fn add_event(&mut self, time_ms: f64, name: &str, value1: &str, value2: &str) {
@@ -1395,6 +1491,141 @@ fn json_as_f64(v: &Value) -> Option<f64> {
     }
 }
 
+fn json_as_bool(v: &Value) -> Option<bool> {
+    match v {
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => n.as_f64().map(|x| x > 0.0),
+        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "si" | "sí" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn first_bool_opt(candidates: &[Option<&Value>]) -> Option<bool> {
+    for c in candidates.iter().flatten() {
+        if let Some(b) = json_as_bool(c) {
+            return Some(b);
+        }
+    }
+    None
+}
+
+fn parse_chart_intro_ui(song_obj: &Value, root: &Value) -> ChartIntroUiConfig {
+    let mut cfg = ChartIntroUiConfig::default();
+    let block = song_obj
+        .get("uiBlackout")
+        .or_else(|| song_obj.get("introUi"))
+        .or_else(|| song_obj.get("intro_ui"))
+        .or_else(|| root.get("uiBlackout"))
+        .or_else(|| root.get("introUi"))
+        .or_else(|| root.get("intro_ui"));
+
+    let b_get = |key: &str| block.and_then(|v| v.get(key));
+
+    let explicit_alpha = first_valid_f64(
+        &[
+            b_get("blackoutAlpha"),
+            b_get("blackout_alpha"),
+            b_get("alpha"),
+            song_obj.get("blackoutAlpha"),
+            root.get("blackoutAlpha"),
+        ],
+        -0.001,
+    );
+    if let Some(a) = explicit_alpha {
+        cfg.blackout_alpha = (a as f32).clamp(0.0, 1.0);
+    }
+
+    if let Some(b) = first_bool_opt(&[
+        b_get("startBlackout"),
+        b_get("start_blackout"),
+        b_get("blackout"),
+        b_get("enabled"),
+        song_obj.get("startBlackout"),
+        song_obj.get("blackoutOnStart"),
+        root.get("startBlackout"),
+        root.get("blackoutOnStart"),
+    ]) {
+        cfg.start_blackout = b;
+    } else if explicit_alpha.is_some_and(|a| a > 0.01) {
+        cfg.start_blackout = true;
+    }
+
+    if let Some(h) = first_bool_opt(&[
+        b_get("hideHud"),
+        b_get("hide_hud"),
+        b_get("hideUi"),
+        b_get("hide_ui"),
+        b_get("hideHudOnStart"),
+        song_obj.get("hideHud"),
+        song_obj.get("hideHudOnStart"),
+        song_obj.get("hideUi"),
+        root.get("hideHud"),
+        root.get("hideHudOnStart"),
+        root.get("hideUi"),
+    ]) {
+        cfg.hide_hud = h;
+    }
+
+    if let Some(ar) = first_bool_opt(&[
+        b_get("hideArrows"),
+        b_get("hide_arrows"),
+        b_get("hideStrums"),
+        b_get("hide_strums"),
+        b_get("hideArrowsOnStart"),
+        song_obj.get("hideArrows"),
+        song_obj.get("hideArrowsOnStart"),
+        song_obj.get("hideStrums"),
+        root.get("hideArrows"),
+        root.get("hideArrowsOnStart"),
+        root.get("hideStrums"),
+    ]) {
+        cfg.hide_arrows = ar;
+    }
+
+    if let Some(rev) = first_bool_opt(&[
+        b_get("revealOnSongStart"),
+        b_get("reveal_on_song_start"),
+        b_get("revealOnStart"),
+        b_get("onStart"),
+        song_obj.get("introRevealOnStart"),
+        root.get("introRevealOnStart"),
+    ]) {
+        cfg.reveal_on_song_start = rev;
+    }
+
+    if let Some(delay) = first_valid_f64(
+        &[
+            b_get("revealDelayMs"),
+            b_get("reveal_delay_ms"),
+            b_get("delayMs"),
+            song_obj.get("introRevealDelayMs"),
+            root.get("introRevealDelayMs"),
+        ],
+        -0.001,
+    ) {
+        cfg.reveal_delay_ms = delay;
+    }
+
+    if let Some(fade) = first_valid_f64(
+        &[
+            b_get("fadeSec"),
+            b_get("fade_sec"),
+            b_get("durSec"),
+            song_obj.get("introFadeSec"),
+            root.get("introFadeSec"),
+        ],
+        -0.001,
+    ) {
+        cfg.fade_sec = fade as f32;
+    }
+
+    cfg.normalized()
+}
+
 fn first_valid_f64(candidates: &[Option<&Value>], min_exclusive: f64) -> Option<f64> {
     for c in candidates.iter().flatten() {
         if let Some(val) = json_as_f64(c) {
@@ -1974,5 +2205,46 @@ mod manual_chart_tests {
                 ease: "sineOut".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn chart_intro_ui_round_trips_and_parses_shorthands() {
+        let mut chart = ChartData::bundled_demo_chart();
+        chart.set_intro_ui(ChartIntroUiConfig {
+            start_blackout: true,
+            blackout_alpha: 0.9,
+            hide_hud: true,
+            hide_arrows: true,
+            reveal_on_song_start: false,
+            reveal_delay_ms: 450.0,
+            fade_sec: 0.85,
+        });
+
+        let exported = chart.to_json_str();
+        let reimported = ChartData::from_json_str(&exported).expect("chart con uiBlackout");
+        assert!(reimported.intro_ui.start_blackout);
+        assert!((reimported.intro_ui.blackout_alpha - 0.9).abs() < 0.01);
+        assert!(reimported.intro_ui.hide_hud);
+        assert!(reimported.intro_ui.hide_arrows);
+        assert!(!reimported.intro_ui.reveal_on_song_start);
+        assert!((reimported.intro_ui.reveal_delay_ms - 450.0).abs() < 0.1);
+        assert!((reimported.intro_ui.fade_sec - 0.85).abs() < 0.01);
+
+        let shorthand = r#"{
+          "song": {
+            "song": "Stealth Mod",
+            "bpm": 140,
+            "hideArrows": true,
+            "hideHud": true,
+            "startBlackout": false,
+            "introRevealOnStart": false,
+            "notes": [{ "mustHitSection": true, "sectionNotes": [[500, 0, 0]] }]
+          }
+        }"#;
+        let parsed = ChartData::from_json_str(shorthand).expect("chart con shorthands");
+        assert!(!parsed.intro_ui.start_blackout);
+        assert!(parsed.intro_ui.hide_hud);
+        assert!(parsed.intro_ui.hide_arrows);
+        assert!(!parsed.intro_ui.reveal_on_song_start);
     }
 }

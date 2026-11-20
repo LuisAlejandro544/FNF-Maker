@@ -68,6 +68,8 @@ fn push_camera_pos_tween(
     duration_sec: f32,
     ease: &str,
 ) {
+    let (clamped_x, clamped_y) =
+        stage.clamp_camera_to_background(tx, ty, stage.camera_base_zoom);
     session
         .active_tweens
         .retain(|t| !matches!(t.target, TweenTarget::CameraPosX | TweenTarget::CameraPosY));
@@ -75,7 +77,7 @@ fn push_camera_pos_tween(
         tag: "__chart_cam_x".to_string(),
         target: TweenTarget::CameraPosX,
         start_val: stage.camera_x,
-        end_val: tx.clamp(-1000.0, 2600.0),
+        end_val: clamped_x,
         elapsed_sec: 0.0,
         duration_sec: duration_sec.max(0.001),
         ease: ease.to_string(),
@@ -84,7 +86,7 @@ fn push_camera_pos_tween(
         tag: "__chart_cam_y".to_string(),
         target: TweenTarget::CameraPosY,
         start_val: stage.camera_y,
-        end_val: ty.clamp(-1000.0, 1800.0),
+        end_val: clamped_y,
         elapsed_sec: 0.0,
         duration_sec: duration_sec.max(0.001),
         ease: ease.to_string(),
@@ -172,12 +174,15 @@ fn apply_chart_camera_action(
                 )
             };
 
-            let tx = (base_tx + offset_x).clamp(-1000.0, 2600.0);
-            let ty = (base_ty + offset_y).clamp(-1000.0, 1800.0);
             let z_override = zoom.map(|z| z.clamp(0.35, 2.5));
             session.camera_slot_zoom_override = z_override;
             let final_zoom = z_override.unwrap_or(slot_zoom);
             stage.camera_base_zoom = final_zoom;
+            let (tx, ty) = stage.clamp_camera_to_background(
+                base_tx + offset_x,
+                base_ty + offset_y,
+                final_zoom,
+            );
 
             if duration_sec > 0.01 {
                 push_camera_pos_tween(session, stage, tx, ty, duration_sec, &ease);
@@ -197,8 +202,8 @@ fn apply_chart_camera_action(
             duration_sec,
             ease,
         } => {
-            let cx = x.clamp(-1000.0, 2600.0);
-            let cy = y.clamp(-1000.0, 1800.0);
+            let target_zoom = zoom.map(|z| z.clamp(0.35, 2.5)).unwrap_or(stage.camera_base_zoom);
+            let (cx, cy) = stage.clamp_camera_to_background(x, y, target_zoom);
             session.camera_follow_lock = Some([cx, cy]);
             session.camera_gf_override = false;
             session.camera_offset_override = [0.0, 0.0];
@@ -272,13 +277,13 @@ fn update_native_camera_follow(
             .iter()
             .any(|t| matches!(t.target, TweenTarget::CameraPosX | TweenTarget::CameraPosY));
         if !pos_tween_active {
-            let (target_x, target_y) = if let Some([lx, ly]) = session.camera_follow_lock {
+            let (raw_tx, raw_ty) = if let Some([lx, ly]) = session.camera_follow_lock {
                 (lx, ly)
             } else if session.camera_gf_override {
                 let (gx, gy) = resolve_gf_target(stage);
                 (
-                    (gx + session.camera_offset_override[0]).clamp(-1000.0, 2600.0),
-                    (gy + session.camera_offset_override[1]).clamp(-1000.0, 1800.0),
+                    gx + session.camera_offset_override[0],
+                    gy + session.camera_offset_override[1],
                 )
             } else {
                 let (tx, ty, _, _) = stage.resolve_camera_slot_target(
@@ -287,10 +292,12 @@ fn update_native_camera_follow(
                     &session.active_opponent_id,
                 );
                 (
-                    (tx + session.camera_offset_override[0]).clamp(-1000.0, 2600.0),
-                    (ty + session.camera_offset_override[1]).clamp(-1000.0, 1800.0),
+                    tx + session.camera_offset_override[0],
+                    ty + session.camera_offset_override[1],
                 )
             };
+            let (target_x, target_y) =
+                stage.clamp_camera_to_background(raw_tx, raw_ty, desired_base_zoom);
             let lerp_t = (dt * slot_smooth.clamp(1.0, 20.0)).min(1.0);
             stage.camera_x += (target_x - stage.camera_x) * lerp_t;
             stage.camera_y += (target_y - stage.camera_y) * lerp_t;
@@ -303,6 +310,14 @@ fn update_native_camera_follow(
         .any(|t| matches!(t.target, TweenTarget::CameraZoom));
     if !zoom_tween_active {
         stage.camera_zoom += (desired_base_zoom - stage.camera_zoom) * (dt * 6.0).min(1.0);
+    }
+
+    // Garantizar en cada frame que la cámara (incluyendo tweens o cambios de zoom) no descubra bordes negros fuera del fondo.
+    if stage.camera.enabled {
+        let (clamped_cam_x, clamped_cam_y) =
+            stage.clamp_camera_to_background(stage.camera_x, stage.camera_y, stage.camera_zoom);
+        stage.camera_x = clamped_cam_x;
+        stage.camera_y = clamped_cam_y;
     }
 
     let hud_zoom_tween_active = session
@@ -680,6 +695,11 @@ impl EngineSession {
         let prev_log_count = session.last_logs.len();
         let prev_last_log = session.last_logs.last().cloned();
         let prev_err_count = session.script_errors.len();
+        let prev_hud_visible = session.hud_visible;
+        let prev_hud_opacity = session.hud_opacity;
+        let prev_arrows_visible = session.arrows_visible;
+        let prev_arrows_opacity = session.arrows_opacity;
+        let prev_blackout_alpha = session.screen_blackout_alpha;
 
         let mut just_pressed = [
             (lane_just_pressed_mask & 1) != 0,
@@ -923,6 +943,11 @@ impl EngineSession {
             || prev_log_count != session.last_logs.len()
             || prev_last_log.as_deref() != session.last_logs.last().map(|s| s.as_str())
             || prev_err_count != session.script_errors.len()
+            || prev_hud_visible != session.hud_visible
+            || (prev_hud_opacity - session.hud_opacity).abs() > 0.002
+            || prev_arrows_visible != session.arrows_visible
+            || (prev_arrows_opacity - session.arrows_opacity).abs() > 0.002
+            || (prev_blackout_alpha - session.screen_blackout_alpha).abs() > 0.002
         {
             hud_changed = true;
         }

@@ -95,6 +95,17 @@ object NativeEngineBridge {
     ): String
 
     @JvmStatic
+    external fun nativeUpdateChartIntroUi(
+        startBlackout: Boolean,
+        blackoutAlpha: Float,
+        hideHud: Boolean,
+        hideArrows: Boolean,
+        revealOnSongStart: Boolean,
+        revealDelayMs: Double,
+        fadeSec: Float
+    ): String
+
+    @JvmStatic
     external fun nativeSetSectionBpm(secIndex: Int, bpm: Double, changeBpm: Boolean): String
 
     @JvmStatic
@@ -215,6 +226,7 @@ object NativeEngineBridge {
         followIntervalBeats: Int,
         smoothSpeed: Float,
         panStrength: Float,
+        clampToBackground: Boolean,
         commitSave: Boolean
     ): String
 

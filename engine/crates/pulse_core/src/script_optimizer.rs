@@ -33,6 +33,7 @@ const NECESSARY_ENGINE_APIS: &[&str] = &[
     "setCameraZoom",
     "setCameraBaseZoom",
     "setCameraPos",
+    "setCameraClamp",
     "shakeCamera",
     "playAnim",
     "playEntityAnim",

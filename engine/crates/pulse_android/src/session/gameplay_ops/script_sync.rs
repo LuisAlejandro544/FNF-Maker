@@ -402,13 +402,25 @@ pub(super) fn update_active_tweens(
                 apply_strum_prop(&mut session.strum_overrides, *strum_idx, prop, val);
             }
             TweenTarget::HudProp { prop } => match prop.as_str() {
-                "opacity" | "alpha" => session.hud_opacity = val.clamp(0.0, 1.0),
+                "opacity" | "alpha" => {
+                    let clamped = val.clamp(0.0, 1.0);
+                    session.hud_opacity = clamped;
+                    if raw_t >= 1.0 {
+                        session.hud_visible = clamped > 0.01;
+                    }
+                }
                 "zoom" => session.hud_zoom = val.clamp(0.3, 2.5),
                 "visible" => session.hud_visible = val > 0.0,
                 _ => {}
             },
             TweenTarget::ArrowsProp { prop } => match prop.as_str() {
-                "opacity" | "alpha" => session.arrows_opacity = val.clamp(0.0, 1.0),
+                "opacity" | "alpha" => {
+                    let clamped = val.clamp(0.0, 1.0);
+                    session.arrows_opacity = clamped;
+                    if raw_t >= 1.0 {
+                        session.arrows_visible = clamped > 0.01;
+                    }
+                }
                 "visible" => session.arrows_visible = val > 0.0,
                 _ => {}
             },
@@ -441,8 +453,9 @@ pub(super) fn drain_and_apply_script_commands(
     for cmd in session.runtime.drain_commands() {
         match cmd {
             ScriptCommand::SetCameraPos { x, y } => {
-                stage.camera_x = x.clamp(-1000.0, 2600.0);
-                stage.camera_y = y.clamp(-1000.0, 1800.0);
+                let (cx, cy) = stage.clamp_camera_to_background(x, y, stage.camera_zoom);
+                stage.camera_x = cx;
+                stage.camera_y = cy;
             }
             ScriptCommand::SetCameraZoom(z) => {
                 stage.camera_zoom = z.clamp(0.35, 2.5);
@@ -513,11 +526,18 @@ pub(super) fn drain_and_apply_script_commands(
                 }
             }
             ScriptCommand::SetCameraFollowLock { x, y } => {
-                session.camera_follow_lock =
-                    Some([x.clamp(-1000.0, 2600.0), y.clamp(-1000.0, 1800.0)]);
+                let (cx, cy) = stage.clamp_camera_to_background(x, y, stage.camera_base_zoom);
+                session.camera_follow_lock = Some([cx, cy]);
             }
             ScriptCommand::ClearCameraFollowLock => {
                 session.camera_follow_lock = None;
+            }
+            ScriptCommand::SetCameraClamp { enabled } => {
+                stage.camera.clamp_to_background = enabled;
+                let (cx, cy) =
+                    stage.clamp_camera_to_background(stage.camera_x, stage.camera_y, stage.camera_zoom);
+                stage.camera_x = cx;
+                stage.camera_y = cy;
             }
             ScriptCommand::SetEntityProp {
                 entity_id,

@@ -53,6 +53,7 @@ declare function switchCamera(slot: number, zoom?: number, durationSec?: number,
 declare function getActiveCamera(): number;
 declare function setCameraFollowPos(x: number, y: number): void;
 declare function clearCameraFollowPos(): void;
+declare function setCameraClamp(enabled: boolean): void;
 declare function tweenCameraPos(tag: string, targetX: number, targetY: number, durationSec: number, ease?: EaseName): void;
 declare function tweenCameraZoom(tag: string, targetZoom: number, durationSec: number, ease?: EaseName): void;
 declare function flashCamera(colorHex?: string, durationSec?: number, alpha?: number): void;

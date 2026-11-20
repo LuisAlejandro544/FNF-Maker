@@ -189,6 +189,12 @@ impl JsScriptVm {
                     h.push_command(ScriptCommand::ClearCameraFollowLock);
                 });
             }
+            {
+                let h = Arc::clone(&host);
+                bind_js!("setCameraClamp", move |enabled: bool| {
+                    h.push_command(ScriptCommand::SetCameraClamp { enabled });
+                });
+            }
 
             // --- Entidades ---
             {

@@ -113,8 +113,12 @@ impl EngineSession {
             &active_player_id,
             &active_opponent_id,
         );
-        self.project.stage.camera_x = cam0_x;
-        self.project.stage.camera_y = cam0_y;
+        let (clamped_x, clamped_y) =
+            self.project
+                .stage
+                .clamp_camera_to_background(cam0_x, cam0_y, cam0_zoom);
+        self.project.stage.camera_x = clamped_x;
+        self.project.stage.camera_y = clamped_y;
         self.project.stage.camera_base_zoom = cam0_zoom;
         self.project.stage.camera_zoom = cam0_zoom;
 
@@ -123,36 +127,6 @@ impl EngineSession {
         let (_, initial_must_hit, initial_gf_section, _) =
             self.project.chart.camera_state_at_ms(0.0);
         let default_strums = [StrumOverrideState::default(); 8];
-        sync_script_host_state(
-            &runtime.state,
-            &self.project.stage,
-            &bundle.active_entities,
-            &[],
-            &active_player_id,
-            &active_opponent_id,
-            &default_strums,
-            0.0,
-            self.project.chart.bpm.max(40.0),
-            initial_must_hit,
-            initial_gf_section,
-            0,
-            0.5,
-            0,
-            0,
-            0,
-            0,
-            100.0,
-            self.project.chart.speed,
-            self.project.downscroll,
-            true,
-            1.0,
-            1.0,
-            true,
-            1.0,
-            0.0,
-            false,
-        );
-        runtime.call_on_create();
 
         self.audio_engine.mixer.pause();
         self.audio_engine.mixer.clear_gameover_sfx();
@@ -200,8 +174,39 @@ impl EngineSession {
             .start_countdown(self.project.chart.bpm);
         self.audio_engine.mixer.play();
 
+        sync_script_host_state(
+            &runtime.state,
+            &self.project.stage,
+            &bundle.active_entities,
+            &[],
+            &active_player_id,
+            &active_opponent_id,
+            &default_strums,
+            self.audio_engine.mixer.position_ms(),
+            self.project.chart.bpm.max(40.0),
+            initial_must_hit,
+            initial_gf_section,
+            0,
+            0.5,
+            0,
+            0,
+            0,
+            0,
+            100.0,
+            self.project.chart.speed,
+            self.project.downscroll,
+            true,
+            1.0,
+            1.0,
+            true,
+            1.0,
+            0.0,
+            false,
+        );
+        runtime.call_on_create();
+
         let note_len = self.project.chart.notes.len();
-        self.gameplay = Some(GameplayRuntimeState {
+        let mut gp = GameplayRuntimeState {
             bundle,
             compiled_texture_paths: self.compiled_texture_paths.clone(),
             runtime,
@@ -269,8 +274,17 @@ impl EngineSession {
             last_countdown_stage: -2,
             hud_revision: 1,
             last_binary_hud_revision: 0,
-        });
+        };
 
+        // Drenar comandos emitidos por `onCreate()` (pantalla en negro, ocultar HUD/flechas, tweens)
+        // antes de emitir el primer paquete binario/JSON del Frame 0.
+        script_sync::drain_and_apply_script_commands(
+            &mut gp,
+            &mut self.project.stage,
+            &self.audio_engine,
+        );
+
+        self.gameplay = Some(gp);
         self.step_gameplay(0.0, 0, 0)
     }
 

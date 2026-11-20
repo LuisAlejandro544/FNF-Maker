@@ -118,16 +118,38 @@ pub fn is_webp_path(path: &Path) -> bool {
     false
 }
 
+/// Comprueba si todos los píxeles de la imagen tienen canal alfa opaco (`alpha >= 254`).
+/// Permite codificar fondos opacos en `Rgb8` sin plano alfa inútil y ahorrar tamaño/decodificación.
+pub fn is_image_opaque(img: &DynamicImage) -> bool {
+    match img {
+        DynamicImage::ImageRgb8(_) | DynamicImage::ImageLuma8(_) => true,
+        _ => {
+            let rgba = img.to_rgba8();
+            rgba.as_raw().chunks_exact(4).all(|px| px[3] >= 254)
+        }
+    }
+}
+
 /// Codifica cualquier `DynamicImage` a `.webp` sin pérdida (VP8L con predictores, transformaciones
 /// de color y compresión máxima sin pérdida de calidad ni alpha) de forma atómica en disco.
+/// Cuando `optimize_opaque` es `true` y la imagen es 100% opaca, guarda en formato `Rgb8` sin canal alfa.
 pub fn save_lossless_webp(img: &DynamicImage, path: &Path) -> Result<(), String> {
+    save_optimized_webp(img, path, false).map(|_| ())
+}
+
+/// Codifica `DynamicImage` a `.webp` VP8L sin pixelación; si `strip_unused_alpha` es `true` y la
+/// imagen es totalmente opaca, omite el canal alfa (`Rgb8`) reduciendo el peso del archivo.
+/// Devuelve `true` si se almacenó como `Rgb8` opaco.
+pub fn save_optimized_webp(
+    img: &DynamicImage,
+    path: &Path,
+    strip_unused_alpha: bool,
+) -> Result<bool, String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let rgba = img.to_rgba8();
-    let w = rgba.width();
-    let h = rgba.height();
     let tmp_path = path.with_extension("webp.tmp");
+    let use_rgb = strip_unused_alpha && is_image_opaque(img);
 
     {
         let file = std::fs::File::create(&tmp_path).map_err(|e| {
@@ -139,7 +161,18 @@ pub fn save_lossless_webp(img: &DynamicImage, path: &Path) -> Result<(), String>
         })?;
         let writer = BufWriter::new(file);
         let encoder = WebPEncoder::new_lossless(writer);
-        if let Err(e) = encoder.write_image(rgba.as_raw(), w, h, ExtendedColorType::Rgba8) {
+        let encode_res = if use_rgb {
+            let rgb = img.to_rgb8();
+            let w = rgb.width();
+            let h = rgb.height();
+            encoder.write_image(rgb.as_raw(), w, h, ExtendedColorType::Rgb8)
+        } else {
+            let rgba = img.to_rgba8();
+            let w = rgba.width();
+            let h = rgba.height();
+            encoder.write_image(rgba.as_raw(), w, h, ExtendedColorType::Rgba8)
+        };
+        if let Err(e) = encode_res {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(format!("Error codificando WebP sin pérdida: {}", e));
         }
@@ -153,7 +186,7 @@ pub fn save_lossless_webp(img: &DynamicImage, path: &Path) -> Result<(), String>
             e
         ));
     }
-    Ok(())
+    Ok(use_rgb)
 }
 
 /// Decodifica bytes completos de un archivo `.astc` (cabecera 16 bytes + bloques) a `DynamicImage` RGBA8.

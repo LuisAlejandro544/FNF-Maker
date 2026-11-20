@@ -62,6 +62,7 @@ pub struct StageCameraSnapshotJson {
     pub smooth_speed: f32,
     pub pan_strength: f32,
     pub active_camera_index: usize,
+    pub clamp_to_background: bool,
     pub cameras: Vec<StageCameraSlotSnapshotJson>,
 }
 
@@ -112,6 +113,18 @@ pub struct ChartSectionSnapshotJson {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChartIntroUiSnapshotJson {
+    pub start_blackout: bool,
+    pub blackout_alpha: f32,
+    pub hide_hud: bool,
+    pub hide_arrows: bool,
+    pub reveal_on_song_start: bool,
+    pub reveal_delay_ms: f64,
+    pub fade_sec: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChartSnapshotJson {
     pub title: String,
     pub bpm: f64,
@@ -129,6 +142,7 @@ pub struct ChartSnapshotJson {
     pub duration_ms: f64,
     pub density_buckets: Vec<u16>,
     pub source_path: Option<String>,
+    pub intro_ui: ChartIntroUiSnapshotJson,
     pub sections: Vec<ChartSectionSnapshotJson>,
     pub notes: Vec<VisibleNoteJson>,
     pub events: Vec<ChartEventJson>,
@@ -200,6 +214,12 @@ pub struct CompileReportJson {
     pub discarded_heavy_loops: usize,
     pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
+    pub dead_frames_removed: usize,
+    pub duplicate_frames_merged: usize,
+    pub trimmed_frames: usize,
+    pub pruned_unused_anims: usize,
+    pub repacked_atlases: usize,
+    pub repacked_entity_ids: Vec<String>,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<String>,
     pub estimated_audio_ram_saved_kb: usize,
@@ -631,6 +651,12 @@ impl EngineSession {
             discarded_heavy_loops: r.discarded_heavy_loops,
             neutralized_unbounded_loops: r.neutralized_unbounded_loops,
             estimated_vram_saved_kb: r.estimated_vram_saved_kb,
+            dead_frames_removed: r.dead_frames_removed,
+            duplicate_frames_merged: r.duplicate_frames_merged,
+            trimmed_frames: r.trimmed_frames,
+            pruned_unused_anims: r.pruned_unused_anims,
+            repacked_atlases: r.repacked_atlases,
+            repacked_entity_ids: r.repacked_entity_ids.clone(),
             merged_audio_tracks: r.merged_audio_tracks,
             compiled_audio_path: r
                 .compiled_audio_path
@@ -670,6 +696,7 @@ impl EngineSession {
             smooth_speed: cam_cfg.smooth_speed,
             pan_strength: cam_cfg.pan_strength,
             active_camera_index: cam_cfg.active_camera_index,
+            clamp_to_background: cam_cfg.clamp_to_background,
             cameras,
         };
 
@@ -701,6 +728,15 @@ impl EngineSession {
                     .chart_source_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
+                intro_ui: ChartIntroUiSnapshotJson {
+                    start_blackout: self.project.chart.intro_ui.start_blackout,
+                    blackout_alpha: self.project.chart.intro_ui.blackout_alpha,
+                    hide_hud: self.project.chart.intro_ui.hide_hud,
+                    hide_arrows: self.project.chart.intro_ui.hide_arrows,
+                    reveal_on_song_start: self.project.chart.intro_ui.reveal_on_song_start,
+                    reveal_delay_ms: self.project.chart.intro_ui.reveal_delay_ms,
+                    fade_sec: self.project.chart.intro_ui.fade_sec,
+                },
                 sections: self
                     .project
                     .chart

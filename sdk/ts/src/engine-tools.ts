@@ -39,6 +39,16 @@ export interface ParsedChartNote {
   sustainMs: number;
 }
 
+export interface ChartIntroUiConfig {
+  startBlackout: boolean;
+  blackoutAlpha: number;
+  hideHud: boolean;
+  hideArrows: boolean;
+  revealOnSongStart: boolean;
+  revealDelayMs: number;
+  fadeSec: number;
+}
+
 export interface ParsedChart {
   title: string;
   bpm: number;
@@ -51,6 +61,7 @@ export interface ParsedChart {
   arrowSkin: string;
   splashSkin: string;
   validScore: boolean;
+  introUi?: ChartIntroUiConfig;
   events: ChartEventSpec[];
   sections: ChartSectionSpec[];
   notes: ParsedChartNote[];
@@ -216,6 +227,137 @@ function buildSyntheticSections(
     });
   }
   return out;
+}
+
+function asBoolFlag(val: unknown): boolean | null {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'number' && Number.isFinite(val)) return val !== 0;
+  if (typeof val === 'string') return parseOptionalBoolFlag(val);
+  return null;
+}
+
+function firstBoolFlag(candidates: unknown[]): boolean | null {
+  for (const c of candidates) {
+    const parsed = asBoolFlag(c);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function parseChartIntroUi(
+  songObj: Record<string, unknown>,
+  root: Record<string, unknown>,
+): ChartIntroUiConfig {
+  const rawBlock =
+    songObj.uiBlackout ??
+    songObj.introUi ??
+    songObj.intro_ui ??
+    root.uiBlackout ??
+    root.introUi ??
+    root.intro_ui;
+  const block =
+    rawBlock && typeof rawBlock === 'object' && !Array.isArray(rawBlock)
+      ? (rawBlock as Record<string, unknown>)
+      : null;
+
+  const explicitAlpha = firstValidNumber(
+    [
+      block?.blackoutAlpha,
+      block?.blackout_alpha,
+      block?.alpha,
+      songObj.blackoutAlpha,
+      root.blackoutAlpha,
+    ],
+    -0.001,
+  );
+  const blackoutAlpha = explicitAlpha !== null ? Math.min(1, Math.max(0, explicitAlpha)) : 1.0;
+
+  const explicitStartBlackout = firstBoolFlag([
+    block?.startBlackout,
+    block?.start_blackout,
+    block?.blackout,
+    block?.enabled,
+    songObj.startBlackout,
+    songObj.blackoutOnStart,
+    root.startBlackout,
+    root.blackoutOnStart,
+  ]);
+  const startBlackout =
+    explicitStartBlackout !== null ? explicitStartBlackout : explicitAlpha !== null && explicitAlpha > 0.01;
+
+  const hideHud =
+    firstBoolFlag([
+      block?.hideHud,
+      block?.hide_hud,
+      block?.hideUi,
+      block?.hide_ui,
+      block?.hideHudOnStart,
+      songObj.hideHud,
+      songObj.hideHudOnStart,
+      songObj.hideUi,
+      root.hideHud,
+      root.hideHudOnStart,
+      root.hideUi,
+    ]) ?? false;
+
+  const hideArrows =
+    firstBoolFlag([
+      block?.hideArrows,
+      block?.hide_arrows,
+      block?.hideStrums,
+      block?.hide_strums,
+      block?.hideArrowsOnStart,
+      songObj.hideArrows,
+      songObj.hideArrowsOnStart,
+      songObj.hideStrums,
+      root.hideArrows,
+      root.hideArrowsOnStart,
+      root.hideStrums,
+    ]) ?? false;
+
+  const revealOnSongStart =
+    firstBoolFlag([
+      block?.revealOnSongStart,
+      block?.reveal_on_song_start,
+      block?.revealOnStart,
+      block?.onStart,
+      songObj.introRevealOnStart,
+      root.introRevealOnStart,
+    ]) ?? true;
+
+  const rawDelay = firstValidNumber(
+    [
+      block?.revealDelayMs,
+      block?.reveal_delay_ms,
+      block?.delayMs,
+      songObj.introRevealDelayMs,
+      root.introRevealDelayMs,
+    ],
+    -0.001,
+  );
+  const revealDelayMs = rawDelay !== null ? Math.min(60000, Math.max(0, rawDelay)) : 0;
+
+  const rawFade = firstValidNumber(
+    [
+      block?.fadeSec,
+      block?.fade_sec,
+      block?.durSec,
+      songObj.introFadeSec,
+      root.introFadeSec,
+    ],
+    -0.001,
+  );
+  const fadeSec = rawFade !== null ? Math.min(25, Math.max(0, rawFade)) : 0.65;
+
+  return {
+    startBlackout,
+    blackoutAlpha,
+    hideHud,
+    hideArrows,
+    revealOnSongStart,
+    revealDelayMs,
+    fadeSec,
+  };
 }
 
 export function parseChartJson(rawJson: string): ParsedChart {
@@ -530,6 +672,8 @@ export function parseChartJson(rawJson: string): ParsedChart {
     throw new Error('Chart JSON inválido: falta arreglo notes');
   }
 
+  const introUi = parseChartIntroUi(song, root);
+
   notes.sort((a, b) => a.timeMs - b.timeMs);
   events.sort((a, b) => a.timeMs - b.timeMs);
   return {
@@ -544,6 +688,7 @@ export function parseChartJson(rawJson: string): ParsedChart {
     arrowSkin,
     splashSkin,
     validScore,
+    introUi,
     events,
     sections,
     notes,
@@ -618,6 +763,7 @@ export function serializeChartJson(chart: ParsedChart): string {
         arrowSkin: chart.arrowSkin,
         splashSkin: chart.splashSkin,
         validScore: chart.validScore,
+        ...(chart.introUi ? { uiBlackout: chart.introUi } : {}),
         events: groupedEvents,
         notes: sectionWindows.map((w) => ({
           sectionNotes: w.sectionNotes,
@@ -974,6 +1120,7 @@ const NECESSARY_ENGINE_APIS = [
   'switchCamera',
   'setCameraFollowPos',
   'clearCameraFollowPos',
+  'setCameraClamp',
   'playAnim',
   'playEntityAnim',
   'setHealth',
@@ -1095,10 +1242,21 @@ export function computeSmartTextureScale(params: {
   entityHeight: number;
   entityScale: number;
   hasAtlas: boolean;
+  isBackground?: boolean;
   maxFrameSide?: number;
   tier: DeviceResourceTier;
 }): number {
-  const { origWidth, origHeight, entityWidth, entityHeight, entityScale, hasAtlas, maxFrameSide = 0, tier } = params;
+  const {
+    origWidth,
+    origHeight,
+    entityWidth,
+    entityHeight,
+    entityScale,
+    hasAtlas,
+    isBackground = false,
+    maxFrameSide = 0,
+    tier,
+  } = params;
   if (origWidth <= 0 || origHeight <= 0) return 1.0;
 
   const largest = Math.max(origWidth, origHeight);
@@ -1106,11 +1264,17 @@ export function computeSmartTextureScale(params: {
     ? tier === 'low_32bit'
       ? 2560
       : 4096
-    : tier === 'low_32bit'
-      ? 1536
-      : tier === 'balanced'
-        ? 2560
-        : 4096;
+    : isBackground
+      ? tier === 'low_32bit'
+        ? 1920
+        : tier === 'balanced'
+          ? 2560
+          : 3840
+      : tier === 'low_32bit'
+        ? 1536
+        : tier === 'balanced'
+          ? 2560
+          : 4096;
 
   let targetRatio = largest > tierCap ? tierCap / largest : 1.0;
   const displayMax = Math.max(128, Math.max(entityWidth, entityHeight) * entityScale);
@@ -1122,6 +1286,12 @@ export function computeSmartTextureScale(params: {
         const frameRatio = Math.max(0.45, Math.min(1.0, idealFrameMax / maxFrameSide));
         targetRatio = Math.min(targetRatio, frameRatio);
       }
+    }
+  } else if (isBackground) {
+    const idealBgMax = Math.min(tierCap, Math.max(1600, displayMax * 1.6));
+    if (largest > idealBgMax * 1.12) {
+      const bgRatio = Math.max(0.45, Math.min(1.0, idealBgMax / largest));
+      targetRatio = Math.min(targetRatio, bgRatio);
     }
   } else {
     const idealStaticMax = Math.max(960, displayMax * 1.5);
@@ -1825,6 +1995,7 @@ export interface StageCameraConfigSpec {
   smoothSpeed: number;
   panStrength: number;
   activeCameraIndex?: number;
+  clampToBackground?: boolean;
   cameras?: StageCameraSlotSpec[];
 }
 
@@ -1906,6 +2077,96 @@ export function computeCameraCaptureBox(
   };
 }
 
+export type BackgroundBounds = [number, number, number, number];
+
+/**
+ * Calcula los límites `[minX, minY, maxX, maxY]` del fondo del escenario.
+ * Espejo exacto de `StageScene::compute_background_bounds`.
+ */
+export function computeBackgroundBounds(
+  entities: Array<{
+    role: EntityRole;
+    x: number;
+    y: number;
+    width?: number;
+    height?: number;
+    scale?: number;
+    opacity?: number;
+    visible: boolean;
+  }>,
+): BackgroundBounds | null {
+  let candidates = entities.filter(
+    (e) => e.role === 'background' && e.visible && (e.opacity ?? 1) > 0.01,
+  );
+  if (candidates.length === 0) {
+    candidates = entities.filter((e) => e.role === 'background');
+  }
+  if (candidates.length === 0) return null;
+
+  const sized = candidates.filter((e) => typeof e.width === 'number' && typeof e.height === 'number');
+  if (sized.length === 0) return null;
+
+  const largeOnly = sized.filter((e) => {
+    const sc = e.scale ?? 1;
+    return Math.abs((e.width ?? 0) * sc) >= 320 && Math.abs((e.height ?? 0) * sc) >= 180;
+  });
+  const chosen = largeOnly.length > 0 ? largeOnly : sized;
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const bg of chosen) {
+    const sc = bg.scale ?? 1;
+    const hw = Math.abs((bg.width ?? 0) * sc) * 0.5;
+    const hh = Math.abs((bg.height ?? 0) * sc) * 0.5;
+    minX = Math.min(minX, bg.x - hw);
+    maxX = Math.max(maxX, bg.x + hw);
+    minY = Math.min(minY, bg.y - hh);
+    maxY = Math.max(maxY, bg.y + hh);
+  }
+
+  return Number.isFinite(minX) && Number.isFinite(minY) && maxX > minX && maxY > minY
+    ? [minX, minY, maxX, maxY]
+    : null;
+}
+
+/**
+ * Restringe `(x, y)` al rectángulo cubierto por el fondo según el `zoom` activo,
+ * evitando mostrar bordes negros fuera del escenario.
+ */
+export function clampCameraToBackground(params: {
+  x: number;
+  y: number;
+  zoom: number;
+  bounds: BackgroundBounds | null;
+  virtualWidth?: number;
+  virtualHeight?: number;
+}): { x: number; y: number } {
+  const cx = Math.min(2600, Math.max(-1000, Number.isFinite(params.x) ? params.x : 640));
+  const cy = Math.min(1800, Math.max(-1000, Number.isFinite(params.y) ? params.y : 360));
+  if (!params.bounds) return { x: cx, y: cy };
+
+  const [minX, minY, maxX, maxY] = params.bounds;
+  const z = Math.min(2.5, Math.max(0.35, Number.isFinite(params.zoom) ? params.zoom : 1.0));
+  const halfVw = (Math.max(320, params.virtualWidth ?? 1280) * 0.5) / z;
+  const halfVh = (Math.max(180, params.virtualHeight ?? 720) * 0.5) / z;
+
+  const clampedX =
+    minX + halfVw <= maxX - halfVw
+      ? Math.min(maxX - halfVw, Math.max(minX + halfVw, cx))
+      : (minX + maxX) * 0.5;
+  const clampedY =
+    minY + halfVh <= maxY - halfVh
+      ? Math.min(maxY - halfVh, Math.max(minY + halfVh, cy))
+      : (minY + maxY) * 0.5;
+
+  return {
+    x: Math.min(2600, Math.max(-1000, clampedX)),
+    y: Math.min(1800, Math.max(-1000, clampedY)),
+  };
+}
+
 /**
  * Resuelve `(x, y, zoom, smoothSpeed)` efectivos en escena para una ranura de cámara (`Cam 0/1/2/3+`).
  * Espejo exacto de `StageScene::resolve_slot_against_entities` en `pulse_core::stage`.
@@ -1918,6 +2179,10 @@ export function resolveCameraSlotTarget(params: {
     role: EntityRole;
     x: number;
     y: number;
+    width?: number;
+    height?: number;
+    scale?: number;
+    opacity?: number;
     visible: boolean;
     cameraOffset?: [number, number];
   }>;
@@ -1931,72 +2196,83 @@ export function resolveCameraSlotTarget(params: {
       ? camera.cameras
       : defaultStageCameraSlots(camera.baseX, camera.baseY, camera.baseZoom, camera.smoothSpeed);
 
+  const clampBg = camera.clampToBackground !== false;
+  const bgBounds = clampBg ? computeBackgroundBounds(entities) : null;
+
   const cam0 = slots[0]?.targetKind === 'fixed' ? slots[0] : null;
   const cam0X = cam0 ? cam0.x : camera.baseX;
   const cam0Y = cam0 ? cam0.y : camera.baseY;
   const slot = slots[slotIndex] ?? slots[0];
   if (!slot) {
+    const z = Math.min(2.5, Math.max(0.35, camera.baseZoom));
+    const pt = clampBg
+      ? clampCameraToBackground({ x: camera.baseX, y: camera.baseY, zoom: z, bounds: bgBounds })
+      : {
+          x: Math.min(2600, Math.max(-1000, camera.baseX)),
+          y: Math.min(1800, Math.max(-1000, camera.baseY)),
+        };
     return {
-      x: Math.min(2600, Math.max(-1000, camera.baseX)),
-      y: Math.min(1800, Math.max(-1000, camera.baseY)),
-      zoom: Math.min(2.5, Math.max(0.35, camera.baseZoom)),
+      x: pt.x,
+      y: pt.y,
+      zoom: z,
       smoothSpeed: Math.min(20, Math.max(1, camera.smoothSpeed)),
     };
   }
 
   const zoom = Math.min(2.5, Math.max(0.35, Number.isFinite(slot.zoom) ? slot.zoom : 1.0));
   const smoothSpeed = Math.min(20, Math.max(1, Number.isFinite(slot.smoothSpeed) ? slot.smoothSpeed : 6.0));
+  let rawX: number;
+  let rawY: number;
+
   if (slot.targetKind === 'fixed') {
-    return {
-      x: Math.min(2600, Math.max(-1000, slot.x)),
-      y: Math.min(1800, Math.max(-1000, slot.y)),
-      zoom,
-      smoothSpeed,
-    };
+    rawX = Math.min(2600, Math.max(-1000, slot.x));
+    rawY = Math.min(1800, Math.max(-1000, slot.y));
+  } else {
+    let anchor: (typeof entities)[number] | undefined;
+    if (slot.targetKind === 'player') {
+      anchor =
+        (activePlayerId ? entities.find((e) => e.id === activePlayerId) : undefined) ??
+        entities.find((e) => e.role === 'player' && e.visible) ??
+        entities.find((e) => e.role === 'player');
+    } else if (slot.targetKind === 'opponent') {
+      anchor =
+        (activeOpponentId ? entities.find((e) => e.id === activeOpponentId) : undefined) ??
+        entities.find((e) => e.role === 'opponent' && e.visible) ??
+        entities.find((e) => e.role === 'opponent');
+    } else if (slot.targetKind === 'gf') {
+      anchor =
+        entities.find(
+          (e) =>
+            e.role === 'decoration' &&
+            (e.id.toLowerCase() === 'stage_speakers' ||
+              e.id.toLowerCase().includes('gf') ||
+              (e.displayName ?? '').toLowerCase().includes('cabina')),
+        ) ?? entities.find((e) => e.role === 'decoration' && e.visible);
+    } else if (slot.targetKind === 'entity') {
+      anchor =
+        (slot.targetEntityId ? entities.find((e) => e.id === slot.targetEntityId) : undefined) ??
+        entities[0];
+    }
+
+    if (!anchor) {
+      rawX = Math.min(2600, Math.max(-1000, cam0X + slot.x));
+      rawY = Math.min(1800, Math.max(-1000, cam0Y + slot.y));
+    } else {
+      const camOff = anchor.cameraOffset ?? [0, 0];
+      const destX = anchor.x + camOff[0] + slot.x;
+      const destY = anchor.y + camOff[1] + slot.y;
+      const pan = Math.min(1, Math.max(0, Number.isFinite(slot.panStrength) ? slot.panStrength : 1.0));
+      rawX = Math.min(2600, Math.max(-1000, cam0X + (destX - cam0X) * pan));
+      rawY = Math.min(1800, Math.max(-1000, cam0Y + (destY - cam0Y) * pan));
+    }
   }
 
-  let anchor: (typeof entities)[number] | undefined;
-  if (slot.targetKind === 'player') {
-    anchor =
-      (activePlayerId ? entities.find((e) => e.id === activePlayerId) : undefined) ??
-      entities.find((e) => e.role === 'player' && e.visible) ??
-      entities.find((e) => e.role === 'player');
-  } else if (slot.targetKind === 'opponent') {
-    anchor =
-      (activeOpponentId ? entities.find((e) => e.id === activeOpponentId) : undefined) ??
-      entities.find((e) => e.role === 'opponent' && e.visible) ??
-      entities.find((e) => e.role === 'opponent');
-  } else if (slot.targetKind === 'gf') {
-    anchor =
-      entities.find(
-        (e) =>
-          e.role === 'decoration' &&
-          (e.id.toLowerCase() === 'stage_speakers' ||
-            e.id.toLowerCase().includes('gf') ||
-            (e.displayName ?? '').toLowerCase().includes('cabina')),
-      ) ?? entities.find((e) => e.role === 'decoration' && e.visible);
-  } else if (slot.targetKind === 'entity') {
-    anchor =
-      (slot.targetEntityId ? entities.find((e) => e.id === slot.targetEntityId) : undefined) ??
-      entities[0];
-  }
-
-  if (!anchor) {
-    return {
-      x: Math.min(2600, Math.max(-1000, cam0X + slot.x)),
-      y: Math.min(1800, Math.max(-1000, cam0Y + slot.y)),
-      zoom,
-      smoothSpeed,
-    };
-  }
-
-  const camOff = anchor.cameraOffset ?? [0, 0];
-  const destX = anchor.x + camOff[0] + slot.x;
-  const destY = anchor.y + camOff[1] + slot.y;
-  const pan = Math.min(1, Math.max(0, Number.isFinite(slot.panStrength) ? slot.panStrength : 1.0));
+  const finalPt = clampBg
+    ? clampCameraToBackground({ x: rawX, y: rawY, zoom, bounds: bgBounds })
+    : { x: rawX, y: rawY };
   return {
-    x: Math.min(2600, Math.max(-1000, cam0X + (destX - cam0X) * pan)),
-    y: Math.min(1800, Math.max(-1000, cam0Y + (destY - cam0Y) * pan)),
+    x: finalPt.x,
+    y: finalPt.y,
     zoom,
     smoothSpeed,
   };
@@ -2401,6 +2677,7 @@ export function renderCameraLuaConfigBlock(cfg: StageCameraConfigSpec): string {
     `local CAM_SMOOTH = ${cfg.smoothSpeed.toFixed(2)}`,
     `local CAM_PAN_STRENGTH = ${cfg.panStrength.toFixed(2)}`,
     `local CAM_ACTIVE_INDEX = ${activeIdx}`,
+    `local CAM_CLAMP_BG = ${cfg.clampToBackground !== false ? 'true' : 'false'}`,
     `local CAM_COUNT = ${slots.length}`,
     ...slotLines,
     '-- [CAM_CFG_END]',
@@ -2460,6 +2737,9 @@ export function parseCameraConfigFromLua(
         const maxIdx = Math.max(0, (next.cameras?.length ?? 3) - 1);
         next.activeCameraIndex = Math.min(maxIdx, Math.max(0, Math.round(n)));
       }
+    } else if (key === 'CAM_CLAMP_BG') {
+      if (/^true$/i.test(val)) next.clampToBackground = true;
+      else if (/^false$/i.test(val)) next.clampToBackground = false;
     }
   }
   if (next.cameras && next.cameras.length > 0) {
@@ -3856,11 +4136,32 @@ const UI_BLACKOUT_EVENT_NAMES = new Set([
   'hud fade',
   'hide hud',
   'show hud',
+  'hide arrows',
+  'show arrows',
+  'toggle arrows',
+  'fade arrows',
+  'arrows fade',
+  'hide strums',
+  'show strums',
+  'ocultar flechas',
+  'mostrar flechas',
+]);
+
+const UI_ARROW_ONLY_EVENT_NAMES = new Set([
+  'hide arrows',
+  'show arrows',
+  'toggle arrows',
+  'fade arrows',
+  'arrows fade',
+  'hide strums',
+  'show strums',
+  'ocultar flechas',
+  'mostrar flechas',
 ]);
 
 /**
  * Indica si el nombre de evento de chart corresponde a control de pantalla negra / visibilidad UI
- * (incluyendo eventos comunitarios de FNF/Psych como "Screen Fade", "Camera Fade", "Hide UI" o "Toggle UI").
+ * (incluyendo eventos comunitarios de FNF/Psych como "Screen Fade", "Camera Fade", "Hide UI", "Hide Arrows" o "Toggle UI").
  */
 export function isUiBlackoutEventName(name: string): boolean {
   return UI_BLACKOUT_EVENT_NAMES.has(name.trim().toLowerCase());
@@ -3958,13 +4259,30 @@ export function parseUiBlackoutEvent(ev: {
     };
   }
 
+  const isArrowOnly = UI_ARROW_ONLY_EVENT_NAMES.has(lowerName);
+  const isHudOnly = lowerName === 'hide hud' || lowerName === 'show hud';
+  const isUiBoth =
+    lowerName === 'hide ui' ||
+    lowerName === 'show ui' ||
+    lowerName === 'toggle ui' ||
+    lowerName === 'fade ui' ||
+    lowerName === 'hud fade';
+
   const v1Lower = ev.value1.trim().toLowerCase();
   let action: UiBlackoutAction =
-    lowerName === 'hide ui' || lowerName === 'hide hud'
+    lowerName === 'hide ui' ||
+    lowerName === 'hide hud' ||
+    lowerName === 'hide arrows' ||
+    lowerName === 'hide strums' ||
+    lowerName === 'ocultar flechas'
       ? 'hide'
-      : lowerName === 'show ui' || lowerName === 'show hud'
+      : lowerName === 'show ui' ||
+          lowerName === 'show hud' ||
+          lowerName === 'show arrows' ||
+          lowerName === 'show strums' ||
+          lowerName === 'mostrar flechas'
         ? 'show'
-        : lowerName === 'toggle ui'
+        : lowerName === 'toggle ui' || lowerName === 'toggle arrows'
           ? 'toggle'
           : v1Lower === 'intro' || v1Lower === 'hide' || v1Lower === 'show' || v1Lower === 'toggle' || v1Lower === 'fade'
             ? v1Lower
@@ -3974,15 +4292,35 @@ export function parseUiBlackoutEvent(ev: {
 
   let blackAlpha =
     action === 'intro' || action === 'hide'
-      ? lowerName === 'hide ui' || lowerName === 'hide hud'
+      ? isArrowOnly || isHudOnly || isUiBoth
         ? -1
         : 1
       : action === 'show'
-        ? 0
+        ? isArrowOnly || isHudOnly
+          ? -1
+          : 0
         : -1;
-  let hudAlpha = action === 'intro' || action === 'hide' ? 0 : action === 'show' ? 1 : -1;
-  let arrowsAlpha = action === 'intro' || action === 'hide' ? 0 : action === 'show' ? 1 : -1;
-  let durationSec = action === 'hide' && timeMs <= 50 ? 0 : 0.6;
+  let hudAlpha =
+    action === 'intro' || action === 'hide'
+      ? isArrowOnly
+        ? -1
+        : 0
+      : action === 'show'
+        ? isArrowOnly
+          ? -1
+          : 1
+        : -1;
+  let arrowsAlpha =
+    action === 'intro' || action === 'hide'
+      ? isHudOnly
+        ? -1
+        : 0
+      : action === 'show'
+        ? isHudOnly
+          ? -1
+          : 1
+        : -1;
+  let durationSec = action === 'hide' && timeMs <= 120 ? 0 : 0.6;
   let revealDelayMs = 0;
   let revealOnSongStart = true;
   let ease = 'sineInOut';
@@ -4005,6 +4343,20 @@ export function parseUiBlackoutEvent(ev: {
       hudAlpha = clamped;
       arrowsAlpha = clamped;
     }
+    const d = Number(ev.value2.trim());
+    if (Number.isFinite(d) && d >= 0) {
+      durationSec = Math.min(20, d);
+    }
+  } else if (lowerName === 'fade arrows' || lowerName === 'arrows fade') {
+    const a = Number(ev.value1.trim());
+    if (Number.isFinite(a) && a >= 0) {
+      arrowsAlpha = Math.min(1, a);
+    }
+    const d = Number(ev.value2.trim());
+    if (Number.isFinite(d) && d >= 0) {
+      durationSec = Math.min(20, d);
+    }
+  } else if (isArrowOnly || isHudOnly || lowerName === 'hide ui' || lowerName === 'show ui' || lowerName === 'toggle ui') {
     const d = Number(ev.value2.trim());
     if (Number.isFinite(d) && d >= 0) {
       durationSec = Math.min(20, d);
@@ -4059,17 +4411,23 @@ export function parseUiBlackoutEvent(ev: {
     }
   }
 
-  const isIntroBlackout =
-    action === 'intro' || (timeMs <= 120 && blackAlpha >= 0.85 && hudAlpha >= 0 && hudAlpha <= 0.15);
+  const hidesAtStart =
+    timeMs <= 120 &&
+    (action === 'hide' ||
+      (action === 'fade' &&
+        (blackAlpha >= 0.85 ||
+          (hudAlpha >= 0 && hudAlpha <= 0.15) ||
+          (arrowsAlpha >= 0 && arrowsAlpha <= 0.15))));
+  const isIntroBlackout = action === 'intro' || hidesAtStart;
 
   return {
     isUiBlackoutEvent: true,
     isIntroBlackout,
     action,
-    blackAlpha: isIntroBlackout && blackAlpha < 0 ? 1 : blackAlpha,
+    blackAlpha: action === 'intro' && blackAlpha < 0 ? 1 : blackAlpha,
     hudAlpha,
     arrowsAlpha,
-    durationSec: isIntroBlackout && durationSec <= 0.01 ? 0.65 : durationSec,
+    durationSec: action === 'intro' && durationSec <= 0.01 ? 0.65 : durationSec,
     revealDelayMs,
     revealOnSongStart: isIntroBlackout ? revealOnSongStart || revealDelayMs > 0 : false,
     ease,
@@ -4797,6 +5155,236 @@ export function resolveCharacterAnimWithFlipX(params: {
       return params.anim;
   }
 }
+
+export interface RepackedAtlasFrameBox extends RgbaAtlasFrameBox {
+  uniqueSlot: number | null;
+  dead: boolean;
+}
+
+export interface OptimizeSparrowAtlasResult {
+  deadFramesRemoved: number;
+  duplicateFramesMerged: number;
+  trimmedFrames: number;
+  prunedUnusedAnims: number;
+  uniqueSpriteCount: number;
+  modified: boolean;
+  animations: Record<string, RepackedAtlasFrameBox[]>;
+}
+
+/**
+ * Analiza y optimiza un atlas Sparrow en memoria: recorta bordes transparentes (`alpha < 2`),
+ * neutraliza frames muertos/vacíos hacia `(0, 0) 1×1` conservando el conteo de timeline,
+ * canoniza RGB tras alfa cero para deduplicar frames idénticos y poda animaciones sin uso ni
+ * referencia en scripts/eventos. Espejo lógico de `pulse_core::atlas_repack::optimize_and_repack_sparrow_atlas`.
+ */
+export function optimizeSparrowAtlasPlan(params: {
+  animations: Record<string, RgbaAtlasFrameBox[]>;
+  bindings?: Record<string, string | null | undefined>;
+  referencedPrefixes?: string[];
+  imgW: number;
+  imgH: number;
+  rgba: Uint8Array;
+}): OptimizeSparrowAtlasResult {
+  const { animations, bindings, referencedPrefixes, imgW, imgH, rgba } = params;
+  const boundPrefixes = new Set<string>(
+    Object.values(bindings ?? {}).filter((v): v is string => typeof v === 'string' && v.length > 0),
+  );
+  const refSet = referencedPrefixes ? new Set<string>(referencedPrefixes) : null;
+
+  const allPrefixes = Object.keys(animations);
+  let keptPrefixes: string[] = [];
+  let prunedUnusedAnims = 0;
+
+  for (const prefix of allPrefixes) {
+    const isBound = boundPrefixes.has(prefix);
+    const isScriptRef = refSet !== null && refSet.has(prefix);
+    if (boundPrefixes.size === 0 || isBound || isScriptRef || refSet === null) {
+      keptPrefixes.push(prefix);
+    } else {
+      prunedUnusedAnims += 1;
+    }
+  }
+  if (keptPrefixes.length === 0 && allPrefixes.length > 0) {
+    keptPrefixes = [...allPrefixes];
+    prunedUnusedAnims = 0;
+  }
+
+  const ALPHA_TRIM_THRESHOLD = 2;
+  const uniqueBytes: Uint8Array[] = [];
+  const buckets = new Map<string, number[]>();
+
+  let deadFramesRemoved = 0;
+  let duplicateFramesMerged = 0;
+  let trimmedFrames = 0;
+  const outAnimations: Record<string, RepackedAtlasFrameBox[]> = {};
+
+  for (const prefix of keptPrefixes) {
+    const frames = animations[prefix] ?? [];
+    const outFrames: RepackedAtlasFrameBox[] = [];
+
+    for (const f of frames) {
+      const vw = f.rotated ? f.height : f.width;
+      const vh = f.rotated ? f.width : f.height;
+      const validSrc =
+        f.width > 0 &&
+        f.height > 0 &&
+        f.x >= 0 &&
+        f.y >= 0 &&
+        f.x + f.width <= imgW &&
+        f.y + f.height <= imgH &&
+        rgba.length >= imgW * imgH * 4;
+
+      if (!validSrc || vw <= 0 || vh <= 0) {
+        deadFramesRemoved += 1;
+        outFrames.push({
+          ...f,
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+          rotated: false,
+          frameX: 0,
+          frameY: 0,
+          frameWidth: Math.max(1, f.frameWidth),
+          frameHeight: Math.max(1, f.frameHeight),
+          uniqueSlot: null,
+          dead: true,
+        });
+        continue;
+      }
+
+      // Buscar límites opacos en orientación erguida (sin rotación)
+      let minX = vw;
+      let minY = vh;
+      let maxXExcl = 0;
+      let maxYExcl = 0;
+      for (let ly = 0; ly < vh; ly += 1) {
+        for (let lx = 0; lx < vw; lx += 1) {
+          const tx = f.rotated ? f.x + (f.width - 1 - ly) : f.x + lx;
+          const ty = f.rotated ? f.y + lx : f.y + ly;
+          const a = rgba[(ty * imgW + tx) * 4 + 3] ?? 0;
+          if (a >= ALPHA_TRIM_THRESHOLD) {
+            if (lx < minX) minX = lx;
+            if (ly < minY) minY = ly;
+            if (lx + 1 > maxXExcl) maxXExcl = lx + 1;
+            if (ly + 1 > maxYExcl) maxYExcl = ly + 1;
+          }
+        }
+      }
+
+      if (maxXExcl <= minX || maxYExcl <= minY) {
+        deadFramesRemoved += 1;
+        outFrames.push({
+          ...f,
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+          rotated: false,
+          frameX: 0,
+          frameY: 0,
+          frameWidth: Math.max(1, f.frameWidth),
+          frameHeight: Math.max(1, f.frameHeight),
+          uniqueSlot: null,
+          dead: true,
+        });
+        continue;
+      }
+
+      const tw = maxXExcl - minX;
+      const th = maxYExcl - minY;
+      if (minX > 0 || minY > 0 || tw < vw || th < vh) {
+        trimmedFrames += 1;
+      }
+
+      // Extraer RGBA erguido y canonizar RGB en píxeles con alfa 0 para maximizar deduplicación
+      const trimmed = new Uint8Array(tw * th * 4);
+      for (let ry = 0; ry < th; ry += 1) {
+        for (let rx = 0; rx < tw; rx += 1) {
+          const lx = minX + rx;
+          const ly = minY + ry;
+          const tx = f.rotated ? f.x + (f.width - 1 - ly) : f.x + lx;
+          const ty = f.rotated ? f.y + lx : f.y + ly;
+          const srcIdx = (ty * imgW + tx) * 4;
+          const dstIdx = (ry * tw + rx) * 4;
+          const a = rgba[srcIdx + 3];
+          if (a === 0) {
+            trimmed[dstIdx] = 0;
+            trimmed[dstIdx + 1] = 0;
+            trimmed[dstIdx + 2] = 0;
+            trimmed[dstIdx + 3] = 0;
+          } else {
+            trimmed[dstIdx] = rgba[srcIdx];
+            trimmed[dstIdx + 1] = rgba[srcIdx + 1];
+            trimmed[dstIdx + 2] = rgba[srcIdx + 2];
+            trimmed[dstIdx + 3] = a;
+          }
+        }
+      }
+
+      const bucketKey = `${tw}x${th}:${fnv1a64Hex(trimmed)}`;
+      const bucket = buckets.get(bucketKey) ?? [];
+      let matchedIdx: number | null = null;
+      for (const idx of bucket) {
+        const cand = uniqueBytes[idx];
+        if (cand.length === trimmed.length) {
+          let same = true;
+          for (let i = 0; i < trimmed.length; i += 1) {
+            if (cand[i] !== trimmed[i]) {
+              same = false;
+              break;
+            }
+          }
+          if (same) {
+            matchedIdx = idx;
+            break;
+          }
+        }
+      }
+
+      let uniqueSlot: number;
+      if (matchedIdx !== null) {
+        duplicateFramesMerged += 1;
+        uniqueSlot = matchedIdx;
+      } else {
+        uniqueSlot = uniqueBytes.length;
+        uniqueBytes.push(trimmed);
+        bucket.push(uniqueSlot);
+        buckets.set(bucketKey, bucket);
+      }
+
+      outFrames.push({
+        ...f,
+        width: tw,
+        height: th,
+        rotated: false,
+        frameX: f.frameX - minX,
+        frameY: f.frameY - minY,
+        frameWidth: Math.max(f.frameWidth, vw),
+        frameHeight: Math.max(f.frameHeight, vh),
+        uniqueSlot,
+        dead: false,
+      });
+    }
+
+    outAnimations[prefix] = outFrames;
+  }
+
+  return {
+    deadFramesRemoved,
+    duplicateFramesMerged,
+    trimmedFrames,
+    prunedUnusedAnims,
+    uniqueSpriteCount: uniqueBytes.length,
+    modified:
+      deadFramesRemoved > 0 ||
+      duplicateFramesMerged > 0 ||
+      trimmedFrames > 0 ||
+      prunedUnusedAnims > 0,
+    animations: outAnimations,
+  };
+}
+
 
 
 

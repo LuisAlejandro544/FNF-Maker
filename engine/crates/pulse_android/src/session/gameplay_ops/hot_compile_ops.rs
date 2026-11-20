@@ -55,7 +55,7 @@ impl EngineSession {
             Some(&out_dir),
             &mut manifest,
             |pct, detail| {
-                on_progress(pct, "Optimizando sprites a WebP sin pérdida", detail);
+                on_progress(pct, "Deduplicando y optimizando sprites WebP", detail);
             },
         );
 

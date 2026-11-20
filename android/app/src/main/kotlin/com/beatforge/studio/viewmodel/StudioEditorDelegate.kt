@@ -41,6 +41,7 @@ internal class StudioEditorDelegate(
     private val bitmapLoader: StudioBitmapLoader
 ) {
     private val audioStateBuf = DoubleArray(3)
+    private val fastAudioStateBuf = DoubleArray(3)
 
     fun initializeEngine() {
         scope.launch(engineIoDispatcher) {
@@ -465,6 +466,30 @@ internal class StudioEditorDelegate(
         }
     }
 
+    fun updateChartIntroUi(
+        startBlackout: Boolean,
+        blackoutAlpha: Float,
+        hideHud: Boolean,
+        hideArrows: Boolean,
+        revealOnSongStart: Boolean,
+        revealDelayMs: Double,
+        fadeSec: Float
+    ) {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(
+                NativeEngineBridge.nativeUpdateChartIntroUi(
+                    startBlackout,
+                    blackoutAlpha,
+                    hideHud,
+                    hideArrows,
+                    revealOnSongStart,
+                    revealDelayMs,
+                    fadeSec
+                )
+            )
+        }
+    }
+
     fun setSectionBpm(secIndex: Int, bpm: Double, changeBpm: Boolean) {
         scope.launch(engineIoDispatcher) {
             applyActionJson(
@@ -573,6 +598,23 @@ internal class StudioEditorDelegate(
                 )
             }
         }
+    }
+
+    // Lectura directa lock-free desde átomos de Rust sin saltar al dispatcher de E/S ni bloquear mutex a 60 Hz.
+    fun readAudioPreviewStateFast(): AudioPreviewTransportState {
+        val ok = NativeEngineBridge.nativeReadAudioPreviewState(fastAudioStateBuf)
+        if (!ok) return AudioPreviewTransportState()
+        val posMs = fastAudioStateBuf[0].coerceAtLeast(0.0)
+        val playing = fastAudioStateBuf[1] >= 0.5
+        val durationMs = fastAudioStateBuf[2].coerceAtLeast(0.0)
+        if (uiState.value.audioPreviewPlaying != playing) {
+            uiState.update { it.copy(audioPreviewPlaying = playing) }
+        }
+        return AudioPreviewTransportState(
+            posMs = posMs,
+            isPlaying = playing,
+            durationMs = durationMs
+        )
     }
 
     fun setSparrowBinding(entityId: String, animKind: String, prefix: String) {
@@ -714,6 +756,7 @@ internal class StudioEditorDelegate(
         followIntervalBeats: Int,
         smoothSpeed: Float,
         panStrength: Float,
+        clampToBackground: Boolean,
         commitSave: Boolean
     ) {
         val clampedX = baseX.coerceIn(-1000f, 2600f)
@@ -754,6 +797,7 @@ internal class StudioEditorDelegate(
                         smoothSpeed = clampedSmooth,
                         panStrength = clampedPan,
                         activeCameraIndex = currentCam.activeCameraIndex.coerceIn(0, (updatedSlots.size - 1).coerceAtLeast(0)),
+                        clampToBackground = clampToBackground,
                         cameras = updatedSlots
                     )
                 )
@@ -770,6 +814,7 @@ internal class StudioEditorDelegate(
                 clampedBeats,
                 clampedSmooth,
                 clampedPan,
+                clampToBackground,
                 commitSave
             )
             if (commitSave) {

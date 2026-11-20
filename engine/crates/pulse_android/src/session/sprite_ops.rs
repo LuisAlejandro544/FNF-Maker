@@ -137,10 +137,12 @@ impl EngineSession {
 
         match self.try_bake_animate_for_entity(entity_id) {
             Ok(Some(msg)) => {
+                self.invalidate_compiled_bundle();
                 self.save_active_project_now();
                 self.ok_response(msg)
             }
             Ok(None) => {
+                self.invalidate_compiled_bundle();
                 self.save_active_project_now();
                 self.ok_response(if is_astc {
                     "Textura .astc decodificada y vinculada en Rust"
@@ -193,6 +195,7 @@ impl EngineSession {
                         if let Some(pending) = ent.pending_character_desc.clone() {
                             ent.apply_character_descriptor(&pending, false);
                         }
+                        self.invalidate_compiled_bundle();
                         self.save_active_project_now();
                         return self.ok_response(format!(
                             "Atlas JSON cargado automáticamente: {} animaciones",
@@ -214,10 +217,12 @@ impl EngineSession {
                     }
                     return match self.try_bake_animate_for_entity(entity_id) {
                         Ok(Some(msg)) => {
+                            self.invalidate_compiled_bundle();
                             self.save_active_project_now();
                             self.ok_response(msg)
                         }
                         Ok(None) => {
+                            self.invalidate_compiled_bundle();
                             self.save_active_project_now();
                             self.ok_response(format!(
                                 "spritemap1.json cargado ({} piezas). Falta Animation.json o textura para hornear el rig.",
@@ -237,10 +242,12 @@ impl EngineSession {
                     }
                     return match self.try_bake_animate_for_entity(entity_id) {
                         Ok(Some(msg)) => {
+                            self.invalidate_compiled_bundle();
                             self.save_active_project_now();
                             self.ok_response(msg)
                         }
                         Ok(None) => {
+                            self.invalidate_compiled_bundle();
                             self.save_active_project_now();
                             self.ok_response(format!(
                                 "Animation.json cargado ({} animaciones). Importa spritemap1.json y la textura (.astc/.png).",
@@ -289,6 +296,7 @@ impl EngineSession {
                     if let Some(pending) = ent.pending_character_desc.clone() {
                         ent.apply_character_descriptor(&pending, false);
                     }
+                    self.invalidate_compiled_bundle();
                     self.save_active_project_now();
                     self.ok_response(format!(
                         "XML Sparrow ensamblado automáticamente: {} animaciones",
@@ -337,6 +345,7 @@ impl EngineSession {
         let final_y = ent.y;
         let format_label = desc.format_label;
 
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response(format!(
             "{} aplicado: pos ({:.0}, {:.0}), {} anims enlazadas, {} offsets",
@@ -358,6 +367,7 @@ impl EngineSession {
             return self.err_response("Objeto de escenario no encontrado");
         };
         ent.set_anim_offset(kind, offset_x, offset_y);
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response(format!(
             "Offset {} ajustado a ({:.0}, {:.0})",
@@ -379,6 +389,7 @@ impl EngineSession {
             }
         }
         if updated {
+            self.invalidate_compiled_bundle();
             self.save_active_project_now();
             self.ok_response("Animación asignada")
         } else {
@@ -465,6 +476,7 @@ impl EngineSession {
             }
         }
         self.remove_managed_asset_if_unreferenced(old_icon.as_deref());
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response(if is_losing {
             "Ícono en estado perdiendo asignado"
@@ -481,6 +493,7 @@ impl EngineSession {
         };
         self.remove_managed_asset_if_unreferenced(old_normal.as_deref());
         self.remove_managed_asset_if_unreferenced(old_losing.as_deref());
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Íconos SVG predeterminados restaurados")
     }

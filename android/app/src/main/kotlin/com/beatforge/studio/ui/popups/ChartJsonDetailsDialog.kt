@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -28,11 +29,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,6 +49,8 @@ import androidx.compose.ui.window.Dialog
 import com.beatforge.studio.ChartSectionSnapshot
 import com.beatforge.studio.ChartSnapshot
 import com.beatforge.studio.ui.theme.StudioColors
+import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -61,6 +66,15 @@ fun ChartJsonDetailsDialog(
         stage: String,
         needsVoices: Boolean
     ) -> Unit,
+    onSaveIntroUi: (
+        startBlackout: Boolean,
+        blackoutAlpha: Float,
+        hideHud: Boolean,
+        hideArrows: Boolean,
+        revealOnSongStart: Boolean,
+        revealDelayMs: Double,
+        fadeSec: Float
+    ) -> Unit,
     onSetSectionBpm: (secIndex: Int, bpm: Double, changeBpm: Boolean) -> Unit,
     onAddEvent: (timeMs: Double, name: String, value1: String, value2: String) -> Unit,
     onRemoveEvent: (index: Int) -> Unit,
@@ -74,6 +88,15 @@ fun ChartJsonDetailsDialog(
     var stageText by remember(chart.stage) { mutableStateOf(chart.stage) }
     var needsVoices by remember(chart.needsVoices) { mutableStateOf(chart.needsVoices) }
 
+    val introCfg = chart.introUi
+    var introStartBlackout by remember(introCfg) { mutableStateOf(introCfg.startBlackout) }
+    var introBlackoutAlpha by remember(introCfg) { mutableFloatStateOf(introCfg.blackoutAlpha.coerceIn(0f, 1f)) }
+    var introHideHud by remember(introCfg) { mutableStateOf(introCfg.hideHud) }
+    var introHideArrows by remember(introCfg) { mutableStateOf(introCfg.hideArrows) }
+    var introRevealOnSongStart by remember(introCfg) { mutableStateOf(introCfg.revealOnSongStart) }
+    var introRevealDelayMs by remember(introCfg) { mutableFloatStateOf(introCfg.revealDelayMs.toFloat().coerceIn(0f, 15000f)) }
+    var introFadeSec by remember(introCfg) { mutableFloatStateOf(introCfg.fadeSec.coerceIn(0f, 10f)) }
+
     var evName by remember { mutableStateOf("Add Camera Zoom") }
     var evVal1 by remember { mutableStateOf("0.04") }
     var evVal2 by remember { mutableStateOf("0.02") }
@@ -85,7 +108,7 @@ fun ChartJsonDetailsDialog(
             border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.6f)),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(420.dp)
+                .heightIn(max = 520.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -172,6 +195,122 @@ fun ChartJsonDetailsDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Guardar Metadatos del Chart", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+
+                HorizontalDivider(color = StudioColors.BorderSubtle)
+                Text(
+                    text = "Inicio del Mod (Pantalla Negra / UI / Flechas)",
+                    color = StudioColors.AccentCoral,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "Se guarda dentro de chart.json (uiBlackout) y se aplica al Frame 0 sin ocultar '3, 2, 1, ¡YA!' ni Pausa.",
+                    color = StudioColors.TextMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 13.sp
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Iniciar en pantalla negra", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = introStartBlackout, onCheckedChange = { introStartBlackout = it })
+                }
+
+                if (introStartBlackout) {
+                    Text(
+                        text = "Opacidad cortina negra: ${(introBlackoutAlpha * 100).roundToInt()}%",
+                        color = StudioColors.TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Slider(
+                        value = introBlackoutAlpha,
+                        onValueChange = { introBlackoutAlpha = it },
+                        valueRange = 0.0f..1.0f
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Ocultar HUD al entrar al mod", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = introHideHud, onCheckedChange = { introHideHud = it })
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Ocultar flechas al entrar al mod", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = introHideArrows, onCheckedChange = { introHideArrows = it })
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Revelar al terminar '3, 2, 1, ¡YA!'", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = introRevealOnSongStart, onCheckedChange = { introRevealOnSongStart = it })
+                }
+
+                if (introRevealOnSongStart) {
+                    Text(
+                        text = "Espera al ¡YA!: ${(introRevealDelayMs / 1000.0).let { String.format(Locale.US, "%.1fs", it) }} · Fade: ${String.format(Locale.US, "%.2fs", introFadeSec)}",
+                        color = StudioColors.TextMuted,
+                        fontSize = 10.sp
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        listOf(0.0f to "0s", 500.0f to "+0.5s", 1000.0f to "+1s", 2000.0f to "+2s").forEach { (ms, label) ->
+                            OutlinedButton(
+                                onClick = { introRevealDelayMs = ms },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                border = if (abs(introRevealDelayMs - ms) < 15f) BorderStroke(1.5.dp, StudioColors.AccentAmber) else null,
+                                modifier = Modifier.weight(1f).height(28.dp)
+                            ) {
+                                Text(label, fontSize = 10.sp, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        listOf(0.0f to "Corte", 0.35f to "0.35s", 0.65f to "0.65s", 1.2f to "1.2s", 2.5f to "2.5s").forEach { (sec, label) ->
+                            OutlinedButton(
+                                onClick = { introFadeSec = sec },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                border = if (abs(introFadeSec - sec) < 0.05f) BorderStroke(1.5.dp, StudioColors.AccentCoral) else null,
+                                modifier = Modifier.weight(1f).height(28.dp)
+                            ) {
+                                Text(label, fontSize = 9.sp, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        onSaveIntroUi(
+                            introStartBlackout,
+                            introBlackoutAlpha.coerceIn(0f, 1f),
+                            introHideHud,
+                            introHideArrows,
+                            introRevealOnSongStart,
+                            introRevealDelayMs.toDouble(),
+                            introFadeSec.coerceIn(0f, 10f)
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.AccentCoral,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Guardar Inicio Oscuro / UI / Flechas", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
 
                 if (activeSection != null) {

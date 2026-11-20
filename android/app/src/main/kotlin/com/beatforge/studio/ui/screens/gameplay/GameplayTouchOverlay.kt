@@ -104,7 +104,8 @@ internal fun GameplayTouchOverlay(
                 }
             }
     ) {
-        if (isClassicHitbox) {
+        val arrowsAlpha = if (hud.arrowsVisible) hud.arrowsOpacity.coerceIn(0f, 1f) else 0f
+        if (isClassicHitbox && arrowsAlpha > 0.01f) {
             Row(modifier = Modifier.fillMaxSize()) {
                 for (lane in 0..3) {
                     val col = StudioColors.LaneColors[lane]
@@ -117,7 +118,7 @@ internal fun GameplayTouchOverlay(
                     ) {
                         Text(
                             text = TOUCH_LANE_NAMES[lane],
-                            color = col.copy(alpha = 0.82f),
+                            color = col.copy(alpha = 0.82f * arrowsAlpha),
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp
                         )

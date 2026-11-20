@@ -66,7 +66,7 @@ impl AudioEngineHandle {
             ) {
                 Ok((stream, actual_sr)) => {
                     if actual_sr > 0 {
-                        self.mixer.sample_rate.store(actual_sr, Ordering::Relaxed);
+                        self.mixer.set_sample_rate(actual_sr);
                     }
                     log::info!(
                         "Stream AAudio (100% Rust) iniciado correctamente a {} Hz",

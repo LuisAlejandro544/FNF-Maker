@@ -47,6 +47,7 @@ impl EngineSession {
         if let Some(gp) = self.gameplay.as_mut() {
             gp.hud_revision = gp.hud_revision.wrapping_add(1);
         }
+        self.invalidate_compiled_bundle();
         self.mark_dirty_and_maybe_save(false);
         self.ok_response("Proyecto actualizado")
     }
@@ -64,6 +65,8 @@ impl EngineSession {
                     self.project.chart_source_path = Some(PathBuf::from(display_name));
                     self.project.sync_stage_events_script();
                     self.project.sync_ui_blackout_script();
+                    self.invalidate_compiled_bundle();
+                    self.sync_mixer_chart_duration();
                     self.save_active_project_now();
                     self.ok_response(msg)
                 }
@@ -79,6 +82,8 @@ impl EngineSession {
 
     pub fn set_chart_bpm(&mut self, bpm: f64) -> String {
         self.project.chart.set_bpm(bpm);
+        self.invalidate_compiled_bundle();
+        self.sync_mixer_chart_duration();
         self.save_active_project_now();
         self.ok_response(format!("BPM actualizado a {:.1}", self.project.chart.bpm))
     }
@@ -97,12 +102,43 @@ impl EngineSession {
         self.project
             .chart
             .set_metadata(title, speed, player1, player2, gf_version, stage, needs_voices);
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Metadatos completos de chart.json actualizados")
     }
 
+    /// Actualiza la configuración inicial de pantalla negra / ocultar HUD / ocultar flechas
+    /// declarada directamente en `chart.json` y sincroniza `ui_blackout.lua`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_chart_intro_ui(
+        &mut self,
+        start_blackout: bool,
+        blackout_alpha: f32,
+        hide_hud: bool,
+        hide_arrows: bool,
+        reveal_on_song_start: bool,
+        reveal_delay_ms: f64,
+        fade_sec: f32,
+    ) -> String {
+        self.project.chart.set_intro_ui(pulse_core::ChartIntroUiConfig {
+            start_blackout,
+            blackout_alpha,
+            hide_hud,
+            hide_arrows,
+            reveal_on_song_start,
+            reveal_delay_ms,
+            fade_sec,
+        });
+        self.project.sync_ui_blackout_script();
+        self.invalidate_compiled_bundle();
+        self.save_active_project_now();
+        self.ok_response("Configuración inicial de pantalla negra, UI y flechas actualizada")
+    }
+
     pub fn set_section_bpm(&mut self, sec_index: usize, bpm: f64, change_bpm: bool) -> String {
         self.project.chart.set_section_bpm(sec_index, bpm, change_bpm);
+        self.invalidate_compiled_bundle();
+        self.sync_mixer_chart_duration();
         self.save_active_project_now();
         self.ok_response(format!("BPM de sección {} actualizado", sec_index + 1))
     }
@@ -111,6 +147,7 @@ impl EngineSession {
         self.project.chart.add_event(time_ms, name, value1, value2);
         self.project.sync_stage_events_script();
         self.project.sync_ui_blackout_script();
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Evento de chart.json y scripts de escena/UI actualizados")
     }
@@ -119,18 +156,22 @@ impl EngineSession {
         self.project.chart.remove_event(index);
         self.project.sync_stage_events_script();
         self.project.sync_ui_blackout_script();
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Evento eliminado y scripts de escena/UI actualizados")
     }
 
     pub fn add_chart_section(&mut self, must_hit: bool) -> String {
         let idx = self.project.chart.add_section(must_hit);
+        self.invalidate_compiled_bundle();
+        self.sync_mixer_chart_duration();
         self.save_active_project_now();
         self.ok_response(format!("Sección {} añadida", idx + 1))
     }
 
     pub fn toggle_section_must_hit(&mut self, sec_index: usize) -> String {
         self.project.chart.toggle_section_must_hit(sec_index);
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Foco de sección actualizado")
     }
@@ -142,6 +183,7 @@ impl EngineSession {
             Some(camera_slot as usize)
         };
         self.project.chart.set_section_camera_slot(sec_index, slot_opt);
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         let label = match slot_opt {
             None => "Automático (mustHit / gfSection)".to_string(),
@@ -175,6 +217,8 @@ impl EngineSession {
             sustain_steps,
             note_type,
         );
+        self.invalidate_compiled_bundle();
+        self.sync_mixer_chart_duration();
         self.save_active_project_now();
         self.ok_response("Nota actualizada")
     }
@@ -229,6 +273,7 @@ impl EngineSession {
                     .mixer
                     .set_track(slot, Some(Arc::clone(&arc_track)));
                 self.decoded_tracks[slot] = Some(arc_track);
+                self.invalidate_compiled_bundle();
                 self.save_active_project_now();
                 self.ok_response(format!("Pista {} decodificada y lista en Rust AAudio", slot + 1))
             }
@@ -246,6 +291,7 @@ impl EngineSession {
             self.decoded_tracks[slot] = None;
             self.audio_engine.mixer.set_track(slot, None);
             self.remove_managed_asset_if_unreferenced(old_path.as_deref());
+            self.invalidate_compiled_bundle();
             self.save_active_project_now();
         }
         self.ok_response(format!("Pista {} liberada", slot + 1))
@@ -270,6 +316,7 @@ impl EngineSession {
             self.audio_engine.mixer.configs[slot]
                 .duck_on_miss
                 .store(duck_on_miss, Ordering::Relaxed);
+            self.invalidate_compiled_bundle();
             self.mark_dirty_and_maybe_save(false);
         }
         self.ok_response("Configuración de pista actualizada")
@@ -287,6 +334,7 @@ impl EngineSession {
         let ent = StageEntity::new(id, clean_name, role);
         self.project.stage.entities.push(ent);
         self.project.stage.sort_by_z_order();
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Nuevo objeto añadido al escenario")
     }
@@ -323,6 +371,9 @@ impl EngineSession {
             ent.set_opacity(opacity);
             ent.visible = visible;
             ent.flip_x = flip_x;
+            if commit_save {
+                self.invalidate_compiled_bundle();
+            }
             self.mark_dirty_and_maybe_save(commit_save);
             if commit_save {
                 self.ok_response("Objeto actualizado")
@@ -342,6 +393,7 @@ impl EngineSession {
             "back" => self.project.stage.send_to_back(entity_id),
             _ => {}
         }
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Orden Z actualizado")
     }
@@ -373,6 +425,7 @@ impl EngineSession {
         follow_interval_beats: i32,
         smooth_speed: f32,
         pan_strength: f32,
+        clamp_to_background: bool,
         commit_save: bool,
     ) -> String {
         let mut cfg = self.project.stage.camera.clone();
@@ -384,10 +437,12 @@ impl EngineSession {
         cfg.follow_interval_beats = follow_interval_beats.clamp(1, 32) as u32;
         cfg.smooth_speed = smooth_speed;
         cfg.pan_strength = pan_strength;
+        cfg.clamp_to_background = clamp_to_background;
         cfg.sync_slot0_from_base();
         self.project.stage.apply_camera_config(cfg);
         if commit_save {
             self.sync_camera_lua_script();
+            self.invalidate_compiled_bundle();
         }
 
         self.mark_dirty_and_maybe_save(commit_save);
@@ -409,6 +464,7 @@ impl EngineSession {
         self.project.stage.camera_base_zoom = rzoom;
         self.project.stage.camera_zoom = rzoom;
         self.sync_camera_lua_script();
+        self.invalidate_compiled_bundle();
         self.mark_dirty_and_maybe_save(true);
         self.ok_response(format!("Previsualizando Cam {}", idx))
     }
@@ -448,6 +504,7 @@ impl EngineSession {
         }
         if commit_save {
             self.sync_camera_lua_script();
+            self.invalidate_compiled_bundle();
         }
         self.mark_dirty_and_maybe_save(commit_save);
         if commit_save {
@@ -486,6 +543,7 @@ impl EngineSession {
             pan_strength,
         );
         self.sync_camera_lua_script();
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response(format!("Nueva cámara Cam {} añadida", new_idx))
     }
@@ -506,6 +564,7 @@ impl EngineSession {
             }
         }
         self.sync_camera_lua_script();
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response(format!("Cámara Cam {} eliminada", slot_index))
     }
@@ -692,6 +751,7 @@ impl EngineSession {
         }
 
         self.project.stage.sort_by_z_order();
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
 
         self.ok_response(format!(
@@ -725,6 +785,7 @@ impl EngineSession {
             precompiled_js: None,
             precompiled_bytecode: None,
         });
+        self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Script creado")
     }
@@ -750,6 +811,7 @@ impl EngineSession {
                     precompiled_js: None,
                     precompiled_bytecode: None,
                 });
+                self.invalidate_compiled_bundle();
                 self.save_active_project_now();
                 self.ok_response("Script comunitario importado")
             }
@@ -764,6 +826,8 @@ impl EngineSession {
         if let Some(script) = self.project.scripts.iter_mut().find(|s| s.id == script_id) {
             script.enabled = enabled;
             script.source_code = source_code;
+            script.precompiled_bytecode = None;
+            script.precompiled_js = None;
             if script.id == CAMERA_SCRIPT_ID || script.name == CAMERA_SCRIPT_NAME {
                 is_camera_script = true;
                 let mut cfg =
@@ -781,6 +845,7 @@ impl EngineSession {
             }
         }
 
+        self.invalidate_compiled_bundle();
         self.mark_dirty_and_maybe_save(true);
         self.ok_response(if is_camera_script {
             "Script camera_system.lua y cámara del escenario sincronizados"

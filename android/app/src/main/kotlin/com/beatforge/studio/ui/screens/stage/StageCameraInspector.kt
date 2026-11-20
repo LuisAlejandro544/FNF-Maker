@@ -92,6 +92,7 @@ fun StageCameraInspector(
         followIntervalBeats: Int,
         smoothSpeed: Float,
         panStrength: Float,
+        clampToBackground: Boolean,
         commitSave: Boolean
     ) -> Unit,
     onSelectCameraSlot: (slotIndex: Int) -> Unit,
@@ -150,10 +151,10 @@ fun StageCameraInspector(
         localZoom
     }.coerceIn(0.35f, 2.5f)
 
-    val (previewX, previewY) = remember(camera, activeSlot, shownSlotX, shownSlotY, entities) {
+    val (previewX, previewY) = remember(camera, activeSlot, shownSlotX, shownSlotY, shownZoom, entities) {
         resolveCameraSlotPreviewCenter(
             camera = camera,
-            slot = activeSlot.copy(x = shownSlotX, y = shownSlotY),
+            slot = activeSlot.copy(x = shownSlotX, y = shownSlotY, zoom = shownZoom),
             entities = entities
         )
     }
@@ -164,7 +165,8 @@ fun StageCameraInspector(
     fun commitGlobalCamera(
         enabled: Boolean = camera.enabled,
         mode: String = camera.followMode,
-        beats: Int = camera.followIntervalBeats
+        beats: Int = camera.followIntervalBeats,
+        clampToBackground: Boolean = camera.clampToBackground
     ) {
         onUpdateCamera(
             enabled,
@@ -175,6 +177,7 @@ fun StageCameraInspector(
             beats,
             camera.smoothSpeed,
             camera.panStrength,
+            clampToBackground,
             true
         )
     }
@@ -882,6 +885,47 @@ fun StageCameraInspector(
                                 thumbColor = StudioColors.AccentEmerald,
                                 activeTrackColor = StudioColors.AccentEmerald
                             )
+                        )
+                    }
+                }
+
+                // Límite automático contra el fondo para no mostrar bordes negros en extremos
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = StudioColors.BgCard,
+                    border = BorderStroke(
+                        1.dp,
+                        if (camera.clampToBackground) StudioColors.AccentCyan.copy(alpha = 0.45f) else StudioColors.BorderSubtle
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Limitar cámara al fondo",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Evita bordes negros cuando el personaje está en un extremo",
+                                color = StudioColors.TextMuted,
+                                fontSize = 9.5.sp,
+                                lineHeight = 12.sp
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Switch(
+                            checked = camera.clampToBackground,
+                            onCheckedChange = { nextClamp ->
+                                commitGlobalCamera(clampToBackground = nextClamp)
+                            }
                         )
                     }
                 }

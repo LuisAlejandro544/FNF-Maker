@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.beatforge.studio.AudioPreviewTransportState
@@ -36,7 +37,6 @@ import com.beatforge.studio.ui.screens.chart.ChartToolsPanel
 import com.beatforge.studio.ui.screens.chart.buildChartStepLookup
 import com.beatforge.studio.ui.screens.chart.buildChartTimeline
 import com.beatforge.studio.ui.screens.chart.computeChartTotalDurationMs
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -57,6 +57,15 @@ fun ChartScreen(
         stage: String,
         needsVoices: Boolean
     ) -> Unit,
+    onUpdateChartIntroUi: (
+        startBlackout: Boolean,
+        blackoutAlpha: Float,
+        hideHud: Boolean,
+        hideArrows: Boolean,
+        revealOnSongStart: Boolean,
+        revealDelayMs: Double,
+        fadeSec: Float
+    ) -> Unit,
     onSetSectionBpm: (secIndex: Int, bpm: Double, changeBpm: Boolean) -> Unit,
     onAddChartEvent: (timeMs: Double, name: String, value1: String, value2: String) -> Unit,
     onRemoveChartEvent: (index: Int) -> Unit,
@@ -67,7 +76,7 @@ fun ChartScreen(
     onSetSectionCameraSlot: (secIndex: Int, cameraSlot: Int?) -> Unit,
     onToggleChartNote: (secIndex: Int, stepInSec: Int, col0To7: Int, sustainSteps: Int, noteType: String) -> Unit,
     onSetAudioPreviewTransport: (play: Boolean, seekMs: Double) -> Unit,
-    onReadAudioPreviewState: suspend () -> AudioPreviewTransportState
+    onReadAudioPreviewStateFast: () -> AudioPreviewTransportState
 ) {
     val chart = snapshot.chart
     var selectedSustainSteps by remember { mutableIntStateOf(0) }
@@ -99,46 +108,52 @@ fun ChartScreen(
         rows.firstOrNull { it is ChartTimelineRow.StepRow && it.globalStepIndex == stepIdx } as? ChartTimelineRow.StepRow
     }
 
-    // Sincronización inicial o al editar el chart mientras está en pausa
+    // Sincronización inicial o al editar el chart mientras está en pausa (lock-free)
     LaunchedEffect(stepLookup, chartDurationMs) {
-        val st = onReadAudioPreviewState()
+        val st = onReadAudioPreviewStateFast()
         val effectiveDur = maxOf(st.durationMs, chartDurationMs)
         playheadState.updatePosition(st.posMs, effectiveDur, stepLookup)
     }
 
-    // Bucle a 60 Hz mientras la canción suena: mueve el hilo y desplaza la rejilla si "Seguir" está activo
+    // Bucle VSYNC sincronizado con el reloj de frames (lock-free, cero salto de hilos IO y cero scroll redundante)
     LaunchedEffect(audioPreviewPlaying, stepLookup, chartDurationMs) {
         if (!audioPreviewPlaying) return@LaunchedEffect
         while (isActive) {
-            val st = onReadAudioPreviewState()
+            withFrameNanos { }
+            val st = onReadAudioPreviewStateFast()
             val effectiveDur = maxOf(st.durationMs, chartDurationMs)
             playheadState.updatePosition(st.posMs, effectiveDur, stepLookup)
 
             val target = playheadState.activeTarget
             if (playheadState.followThread && target != null) {
-                selectedSectionIdx = target.stepRow.section.index
-                val layout = listState.layoutInfo
-                val visItem = layout.visibleItemsInfo.firstOrNull { it.index == target.rowIndex }
-                if (visItem != null) {
-                    val threadY = visItem.offset.toFloat() + target.stepFraction * visItem.size.toFloat()
-                    val viewportH = (layout.viewportEndOffset - layout.viewportStartOffset)
-                        .toFloat()
-                        .coerceAtLeast(1f)
-                    val anchorY = viewportH * 0.40f
-                    if (threadY > anchorY) {
-                        listState.scrollBy(threadY - anchorY)
-                    } else if (threadY < layout.viewportStartOffset.toFloat()) {
+                val nextSec = target.stepRow.section.index
+                if (selectedSectionIdx != nextSec) {
+                    selectedSectionIdx = nextSec
+                }
+                if (!listState.isScrollInProgress) {
+                    val layout = listState.layoutInfo
+                    val visItem = layout.visibleItemsInfo.firstOrNull { it.index == target.rowIndex }
+                    if (visItem != null) {
+                        val threadY = visItem.offset.toFloat() + target.stepFraction * visItem.size.toFloat()
+                        val viewportH = (layout.viewportEndOffset - layout.viewportStartOffset)
+                            .toFloat()
+                            .coerceAtLeast(1f)
+                        val anchorY = viewportH * 0.40f
+                        val delta = threadY - anchorY
+                        if (delta > 0.75f) {
+                            listState.scrollBy(delta)
+                        } else if (threadY < layout.viewportStartOffset.toFloat()) {
+                            listState.scrollToItem((target.rowIndex - 3).coerceAtLeast(0))
+                        }
+                    } else {
                         listState.scrollToItem((target.rowIndex - 3).coerceAtLeast(0))
                     }
-                } else {
-                    listState.scrollToItem((target.rowIndex - 3).coerceAtLeast(0))
                 }
             }
 
             if (!st.isPlaying) {
                 break
             }
-            delay(16L)
         }
     }
 
@@ -285,6 +300,7 @@ fun ChartScreen(
             chart = chart,
             activeSection = activeSection,
             onSaveDetails = onUpdateChartDetails,
+            onSaveIntroUi = onUpdateChartIntroUi,
             onSetSectionBpm = onSetSectionBpm,
             onAddEvent = onAddChartEvent,
             onRemoveEvent = onRemoveChartEvent,

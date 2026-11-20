@@ -335,6 +335,9 @@ private fun BeatForgeRootContent(
                         onUpdateChartDetails = { title, speed, p1, p2, gf, stage, voices ->
                             viewModel.updateChartDetails(title, speed, p1, p2, gf, stage, voices)
                         },
+                        onUpdateChartIntroUi = { sb, ba, hh, ha, ros, rdm, fs ->
+                            viewModel.updateChartIntroUi(sb, ba, hh, ha, ros, rdm, fs)
+                        },
                         onSetSectionBpm = { secIdx, bpm, changeBpm ->
                             viewModel.setSectionBpm(secIdx, bpm, changeBpm)
                         },
@@ -355,7 +358,7 @@ private fun BeatForgeRootContent(
                         onSetAudioPreviewTransport = { play, seekMs ->
                             viewModel.setAudioPreviewTransport(play, seekMs)
                         },
-                        onReadAudioPreviewState = { viewModel.readAudioPreviewState() }
+                        onReadAudioPreviewStateFast = { viewModel.readAudioPreviewStateFast() }
                     )
 
                     StudioScreen.Audio -> AudioScreen(
@@ -406,8 +409,8 @@ private fun BeatForgeRootContent(
                         onRequestImportPng = { entityId ->
                             viewModel.requestImport(ImportKind.SpritePng(entityId))
                         },
-                        onUpdateCamera = { enabled, bx, by, bz, mode, beats, smooth, pan, commit ->
-                            viewModel.updateStageCamera(enabled, bx, by, bz, mode, beats, smooth, pan, commit)
+                        onUpdateCamera = { enabled, bx, by, bz, mode, beats, smooth, pan, clampBg, commit ->
+                            viewModel.updateStageCamera(enabled, bx, by, bz, mode, beats, smooth, pan, clampBg, commit)
                         },
                         onSelectCameraSlot = { slotIdx -> viewModel.selectStageCamera(slotIdx) },
                         onUpdateCameraSlot = { slotIdx, name, kind, entityId, x, y, zoom, smooth, pan, commit ->

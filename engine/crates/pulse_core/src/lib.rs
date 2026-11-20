@@ -17,6 +17,7 @@
 
 pub mod astc_loader;
 pub mod atlas_json;
+pub mod atlas_repack;
 pub mod chart;
 pub mod disk_cache;
 pub mod frame_memory;
@@ -35,9 +36,12 @@ pub use astc_loader::{
     save_lossless_webp,
 };
 pub use atlas_json::{AnimateDocument, AnimateSpritemap, DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
+pub use atlas_repack::{
+    AtlasRepackResult, collect_referenced_anim_prefixes, optimize_and_repack_sparrow_atlas,
+};
 pub use chart::{
-    ChartData, ChartEvent, ChartNote, ChartSection, ChartStats, NoteDirection, NoteSpecialKind,
-    ParsedChartCameraAction, parse_chart_camera_event,
+    ChartData, ChartEvent, ChartIntroUiConfig, ChartNote, ChartSection, ChartStats,
+    NoteDirection, NoteSpecialKind, ParsedChartCameraAction, parse_chart_camera_event,
 };
 pub use gfx_backend::{GfxCapabilities, RenderBackendKind};
 pub use disk_cache::{

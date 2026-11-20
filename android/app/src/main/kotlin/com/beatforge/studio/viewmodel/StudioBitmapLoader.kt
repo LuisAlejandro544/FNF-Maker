@@ -246,7 +246,8 @@ internal class StudioBitmapLoader {
                 ent.animateJsonPath != null ||
                 ent.animationPrefixes.isNotEmpty() ||
                 (ent.previewFrame?.found == true)
-            val cap = editorPreviewMaxSide(tier, hasAtlas)
+            val isBackground = ent.role == "background"
+            val cap = editorPreviewMaxSide(tier, hasAtlas, isBackground)
             decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = cap)?.let { loaded ->
                 out[ent.id] = loaded
             }
@@ -258,7 +259,8 @@ internal class StudioBitmapLoader {
         compiledPaths: Map<String, String>,
         entities: List<StageEntitySnapshot>,
         tier: DeviceTier,
-        onlyInitiallyVisible: Boolean = true
+        onlyInitiallyVisible: Boolean = true,
+        repackedEntityIds: Set<String> = emptySet()
     ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
         val origPaths = entities.associate { it.id to it.imagePath }
@@ -267,7 +269,8 @@ internal class StudioBitmapLoader {
                 continue
             }
             val cPath = compiledPaths[ent.id] ?: origPaths[ent.id] ?: continue
-            val oPath = origPaths[ent.id] ?: cPath
+            // Si el atlas fue reempaquetado en caliente, las coordenadas de sus frames ya pertenecen al WebP compilado.
+            val oPath = if (ent.id in repackedEntityIds) cPath else (origPaths[ent.id] ?: cPath)
             val cap = compiledGameplayMaxSide(tier, ent)
             decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = cap)?.let { loaded ->
                 out[ent.id] = loaded
@@ -280,12 +283,13 @@ internal class StudioBitmapLoader {
         entityId: String,
         compiledPaths: Map<String, String>,
         entities: List<StageEntitySnapshot>,
-        tier: DeviceTier
+        tier: DeviceTier,
+        repackedEntityIds: Set<String> = emptySet()
     ): LoadedEntityBitmap? {
         val ent = entities.firstOrNull { it.id == entityId } ?: return null
         val origPath = ent.imagePath
         val cPath = compiledPaths[entityId] ?: origPath ?: return null
-        val oPath = origPath ?: cPath
+        val oPath = if (entityId in repackedEntityIds) cPath else (origPath ?: cPath)
         val cap = compiledGameplayMaxSide(tier, ent)
         return decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = cap)
     }
@@ -295,11 +299,27 @@ internal class StudioBitmapLoader {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
     }
 
-    private fun editorPreviewMaxSide(tier: DeviceTier, hasAtlas: Boolean): Int {
+    private fun editorPreviewMaxSide(
+        tier: DeviceTier,
+        hasAtlas: Boolean,
+        isBackground: Boolean
+    ): Int {
         return when (tier) {
-            DeviceTier.LowRam32Bit -> if (hasAtlas) 1792 else 1024
-            DeviceTier.Balanced -> if (hasAtlas) 2560 else 1536
-            DeviceTier.HighQuality -> if (hasAtlas) 3072 else 2048
+            DeviceTier.LowRam32Bit -> when {
+                hasAtlas -> 1792
+                isBackground -> 1600
+                else -> 1024
+            }
+            DeviceTier.Balanced -> when {
+                hasAtlas -> 2560
+                isBackground -> 2048
+                else -> 1536
+            }
+            DeviceTier.HighQuality -> when {
+                hasAtlas -> 3072
+                isBackground -> 2560
+                else -> 2048
+            }
         }
     }
 
@@ -308,8 +328,13 @@ internal class StudioBitmapLoader {
             ent.animateJsonPath != null ||
             ent.animationPrefixes.isNotEmpty() ||
             (ent.previewFrame?.found == true)
+        val isBackground = ent.role == "background"
         return when (tier) {
-            DeviceTier.LowRam32Bit -> if (hasAtlas) 2560 else 1536
+            DeviceTier.LowRam32Bit -> when {
+                hasAtlas -> 2560
+                isBackground -> 2048
+                else -> 1536
+            }
             DeviceTier.Balanced -> if (hasAtlas) 4096 else 2560
             DeviceTier.HighQuality -> 4096
         }

@@ -217,6 +217,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         needsVoices: Boolean
     ) = editorDelegate.updateChartDetails(title, speed, player1, player2, gfVersion, stage, needsVoices)
 
+    fun updateChartIntroUi(
+        startBlackout: Boolean,
+        blackoutAlpha: Float,
+        hideHud: Boolean,
+        hideArrows: Boolean,
+        revealOnSongStart: Boolean,
+        revealDelayMs: Double,
+        fadeSec: Float
+    ) = editorDelegate.updateChartIntroUi(
+        startBlackout,
+        blackoutAlpha,
+        hideHud,
+        hideArrows,
+        revealOnSongStart,
+        revealDelayMs,
+        fadeSec
+    )
+
     fun setSectionBpm(secIndex: Int, bpm: Double, changeBpm: Boolean) =
         editorDelegate.setSectionBpm(secIndex, bpm, changeBpm)
 
@@ -252,6 +270,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     suspend fun readAudioPreviewState(): AudioPreviewTransportState =
         editorDelegate.readAudioPreviewState()
+
+    fun readAudioPreviewStateFast(): AudioPreviewTransportState =
+        editorDelegate.readAudioPreviewStateFast()
 
     fun setSparrowBinding(entityId: String, animKind: String, prefix: String) =
         editorDelegate.setSparrowBinding(entityId, animKind, prefix)
@@ -297,9 +318,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         followIntervalBeats: Int,
         smoothSpeed: Float,
         panStrength: Float,
+        clampToBackground: Boolean = _uiState.value.snapshot.stageCamera.clampToBackground,
         commitSave: Boolean = true
     ) = editorDelegate.updateStageCamera(
-        enabled, baseX, baseY, baseZoom, followMode, followIntervalBeats, smoothSpeed, panStrength, commitSave
+        enabled, baseX, baseY, baseZoom, followMode, followIntervalBeats, smoothSpeed, panStrength, clampToBackground, commitSave
     )
 
     fun selectStageCamera(slotIndex: Int) = editorDelegate.selectStageCamera(slotIndex)

@@ -13,10 +13,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -52,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,11 +63,19 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beatforge.studio.StageCameraSnapshot
-import com.beatforge.studio.VisibleNote
 import com.beatforge.studio.ui.theme.StudioColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -93,6 +102,9 @@ fun ChartTimelineGrid(
     onOpenStepCueDialog: (ChartTimelineRow.StepRow) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val textMeasurer = rememberTextMeasurer()
+    val laneTextCache = remember(textMeasurer) { HashMap<String, TextLayoutResult>() }
+
     Surface(
         modifier = modifier.fillMaxHeight(),
         shape = RoundedCornerShape(12.dp),
@@ -174,7 +186,7 @@ fun ChartTimelineGrid(
             }
             HorizontalDivider(color = StudioColors.BorderSubtle)
 
-            // Contenedor con LazyColumn + hilo reproductor flotante a 60 FPS sin recomponer filas
+            // Contenedor con LazyColumn optimizada (keys + contentType + 1 Canvas por fila) y hilo a 60 Hz
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -185,7 +197,21 @@ fun ChartTimelineGrid(
                     state = listState,
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(rows.size) { index ->
+                    items(
+                        count = rows.size,
+                        key = { index ->
+                            when (val r = rows[index]) {
+                                is ChartTimelineRow.SectionHeader -> "sec_${r.section.index}"
+                                is ChartTimelineRow.StepRow -> "step_${r.globalStepIndex}"
+                            }
+                        },
+                        contentType = { index ->
+                            when (rows[index]) {
+                                is ChartTimelineRow.SectionHeader -> 0
+                                is ChartTimelineRow.StepRow -> 1
+                            }
+                        }
+                    ) { index ->
                         when (val row = rows[index]) {
                             is ChartTimelineRow.SectionHeader -> {
                                 ChartSectionHeaderRow(
@@ -202,6 +228,8 @@ fun ChartTimelineGrid(
                                 ChartStepTimelineRow(
                                     row = row,
                                     selectedSustainSteps = selectedSustainSteps,
+                                    textMeasurer = textMeasurer,
+                                    textCache = laneTextCache,
                                     onSelectSection = onSelectSection,
                                     onToggleChartNote = onToggleChartNote,
                                     onOpenStepCueDialog = onOpenStepCueDialog,
@@ -232,10 +260,6 @@ private fun ChartPlayheadTransportBar(
     onToggleFollow: () -> Unit,
     onScrubMs: (Double) -> Unit
 ) {
-    val dur = playheadState.durationMs.coerceAtLeast(1.0)
-    val sliderPos = (playheadState.posMs / dur).toFloat().coerceIn(0f, 1f)
-    val currentTarget = playheadState.activeTarget
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -271,63 +295,100 @@ private fun ChartPlayheadTransportBar(
             )
         }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .clip(RoundedCornerShape(7.dp))
-                .background(
-                    if (playheadState.followThread) StudioColors.AccentCyan.copy(alpha = 0.16f)
-                    else StudioColors.BgCard
-                )
-                .border(
-                    1.dp,
-                    if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.BorderSubtle,
-                    RoundedCornerShape(7.dp)
-                )
-                .clickable(onClick = onToggleFollow)
-                .padding(horizontal = 7.dp, vertical = 4.dp)
-        ) {
-            Icon(
-                imageVector = if (playheadState.followThread) Icons.Rounded.GpsFixed else Icons.Rounded.GpsOff,
-                contentDescription = null,
-                tint = if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.TextMuted,
-                modifier = Modifier.size(12.dp)
-            )
-            Spacer(Modifier.width(3.dp))
-            Text(
-                text = if (playheadState.followThread) "Seguir" else "Libre",
-                color = if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.TextMuted,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                softWrap = false
-            )
-        }
+        ChartPlayheadFollowButton(
+            playheadState = playheadState,
+            onToggleFollow = onToggleFollow
+        )
 
-        Slider(
-            value = sliderPos,
-            onValueChange = { frac ->
-                onScrubMs(frac.toDouble() * dur)
-            },
-            colors = SliderDefaults.colors(
-                thumbColor = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.AccentCyan,
-                activeTrackColor = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.AccentCyan,
-                inactiveTrackColor = StudioColors.BorderSubtle
-            ),
+        ChartPlayheadScrubberSlider(
+            playheadState = playheadState,
+            audioPreviewPlaying = audioPreviewPlaying,
+            onScrubMs = onScrubMs,
             modifier = Modifier
                 .weight(1f)
                 .height(24.dp)
         )
 
+        ChartPlayheadTimeCounter(playheadState = playheadState)
+    }
+}
+
+@Composable
+private fun ChartPlayheadFollowButton(
+    playheadState: ChartPlayheadState,
+    onToggleFollow: () -> Unit
+) {
+    val following = playheadState.followThread
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(7.dp))
+            .background(
+                if (following) StudioColors.AccentCyan.copy(alpha = 0.16f)
+                else StudioColors.BgCard
+            )
+            .border(
+                1.dp,
+                if (following) StudioColors.AccentCyan else StudioColors.BorderSubtle,
+                RoundedCornerShape(7.dp)
+            )
+            .clickable(onClick = onToggleFollow)
+            .padding(horizontal = 7.dp, vertical = 4.dp)
+    ) {
+        Icon(
+            imageVector = if (following) Icons.Rounded.GpsFixed else Icons.Rounded.GpsOff,
+            contentDescription = null,
+            tint = if (following) StudioColors.AccentCyan else StudioColors.TextMuted,
+            modifier = Modifier.size(12.dp)
+        )
+        Spacer(Modifier.width(3.dp))
         Text(
-            text = "${formatChartTimeMs(playheadState.posMs)} / #${currentTarget?.stepRow?.stepInSec ?: 0}",
-            color = StudioColors.TextPrimary,
+            text = if (following) "Seguir" else "Libre",
+            color = if (following) StudioColors.AccentCyan else StudioColors.TextMuted,
             fontSize = 10.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false
         )
     }
+}
+
+@Composable
+private fun ChartPlayheadScrubberSlider(
+    playheadState: ChartPlayheadState,
+    audioPreviewPlaying: Boolean,
+    onScrubMs: (Double) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dur = playheadState.durationMs.coerceAtLeast(1.0)
+    val sliderPos = (playheadState.posMs / dur).toFloat().coerceIn(0f, 1f)
+    Slider(
+        value = sliderPos,
+        onValueChange = { frac ->
+            onScrubMs(frac.toDouble() * dur)
+        },
+        colors = SliderDefaults.colors(
+            thumbColor = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.AccentCyan,
+            activeTrackColor = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.AccentCyan,
+            inactiveTrackColor = StudioColors.BorderSubtle
+        ),
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun ChartPlayheadTimeCounter(
+    playheadState: ChartPlayheadState
+) {
+    val stepInSec = playheadState.activeTarget?.stepRow?.stepInSec ?: 0
+    Text(
+        text = "${formatChartTimeMs(playheadState.posMs)} / #$stepInSec",
+        color = StudioColors.TextPrimary,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        softWrap = false
+    )
 }
 
 @Composable
@@ -550,6 +611,8 @@ private fun ChartSectionHeaderRow(
 private fun ChartStepTimelineRow(
     row: ChartTimelineRow.StepRow,
     selectedSustainSteps: Int,
+    textMeasurer: TextMeasurer,
+    textCache: MutableMap<String, TextLayoutResult>,
     onSelectSection: (Int) -> Unit,
     onToggleChartNote: (Int, Int, Int, Int) -> Unit,
     onOpenStepCueDialog: (ChartTimelineRow.StepRow) -> Unit,
@@ -594,53 +657,22 @@ private fun ChartStepTimelineRow(
             }
         )
 
-        // 4 columnas Oponente (0..3)
-        Row(
+        // Los 8 carriles (Oponente 0..3 + separador 8dp + Jugador 4..7) se dibujan en un solo Canvas
+        // para reducir de ~36 nodos de layout por fila a 1 Canvas sin recomposiciones al hacer scroll.
+        ChartStepLanesCanvas(
+            row = row,
+            isBeat = isBeat,
+            selectedSustainSteps = selectedSustainSteps,
+            textMeasurer = textMeasurer,
+            textCache = textCache,
+            onTapCol = { col ->
+                onSelectSection(row.section.index)
+                onToggleChartNote(row.section.index, row.stepInSec, col, selectedSustainSteps)
+            },
             modifier = Modifier
                 .weight(1f)
-                .fillMaxHeight(),
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            for (c in 0..3) {
-                ChartNoteCell(
-                    note = row.rowNotesByCol[c],
-                    sustainPass = row.sustainPassesByCol[c],
-                    laneIndex = c,
-                    stepMs = row.stepMs,
-                    isBeat = isBeat,
-                    onClick = {
-                        onSelectSection(row.section.index)
-                        onToggleChartNote(row.section.index, row.stepInSec, c, selectedSustainSteps)
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        Spacer(Modifier.width(8.dp))
-
-        // 4 columnas Jugador (4..7)
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            for (c in 4..7) {
-                ChartNoteCell(
-                    note = row.rowNotesByCol[c],
-                    sustainPass = row.sustainPassesByCol[c],
-                    laneIndex = c - 4,
-                    stepMs = row.stepMs,
-                    isBeat = isBeat,
-                    onClick = {
-                        onSelectSection(row.section.index)
-                        onToggleChartNote(row.section.index, row.stepInSec, c, selectedSustainSteps)
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
+                .fillMaxHeight()
+        )
     }
 }
 
@@ -654,7 +686,7 @@ private fun StepNumberCueCell(
 ) {
     val hasEvents = row.rowEvents.isNotEmpty()
     val flashColor = row.activeFlashColor
-    val badgeKinds = row.rowEvents.map { classifyChartEvent(it.event) }.distinct()
+    val badgeKinds = row.eventKinds
 
     Box(
         modifier = Modifier
@@ -758,81 +790,135 @@ private fun SustainConnectorCanvas(laneIndex: Int) {
     }
 }
 
+private fun getOrMeasureCachedLaneText(
+    textMeasurer: TextMeasurer,
+    textCache: MutableMap<String, TextLayoutResult>,
+    text: String,
+    color: Color,
+    fontSizeSp: Float,
+    fontWeight: FontWeight
+): TextLayoutResult {
+    val key = "$text|${color.toArgb()}|$fontSizeSp|${fontWeight.weight}"
+    textCache[key]?.let { return it }
+    val measured = textMeasurer.measure(
+        text = AnnotatedString(text),
+        style = TextStyle(
+            color = color,
+            fontSize = fontSizeSp.sp,
+            fontWeight = fontWeight
+        ),
+        maxLines = 1,
+        softWrap = false
+    )
+    if (textCache.size < 128) {
+        textCache[key] = measured
+    }
+    return measured
+}
+
+/**
+ * Dibuja los 8 carriles de una fila de pasos dentro de un solo `Canvas` con cache de glifos
+ * y detecta taps por coordenada X sin crear 8 `Box` + 8 `Canvas` + 16 `Text` por fila.
+ */
 @Composable
-private fun ChartNoteCell(
-    note: VisibleNote?,
-    sustainPass: ChartSustainPass?,
-    laneIndex: Int,
-    stepMs: Double,
+private fun ChartStepLanesCanvas(
+    row: ChartTimelineRow.StepRow,
     isBeat: Boolean,
-    onClick: () -> Unit,
+    selectedSustainSteps: Int,
+    textMeasurer: TextMeasurer,
+    textCache: MutableMap<String, TextLayoutResult>,
+    onTapCol: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val laneColor = StudioColors.LaneColors[laneIndex]
-    val hasNote = note != null
-    val sustainSteps = if (note != null && note.sustainMs > stepMs * 0.4) {
-        (note.sustainMs / stepMs).roundToInt().coerceAtLeast(1)
-    } else {
-        0
-    }
-    val segKind = sustainPass?.kind ?: SustainSegmentKind.None
+    val currentOnTapCol by rememberUpdatedState(onTapCol)
 
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
+    Canvas(
+        modifier = modifier.pointerInput(row.globalStepIndex, row.section.index, selectedSustainSteps) {
+            detectTapGestures { offset ->
+                val w = size.width.toFloat()
+                if (w <= 0f) return@detectTapGestures
+                val gapPx = 8.dp.toPx()
+                val laneGapPx = 3.dp.toPx()
+                val sideW = (w - gapPx).coerceAtLeast(16f) / 2f
+                val laneStride = ((sideW - laneGapPx * 3f).coerceAtLeast(4f) / 4f) + laneGapPx
+                val x = offset.x
+                val col = when {
+                    x < sideW -> (x / laneStride).toInt().coerceIn(0, 3)
+                    x >= sideW + gapPx -> 4 + ((x - sideW - gapPx) / laneStride).toInt().coerceIn(0, 3)
+                    else -> return@detectTapGestures
+                }
+                currentOnTapCol(col)
+            }
+        }
     ) {
-        // Capa 1: Estela vertical continua del sustain (Head -> Body -> Tail redondeado)
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val padX = 1.dp.toPx()
-            val padY = 3.dp.toPx()
-            val slotW = (size.width - padX * 2f).coerceAtLeast(4f)
-            val slotH = (size.height - padY * 2f).coerceAtLeast(4f)
+        val w = size.width
+        val h = size.height
+        val gapPx = 8.dp.toPx()
+        val laneGapPx = 3.dp.toPx()
+        val sideW = (w - gapPx).coerceAtLeast(16f) / 2f
+        val laneW = (sideW - laneGapPx * 3f).coerceAtLeast(4f) / 4f
+        val padX = 1.dp.toPx()
+        val padY = 3.dp.toPx()
+        val slotW = (laneW - padX * 2f).coerceAtLeast(4f)
+        val slotH = (h - padY * 2f).coerceAtLeast(4f)
+        val slotCorner = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+        val slotColor = StudioColors.BgCard.copy(alpha = if (isBeat) 0.72f else 0.42f)
 
-            if (!hasNote) {
+        val beamW = (laneW * 0.36f).coerceAtLeast(9f)
+        val coreW = (laneW * 0.14f).coerceAtLeast(3.5f)
+        val noteH = 28.dp.toPx().coerceAtMost((h - 2f).coerceAtLeast(8f))
+        val noteTop = (h - noteH) * 0.5f
+        val noteCorner = CornerRadius(6.dp.toPx(), 6.dp.toPx())
+
+        for (c in 0..7) {
+            val isPlayer = c >= 4
+            val laneIndex = if (isPlayer) c - 4 else c
+            val sideOriginX = if (isPlayer) sideW + gapPx else 0f
+            val laneX = sideOriginX + laneIndex * (laneW + laneGapPx)
+            val laneColor = StudioColors.LaneColors[laneIndex]
+            val note = row.rowNotesByCol[c]
+            val segKind = row.sustainPassesByCol[c]?.kind ?: SustainSegmentKind.None
+
+            if (note == null) {
                 drawRoundRect(
-                    color = StudioColors.BgCard.copy(alpha = if (isBeat) 0.72f else 0.42f),
-                    topLeft = Offset(padX, padY),
+                    color = slotColor,
+                    topLeft = Offset(laneX + padX, padY),
                     size = Size(slotW, slotH),
-                    cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+                    cornerRadius = slotCorner
                 )
             }
 
             if (segKind != SustainSegmentKind.None) {
-                val beamW = (size.width * 0.36f).coerceAtLeast(9f)
-                val coreW = (size.width * 0.14f).coerceAtLeast(3.5f)
-                val beamLeft = (size.width - beamW) / 2f
-                val coreLeft = (size.width - coreW) / 2f
-
+                val beamLeft = laneX + (laneW - beamW) / 2f
+                val coreLeft = laneX + (laneW - coreW) / 2f
                 when (segKind) {
                     SustainSegmentKind.Head -> {
-                        val startY = size.height * 0.5f
+                        val startY = h * 0.5f
                         drawRect(
                             color = laneColor.copy(alpha = 0.76f),
                             topLeft = Offset(beamLeft, startY),
-                            size = Size(beamW, size.height - startY)
+                            size = Size(beamW, h - startY)
                         )
                         drawRect(
                             color = Color.White.copy(alpha = 0.45f),
                             topLeft = Offset(coreLeft, startY),
-                            size = Size(coreW, size.height - startY)
+                            size = Size(coreW, h - startY)
                         )
                     }
                     SustainSegmentKind.Body -> {
                         drawRect(
                             color = laneColor.copy(alpha = 0.74f),
                             topLeft = Offset(beamLeft, 0f),
-                            size = Size(beamW, size.height)
+                            size = Size(beamW, h)
                         )
                         drawRect(
                             color = Color.White.copy(alpha = 0.42f),
                             topLeft = Offset(coreLeft, 0f),
-                            size = Size(coreW, size.height)
+                            size = Size(coreW, h)
                         )
                     }
                     SustainSegmentKind.Tail -> {
-                        val endY = size.height * 0.74f
+                        val endY = h * 0.74f
                         val capR = beamW * 0.5f
                         drawRoundRect(
                             color = laneColor.copy(alpha = 0.80f),
@@ -851,73 +937,100 @@ private fun ChartNoteCell(
                     SustainSegmentKind.None -> {}
                 }
             }
-        }
 
-        // Capa 2: Cabeza de nota (flecha o nota especial X / Esquive / Alt / Sin Anim)
-        if (hasNote) {
-            val isHurt = note!!.noteKindCode == 1 || note.noteType.equals("hurt", ignoreCase = true)
-            val isInstakill = note.noteKindCode == 2 || note.noteType.equals("instakill", ignoreCase = true)
-            val isDodge = note.noteKindCode == 3 || note.noteType.equals("dodge", ignoreCase = true)
-            val isAlt = note.noteKindCode == 4 || note.noteType.equals("alt", ignoreCase = true)
-            val isNoAnim = note.noteKindCode == 5 || note.noteType.equals("no_anim", ignoreCase = true)
+            if (note != null) {
+                val isHurt = note.noteKindCode == 1 || note.noteType.equals("hurt", ignoreCase = true)
+                val isInstakill = note.noteKindCode == 2 || note.noteType.equals("instakill", ignoreCase = true)
+                val isDodge = note.noteKindCode == 3 || note.noteType.equals("dodge", ignoreCase = true)
+                val isAlt = note.noteKindCode == 4 || note.noteType.equals("alt", ignoreCase = true)
+                val isNoAnim = note.noteKindCode == 5 || note.noteType.equals("no_anim", ignoreCase = true)
 
-            val noteBgColor = when {
-                isInstakill -> Color(0xFFB71C1C)
-                isHurt -> StudioColors.AccentCoral
-                isDodge -> StudioColors.AccentAmber
-                isAlt -> StudioColors.AccentPurple
-                isNoAnim -> StudioColors.BgElevated
-                else -> laneColor.copy(alpha = 0.94f)
-            }
-            val noteBorderColor = when {
-                isInstakill -> Color(0xFFFF8A80)
-                isHurt -> Color.White
-                isDodge -> Color(0xFFFFF59D)
-                else -> Color.White.copy(alpha = 0.75f)
-            }
-            val symbolText = when {
-                isInstakill -> "X!"
-                isHurt -> "X"
-                isDodge -> "⚡"
-                isAlt -> "${LANE_ARROWS[laneIndex]}A"
-                isNoAnim -> "${LANE_ARROWS[laneIndex]}∅"
-                else -> LANE_ARROWS[laneIndex]
-            }
+                val noteBgColor = when {
+                    isInstakill -> Color(0xFFB71C1C)
+                    isHurt -> StudioColors.AccentCoral
+                    isDodge -> StudioColors.AccentAmber
+                    isAlt -> StudioColors.AccentPurple
+                    isNoAnim -> StudioColors.BgElevated
+                    else -> laneColor.copy(alpha = 0.94f)
+                }
+                val noteBorderColor = when {
+                    isInstakill -> Color(0xFFFF8A80)
+                    isHurt -> Color.White
+                    isDodge -> Color(0xFFFFF59D)
+                    else -> Color.White.copy(alpha = 0.75f)
+                }
+                val symbolText = when {
+                    isInstakill -> "X!"
+                    isHurt -> "X"
+                    isDodge -> "⚡"
+                    isAlt -> "${LANE_ARROWS[laneIndex]}A"
+                    isNoAnim -> "${LANE_ARROWS[laneIndex]}∅"
+                    else -> LANE_ARROWS[laneIndex]
+                }
+                val sustainSteps = if (note.sustainMs > row.stepMs * 0.4) {
+                    (note.sustainMs / row.stepMs).roundToInt().coerceAtLeast(1)
+                } else {
+                    0
+                }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(28.dp)
-                    .padding(horizontal = 1.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(noteBgColor)
-                    .border(if (isHurt || isInstakill) 1.5.dp else 1.dp, noteBorderColor, RoundedCornerShape(6.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text(
-                        text = symbolText,
-                        color = if (isDodge) Color(0xFF1F1200) else Color.White,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        maxLines = 1,
-                        softWrap = false
+                val noteLeft = laneX + padX
+                drawRoundRect(
+                    color = noteBgColor,
+                    topLeft = Offset(noteLeft, noteTop),
+                    size = Size(slotW, noteH),
+                    cornerRadius = noteCorner
+                )
+                drawRoundRect(
+                    color = noteBorderColor,
+                    topLeft = Offset(noteLeft, noteTop),
+                    size = Size(slotW, noteH),
+                    cornerRadius = noteCorner,
+                    style = Stroke(width = (if (isHurt || isInstakill) 1.5.dp else 1.dp).toPx())
+                )
+
+                val contentColor = if (isDodge) Color(0xFF1F1200) else Color.White
+                val symLayout = getOrMeasureCachedLaneText(
+                    textMeasurer = textMeasurer,
+                    textCache = textCache,
+                    text = symbolText,
+                    color = contentColor,
+                    fontSizeSp = 11.5f,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                if (sustainSteps > 0) {
+                    val susLayout = getOrMeasureCachedLaneText(
+                        textMeasurer = textMeasurer,
+                        textCache = textCache,
+                        text = "${sustainSteps}p",
+                        color = contentColor.copy(alpha = 0.90f),
+                        fontSizeSp = 9f,
+                        fontWeight = FontWeight.Bold
                     )
-                    if (sustainSteps > 0) {
-                        Text(
-                            text = "${sustainSteps}p",
-                            color = (if (isDodge) Color(0xFF1F1200) else Color.White).copy(alpha = 0.90f),
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
+                    val innerGap = 2.dp.toPx()
+                    val totalTextW = symLayout.size.width + innerGap + susLayout.size.width
+                    val startX = noteLeft + ((slotW - totalTextW) * 0.5f).coerceAtLeast(2f)
+                    drawText(
+                        textLayoutResult = symLayout,
+                        topLeft = Offset(startX, noteTop + (noteH - symLayout.size.height) * 0.5f)
+                    )
+                    drawText(
+                        textLayoutResult = susLayout,
+                        topLeft = Offset(
+                            startX + symLayout.size.width + innerGap,
+                            noteTop + (noteH - susLayout.size.height) * 0.5f
                         )
-                    }
+                    )
+                } else {
+                    drawText(
+                        textLayoutResult = symLayout,
+                        topLeft = Offset(
+                            noteLeft + (slotW - symLayout.size.width) * 0.5f,
+                            noteTop + (noteH - symLayout.size.height) * 0.5f
+                        )
+                    )
                 }
             }
         }
     }
 }
+

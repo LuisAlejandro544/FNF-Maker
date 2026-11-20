@@ -472,6 +472,10 @@ pub fn default_camera_slots(
     ]
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Configuración persistente del sistema multicámara vinculada a `camera_system.lua`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageCameraConfig {
@@ -485,6 +489,8 @@ pub struct StageCameraConfig {
     pub pan_strength: f32,
     #[serde(default)]
     pub active_camera_index: usize,
+    #[serde(default = "default_true")]
+    pub clamp_to_background: bool,
     #[serde(default)]
     pub cameras: Vec<StageCameraSlot>,
 }
@@ -505,6 +511,7 @@ impl Default for StageCameraConfig {
             smooth_speed,
             pan_strength: 0.85,
             active_camera_index: 0,
+            clamp_to_background: true,
             cameras: default_camera_slots(base_x, base_y, base_zoom, smooth_speed),
         }
     }
@@ -708,6 +715,123 @@ impl StageScene {
         }
     }
 
+    /// Calcula el rectángulo límite `[min_left, min_top, max_right, max_bottom]` formado por las
+    /// capas de fondo (`EntityRole::Background`) para evitar que la cámara muestre bordes negros vacíos.
+    fn compute_background_bounds(entities: &[StageEntity]) -> Option<[f32; 4]> {
+        let mut candidates: Vec<&StageEntity> = entities
+            .iter()
+            .filter(|e| e.role == EntityRole::Background && e.visible && e.opacity > 0.01)
+            .collect();
+        if candidates.is_empty() {
+            candidates = entities
+                .iter()
+                .filter(|e| e.role == EntityRole::Background)
+                .collect();
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let large_only: Vec<&StageEntity> = candidates
+            .iter()
+            .copied()
+            .filter(|e| (e.width * e.scale).abs() >= 320.0 && (e.height * e.scale).abs() >= 180.0)
+            .collect();
+        let chosen = if large_only.is_empty() {
+            &candidates
+        } else {
+            &large_only
+        };
+
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for bg in chosen {
+            let hw = (bg.width * bg.scale).abs() * 0.5;
+            let hh = (bg.height * bg.scale).abs() * 0.5;
+            min_x = min_x.min(bg.x - hw);
+            max_x = max_x.max(bg.x + hw);
+            min_y = min_y.min(bg.y - hh);
+            max_y = max_y.max(bg.y + hh);
+        }
+
+        if min_x.is_finite() && min_y.is_finite() && max_x > min_x && max_y > min_y {
+            Some([min_x, min_y, max_x, max_y])
+        } else {
+            None
+        }
+    }
+
+    fn clamp_point_to_bounds(
+        x: f32,
+        y: f32,
+        zoom: f32,
+        virtual_w: f32,
+        virtual_h: f32,
+        bounds: Option<[f32; 4]>,
+    ) -> (f32, f32) {
+        let cx_world = if x.is_finite() {
+            x.clamp(-1000.0, 2600.0)
+        } else {
+            640.0
+        };
+        let cy_world = if y.is_finite() {
+            y.clamp(-1000.0, 1800.0)
+        } else {
+            360.0
+        };
+        let Some([min_x, min_y, max_x, max_y]) = bounds else {
+            return (cx_world, cy_world);
+        };
+        let z = if zoom.is_finite() {
+            zoom.clamp(0.35, 2.5)
+        } else {
+            1.0
+        };
+        let half_vw = (virtual_w.max(320.0) * 0.5) / z;
+        let half_vh = (virtual_h.max(180.0) * 0.5) / z;
+
+        let clamped_x = if min_x + half_vw <= max_x - half_vw {
+            cx_world.clamp(min_x + half_vw, max_x - half_vw)
+        } else {
+            (min_x + max_x) * 0.5
+        };
+        let clamped_y = if min_y + half_vh <= max_y - half_vh {
+            cy_world.clamp(min_y + half_vh, max_y - half_vh)
+        } else {
+            (min_y + max_y) * 0.5
+        };
+        (
+            clamped_x.clamp(-1000.0, 2600.0),
+            clamped_y.clamp(-1000.0, 1800.0),
+        )
+    }
+
+    /// Devuelve el rectángulo delimitador del fondo actual (`[min_x, min_y, max_x, max_y]`).
+    pub fn background_bounds(&self) -> Option<[f32; 4]> {
+        Self::compute_background_bounds(&self.entities)
+    }
+
+    /// Restringe unas coordenadas `(x, y)` al área cubierta por el fondo del escenario según el `zoom`
+    /// activo cuando `clamp_to_background` está habilitado.
+    pub fn clamp_camera_to_background(&self, x: f32, y: f32, zoom: f32) -> (f32, f32) {
+        if !self.camera.clamp_to_background {
+            return (
+                if x.is_finite() { x.clamp(-1000.0, 2600.0) } else { 640.0 },
+                if y.is_finite() { y.clamp(-1000.0, 1800.0) } else { 360.0 },
+            );
+        }
+        Self::clamp_point_to_bounds(
+            x,
+            y,
+            zoom,
+            self.virtual_width,
+            self.virtual_height,
+            self.background_bounds(),
+        )
+    }
+
     fn resolve_slot_against_entities(
         cfg: &StageCameraConfig,
         entities: &[StageEntity],
@@ -728,28 +852,24 @@ impl StageScene {
             .map(|c| c.y)
             .unwrap_or(cfg.base_y);
 
+        let bg_bounds = if cfg.clamp_to_background {
+            Self::compute_background_bounds(entities)
+        } else {
+            None
+        };
+
         let Some(slot) = cfg.cameras.get(slot_idx).or_else(|| cfg.cameras.first()) else {
-            return (
-                cfg.base_x.clamp(-1000.0, 2600.0),
-                cfg.base_y.clamp(-1000.0, 1800.0),
-                cfg.base_zoom.clamp(0.35, 2.5),
-                cfg.smooth_speed.clamp(1.0, 20.0),
-            );
+            let z = cfg.base_zoom.clamp(0.35, 2.5);
+            let (cx, cy) = Self::clamp_point_to_bounds(cfg.base_x, cfg.base_y, z, 1280.0, 720.0, bg_bounds);
+            return (cx, cy, z, cfg.smooth_speed.clamp(1.0, 20.0));
         };
 
         let zoom = slot.zoom.clamp(0.35, 2.5);
         let smooth = slot.smooth_speed.clamp(1.0, 20.0);
 
-        if slot.target_kind == CameraTargetKind::Fixed {
-            return (
-                slot.x.clamp(-1000.0, 2600.0),
-                slot.y.clamp(-1000.0, 1800.0),
-                zoom,
-                smooth,
-            );
-        }
-
-        if let Some(ent) = Self::resolve_entity_anchor(
+        let (raw_x, raw_y) = if slot.target_kind == CameraTargetKind::Fixed {
+            (slot.x.clamp(-1000.0, 2600.0), slot.y.clamp(-1000.0, 1800.0))
+        } else if let Some(ent) = Self::resolve_entity_anchor(
             entities,
             slot.target_kind,
             slot.target_entity_id.as_deref(),
@@ -759,17 +879,23 @@ impl StageScene {
             let dest_x = ent.x + ent.camera_offset[0] + slot.x;
             let dest_y = ent.y + ent.camera_offset[1] + slot.y;
             let pan = slot.pan_strength.clamp(0.0, 1.0);
-            let tx = (cam0_x + (dest_x - cam0_x) * pan).clamp(-1000.0, 2600.0);
-            let ty = (cam0_y + (dest_y - cam0_y) * pan).clamp(-1000.0, 1800.0);
-            (tx, ty, zoom, smooth)
+            (
+                (cam0_x + (dest_x - cam0_x) * pan).clamp(-1000.0, 2600.0),
+                (cam0_y + (dest_y - cam0_y) * pan).clamp(-1000.0, 1800.0),
+            )
         } else {
             (
                 (cam0_x + slot.x).clamp(-1000.0, 2600.0),
                 (cam0_y + slot.y).clamp(-1000.0, 1800.0),
-                zoom,
-                smooth,
             )
-        }
+        };
+
+        let (final_x, final_y) = if cfg.clamp_to_background {
+            Self::clamp_point_to_bounds(raw_x, raw_y, zoom, 1280.0, 720.0, bg_bounds)
+        } else {
+            (raw_x, raw_y)
+        };
+        (final_x, final_y, zoom, smooth)
     }
 
     /// Resuelve coordenadas `(x, y, zoom, smooth_speed)` reales en escena para la cámara `slot_idx`.

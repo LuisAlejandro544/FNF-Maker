@@ -329,160 +329,18 @@ fun ChartToolsPanel(
                 }
             }
 
-            // Módulo de Reproducción + Hilo descendente + Seguimiento para precisar Flashes y Swaps
-            val currentTarget = playheadState.activeTarget
-            val currentTimeText = formatChartTimeMs(playheadState.posMs)
-            val currentStepLabel = currentTarget?.let {
-                "Sec ${it.stepRow.section.index + 1} · #${it.stepRow.stepInSec}"
-            } ?: "Sec ${(activeSection?.index ?: 0) + 1} · #0"
-
-            Surface(
-                shape = RoundedCornerShape(9.dp),
-                color = StudioColors.BgCard,
-                border = BorderStroke(
-                    1.dp,
-                    if (audioPreviewPlaying) StudioColors.AccentEmerald.copy(alpha = 0.7f)
-                    else StudioColors.BorderSubtle
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = if (audioPreviewPlaying) "Hilo bajando" else if (playheadState.posMs > 1.0) "En pausa" else "Reproductor",
-                            color = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.TextPrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "$currentTimeText · $currentStepLabel",
-                            color = StudioColors.AccentCyan,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Button(
-                            onClick = onPlayOrPausePlayhead,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (audioPreviewPlaying) StudioColors.AccentAmber else StudioColors.AccentEmerald,
-                                contentColor = Color(0xFF0A1410)
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(34.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (audioPreviewPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = when {
-                                    audioPreviewPlaying -> "Pausar"
-                                    playheadState.posMs > 1.0 -> "Reanudar"
-                                    else -> "Reproducir"
-                                },
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = onRewindPlayheadToStart,
-                            contentPadding = PaddingValues(0.dp),
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.SkipPrevious,
-                                contentDescription = "Volver a 0:00",
-                                tint = StudioColors.TextMuted,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        OutlinedButton(
-                            onClick = onToggleFollowPlayhead,
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            border = BorderStroke(
-                                1.dp,
-                                if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.BorderSubtle
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(31.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (playheadState.followThread) Icons.Rounded.GpsFixed else Icons.Rounded.GpsOff,
-                                contentDescription = null,
-                                tint = if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.TextMuted,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = if (playheadState.followThread) "Seguir: ON" else "Seguir: OFF",
-                                color = if (playheadState.followThread) StudioColors.AccentCyan else StudioColors.TextMuted,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = { onPlayFromSection(activeSection?.startMs ?: 0.0) },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(0.9f)
-                                .height(31.dp)
-                        ) {
-                            Text(
-                                text = "Desde Sec.${(activeSection?.index ?: 0) + 1}",
-                                fontSize = 10.sp,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-                    }
-
-                    if (currentTarget != null) {
-                        OutlinedButton(
-                            onClick = onOpenCueAtPlayhead,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            border = BorderStroke(1.dp, StudioColors.AccentPurple.copy(alpha = 0.55f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(29.dp)
-                        ) {
-                            Icon(Icons.Rounded.AutoAwesome, null, tint = StudioColors.AccentPurple, modifier = Modifier.size(13.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                text = "Evento / Cámara en #${currentTarget.stepRow.stepInSec}",
-                                color = StudioColors.TextPrimary,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-                    }
-                }
-            }
+            // Módulo de Reproducción + Hilo descendente + Seguimiento aislado para evitar recomposiciones a 60 Hz
+            ChartPlayheadToolCard(
+                activeSectionIndex = activeSection?.index ?: 0,
+                activeSectionStartMs = activeSection?.startMs ?: 0.0,
+                audioPreviewPlaying = audioPreviewPlaying,
+                playheadState = playheadState,
+                onPlayOrPausePlayhead = onPlayOrPausePlayhead,
+                onPlayFromSection = onPlayFromSection,
+                onRewindPlayheadToStart = onRewindPlayheadToStart,
+                onToggleFollowPlayhead = onToggleFollowPlayhead,
+                onOpenCueAtPlayhead = onOpenCueAtPlayhead
+            )
 
             HorizontalDivider(color = StudioColors.BorderSubtle)
 
@@ -554,3 +412,183 @@ fun ChartToolsPanel(
         }
     }
 }
+
+/**
+ * Tarjeta modular de transporte y seguimiento del hilo reproductor.
+ * Aísla las lecturas mutables de `ChartPlayheadState` (`posMs`, `activeTarget`, `followThread`)
+ * en sub-composables hoja para evitar recomponer botones, chips y la lista de secciones a 60 Hz.
+ */
+@Composable
+private fun ChartPlayheadToolCard(
+    activeSectionIndex: Int,
+    activeSectionStartMs: Double,
+    audioPreviewPlaying: Boolean,
+    playheadState: ChartPlayheadState,
+    onPlayOrPausePlayhead: () -> Unit,
+    onPlayFromSection: (Double) -> Unit,
+    onRewindPlayheadToStart: () -> Unit,
+    onToggleFollowPlayhead: () -> Unit,
+    onOpenCueAtPlayhead: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = StudioColors.BgCard,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (audioPreviewPlaying) StudioColors.AccentEmerald.copy(alpha = 0.65f) else StudioColors.BorderSubtle
+        )
+    ) {
+        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            ChartPlayheadStatusHeader(
+                audioPreviewPlaying = audioPreviewPlaying,
+                playheadState = playheadState
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Button(
+                    onClick = onPlayOrPausePlayhead,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (audioPreviewPlaying) StudioColors.AccentAmber else StudioColors.AccentEmerald,
+                        contentColor = Color(0xFF0A1410)
+                    ),
+                    modifier = Modifier
+                        .weight(1.25f)
+                        .height(31.dp)
+                ) {
+                    Icon(
+                        imageVector = if (audioPreviewPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        text = if (audioPreviewPlaying) "Pausar" else "Reproducir",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onRewindPlayheadToStart,
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(31.dp)
+                ) {
+                    Icon(Icons.Rounded.SkipPrevious, contentDescription = "Inicio", modifier = Modifier.size(15.dp))
+                }
+
+                ChartPlayheadFollowChip(
+                    playheadState = playheadState,
+                    onToggleFollowPlayhead = onToggleFollowPlayhead
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                OutlinedButton(
+                    onClick = { onPlayFromSection(activeSectionStartMs) },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(27.dp)
+                ) {
+                    Text(
+                        text = "Desde Sec ${activeSectionIndex + 1}",
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onOpenCueAtPlayhead,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(27.dp)
+                ) {
+                    Text(
+                        text = "+ Evento en hilo",
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChartPlayheadStatusHeader(
+    audioPreviewPlaying: Boolean,
+    playheadState: ChartPlayheadState
+) {
+    val activeStepInSec = playheadState.activeTarget?.stepRow?.stepInSec ?: 0
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Hilo y Audio",
+            color = if (audioPreviewPlaying) StudioColors.AccentEmerald else StudioColors.TextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "${formatChartTimeMs(playheadState.posMs)} · Paso #$activeStepInSec",
+            color = StudioColors.AccentCyan,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false
+        )
+    }
+}
+
+@Composable
+private fun ChartPlayheadFollowChip(
+    playheadState: ChartPlayheadState,
+    onToggleFollowPlayhead: () -> Unit
+) {
+    val following = playheadState.followThread
+    Box(
+        modifier = Modifier
+            .height(31.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (following) StudioColors.AccentCyan.copy(alpha = 0.18f) else StudioColors.BgPanel
+            )
+            .border(
+                width = 1.dp,
+                color = if (following) StudioColors.AccentCyan else StudioColors.BorderSubtle,
+                shape = RoundedCornerShape(8.dp)
+            )
+            .clickable(onClick = onToggleFollowPlayhead)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(
+                imageVector = if (following) Icons.Rounded.GpsFixed else Icons.Rounded.GpsOff,
+                contentDescription = null,
+                tint = if (following) StudioColors.AccentCyan else StudioColors.TextMuted,
+                modifier = Modifier.size(13.dp)
+            )
+            Text(
+                text = if (following) "Seguir" else "Libre",
+                color = if (following) StudioColors.AccentCyan else StudioColors.TextMuted,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+

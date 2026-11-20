@@ -55,6 +55,8 @@ pub struct AudioMixerState {
     pub countdown_beat_frames: AtomicU64,
     pub gameover_sfx_total_frames: AtomicU64,
     pub gameover_sfx_remaining_frames: AtomicU64,
+    pub max_track_duration_ms_bits: AtomicU64,
+    pub chart_duration_ms_bits: AtomicU64,
     pub tracks: RwLock<[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS]>,
     pub stream_source: RwLock<Option<Arc<StreamingAudioSource>>>,
     pub configs: [TrackRuntimeConfig; MAX_AUDIO_TRACKS],
@@ -74,6 +76,8 @@ impl AudioMixerState {
             countdown_beat_frames: AtomicU64::new(0),
             gameover_sfx_total_frames: AtomicU64::new(0),
             gameover_sfx_remaining_frames: AtomicU64::new(0),
+            max_track_duration_ms_bits: AtomicU64::new(0.0_f64.to_bits()),
+            chart_duration_ms_bits: AtomicU64::new(0.0_f64.to_bits()),
             tracks: RwLock::new([None, None, None]),
             stream_source: RwLock::new(None),
             configs: [
@@ -86,16 +90,22 @@ impl AudioMixerState {
 
     pub fn set_track(&self, slot: usize, track: Option<Arc<DecodedTrack>>) {
         if slot < MAX_AUDIO_TRACKS {
-            let mut guard = self.tracks.write();
-            guard[slot] = track;
+            {
+                let mut guard = self.tracks.write();
+                guard[slot] = track;
+            }
+            self.update_max_track_duration_ms();
         }
     }
 
     pub fn clear_tracks(&self) {
-        let mut guard = self.tracks.write();
-        for slot in guard.iter_mut() {
-            *slot = None;
+        {
+            let mut guard = self.tracks.write();
+            for slot in guard.iter_mut() {
+                *slot = None;
+            }
         }
+        self.update_max_track_duration_ms();
     }
 
     pub fn set_stream_source(&self, source: Option<Arc<StreamingAudioSource>>) {
@@ -170,6 +180,52 @@ impl AudioMixerState {
             .max()
             .unwrap_or(0);
         (max_frames as f64 / sr) * 1000.0
+    }
+
+    /// Actualiza la duración máxima cacheada en `AtomicU64` para lecturas lock-free a 60 FPS.
+    pub fn update_max_track_duration_ms(&self) {
+        let dur = self.max_track_duration_ms();
+        self.max_track_duration_ms_bits
+            .store(dur.to_bits(), Ordering::Release);
+    }
+
+    /// Actualiza la duración total cacheada del chart activo en `AtomicU64`.
+    pub fn set_chart_duration_ms(&self, duration_ms: f64) {
+        let safe = if duration_ms.is_finite() && duration_ms > 0.0 {
+            duration_ms
+        } else {
+            0.0
+        };
+        self.chart_duration_ms_bits
+            .store(safe.to_bits(), Ordering::Release);
+    }
+
+    /// Actualiza la frecuencia de muestreo y recalcula la duración cacheada de pistas.
+    pub fn set_sample_rate(&self, sample_rate: u32) {
+        self.sample_rate
+            .store(sample_rate.max(8000), Ordering::Release);
+        self.update_max_track_duration_ms();
+    }
+
+    /// Lectura 100% libre de locks (`Mutex`/`RwLock`) para el hilo de seguimiento en Chart Editor.
+    /// Devuelve `(position_ms, is_playing, total_duration_ms)` y detiene al final automáticamente.
+    pub fn read_preview_state_lockfree(&self) -> (f64, bool, f64) {
+        let track_dur = f64::from_bits(self.max_track_duration_ms_bits.load(Ordering::Acquire));
+        let chart_dur = f64::from_bits(self.chart_duration_ms_bits.load(Ordering::Acquire));
+        let duration_ms = track_dur.max(chart_dur).max(0.0);
+        let mut pos_ms = self.position_ms().max(0.0);
+        let mut playing = self.is_playing.load(Ordering::Acquire);
+
+        if playing && duration_ms > 0.0 && pos_ms >= duration_ms {
+            self.is_playing.store(false, Ordering::Release);
+            let sr = self.sample_rate.load(Ordering::Relaxed).max(1) as f64;
+            let frame = ((duration_ms / 1000.0) * sr).round() as u64;
+            self.frame_cursor.store(frame, Ordering::Release);
+            pos_ms = duration_ms;
+            playing = false;
+        }
+
+        (pos_ms, playing, duration_ms)
     }
 
     /// Devuelve el tiempo actual en milisegundos (negativo durante la cuenta regresiva 3-2-1-¡YA!).
@@ -445,5 +501,28 @@ mod tests {
         let mut buf = vec![0.0_f32; 4_800 * 2];
         mixer.render_audio_frames(&mut buf);
         assert!(buf.iter().any(|s| s.abs() > 0.05));
+    }
+
+    #[test]
+    fn lockfree_preview_state_tracks_durations_and_auto_pauses_at_end() {
+        let mixer = AudioMixerState::new(48_000);
+        mixer.set_chart_duration_ms(2500.0);
+        let track = Arc::new(DecodedTrack {
+            sample_rate: 48_000,
+            stereo_samples: vec![1000_i16; 96_000 * 2], // 2000 ms
+        });
+        mixer.set_track(0, Some(track));
+
+        let (pos0, playing0, dur0) = mixer.read_preview_state_lockfree();
+        assert!(!playing0);
+        assert!((pos0 - 0.0).abs() < 0.1);
+        assert!((dur0 - 2500.0).abs() < 0.1);
+
+        mixer.seek_ms(2600.0);
+        mixer.play();
+        let (pos1, playing1, dur1) = mixer.read_preview_state_lockfree();
+        assert!(!playing1);
+        assert!((dur1 - 2500.0).abs() < 0.1);
+        assert!((pos1 - 2500.0).abs() < 0.1);
     }
 }

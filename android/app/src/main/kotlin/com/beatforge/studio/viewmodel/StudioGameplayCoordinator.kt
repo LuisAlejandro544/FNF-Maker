@@ -103,11 +103,13 @@ internal class StudioGameplayCoordinator(
                 )
             }
 
+            val repackedIds = snap.lastCompileReport?.repackedEntityIds?.toSet() ?: emptySet()
             val compiledMap = bitmapLoader.loadCompiledEntityBitmaps(
                 snap.lastCompileReport?.compiledTexturePaths ?: emptyMap(),
                 snap.stageEntities,
                 tier,
-                onlyInitiallyVisible = true
+                onlyInitiallyVisible = true,
+                repackedEntityIds = repackedIds
             )
             val arrows = bitmapLoader.loadArrowBitmaps()
             val receptors = bitmapLoader.loadReceptorBitmaps()
@@ -221,6 +223,7 @@ internal class StudioGameplayCoordinator(
                 }
             } else if (ent.preloadRequested && !ent.retired && existing == null && loadingEntityIds.add(entId)) {
                 val compiledPaths = st.snapshot.lastCompileReport?.compiledTexturePaths ?: emptyMap()
+                val repackedIds = st.snapshot.lastCompileReport?.repackedEntityIds?.toSet() ?: emptySet()
                 val stageEntities = st.snapshot.stageEntities
                 val tier = st.selectedTier
                 scope.launch(Dispatchers.IO) {
@@ -229,7 +232,8 @@ internal class StudioGameplayCoordinator(
                             entityId = entId,
                             compiledPaths = compiledPaths,
                             entities = stageEntities,
-                            tier = tier
+                            tier = tier,
+                            repackedEntityIds = repackedIds
                         )
                         if (decoded != null && gameplayFrameState.active) {
                             var droppedEarly = false
@@ -327,6 +331,7 @@ internal class StudioGameplayCoordinator(
             clearRecycleState(recycleImmediately = true)
             val st = uiState.value
             val compiledPaths = st.snapshot.lastCompileReport?.compiledTexturePaths ?: emptyMap()
+            val repackedIds = st.snapshot.lastCompileReport?.repackedEntityIds?.toSet() ?: emptySet()
             val tier = st.selectedTier
 
             // Re-decodificar desde `compiled_cache/*.webp` cualquier sprite inicial que haya sido reciclado en el intento anterior
@@ -338,7 +343,8 @@ internal class StudioGameplayCoordinator(
                             entityId = ent.id,
                             compiledPaths = compiledPaths,
                             entities = st.snapshot.stageEntities,
-                            tier = tier
+                            tier = tier,
+                            repackedEntityIds = repackedIds
                         )?.let { decoded ->
                             restoredMap[ent.id] = decoded
                         }

@@ -272,6 +272,8 @@ mod jni_exports {
             guard.project.chart_source_path = None;
             guard.project.sync_stage_events_script();
             guard.project.sync_ui_blackout_script();
+            guard.invalidate_compiled_bundle();
+            guard.sync_mixer_chart_duration();
             guard.save_active_project_now();
             guard.ok_response("Chart demo restaurado")
         };
@@ -322,6 +324,30 @@ mod jni_exports {
             &gf,
             &st,
             needs_voices != 0,
+        );
+        to_jstr(&mut env, &json)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateChartIntroUi<'local>(
+        mut env: JNIEnv<'local>,
+        _cls: JClass<'local>,
+        start_blackout: jboolean,
+        blackout_alpha: jfloat,
+        hide_hud: jboolean,
+        hide_arrows: jboolean,
+        reveal_on_song_start: jboolean,
+        reveal_delay_ms: jdouble,
+        fade_sec: jfloat,
+    ) -> JString<'local> {
+        let json = session().lock().update_chart_intro_ui(
+            start_blackout != 0,
+            blackout_alpha,
+            hide_hud != 0,
+            hide_arrows != 0,
+            reveal_on_song_start != 0,
+            reveal_delay_ms,
+            fade_sec,
         );
         to_jstr(&mut env, &json)
     }
@@ -529,32 +555,12 @@ mod jni_exports {
         _cls: JClass<'local>,
         out_state: JDoubleArray<'local>,
     ) -> jboolean {
-        let guard = session().lock();
-        let track_dur_ms = guard.audio_engine.mixer.max_track_duration_ms();
-        let chart_dur_ms = guard
-            .project
-            .chart
-            .sections
-            .last()
-            .map(|sec| {
-                let step_ms = (60_000.0 / sec.bpm.max(40.0)) / 4.0;
-                sec.start_ms + (sec.length_in_steps as f64) * step_ms
-            })
-            .unwrap_or(0.0);
-        let duration_ms = track_dur_ms.max(chart_dur_ms);
-        let mut pos_ms = guard.audio_engine.mixer.position_ms().max(0.0);
-        let mut is_playing = guard
-            .audio_engine
-            .mixer
-            .is_playing
-            .load(std::sync::atomic::Ordering::Acquire);
-
-        if is_playing && duration_ms > 0.0 && pos_ms >= duration_ms {
-            guard.audio_engine.mixer.pause();
-            guard.audio_engine.mixer.seek_ms(duration_ms);
-            pos_ms = duration_ms;
-            is_playing = false;
-        }
+        // Lectura 100% lock-free sobre atómicos de `PREVIEW_MIXER` para seguir el audio
+        // a 60Hz desde el hilo UI sin competir jamás con el mutex global `SESSION`.
+        let (pos_ms, is_playing, duration_ms) = crate::session::PREVIEW_MIXER
+            .get()
+            .map(|mixer| mixer.read_preview_state_lockfree())
+            .unwrap_or((0.0, false, 0.0));
 
         let buf = [pos_ms, if is_playing { 1.0 } else { 0.0 }, duration_ms];
         if env.set_double_array_region(&out_state, 0, &buf).is_ok() {
@@ -739,6 +745,7 @@ mod jni_exports {
         follow_interval_beats: jint,
         smooth_speed: jfloat,
         pan_strength: jfloat,
+        clamp_to_background: jboolean,
         commit_save: jboolean,
     ) -> JString<'local> {
         let mode_s = read_str(&mut env, &follow_mode);
@@ -751,6 +758,7 @@ mod jni_exports {
             follow_interval_beats,
             smooth_speed,
             pan_strength,
+            clamp_to_background != 0,
             commit_save != 0,
         );
         to_jstr(&mut env, &json)

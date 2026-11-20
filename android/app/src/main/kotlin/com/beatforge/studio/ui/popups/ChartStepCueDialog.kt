@@ -120,10 +120,11 @@ fun ChartStepCueDialog(
     }
 
     // Tab 3: UI / Pantalla en Negro
-    var uiPresetAction by remember { mutableStateOf("intro") } // "intro", "hide", "show", "toggle"
+    var uiPresetAction by remember { mutableStateOf("intro") } // "intro", "hide", "arrows_hide", "show", "toggle"
     var uiBlackAlpha by remember { mutableFloatStateOf(1.0f) }
     var uiHideHud by remember { mutableStateOf(true) }
     var uiHideArrows by remember { mutableStateOf(true) }
+    var uiRevealOnStart by remember { mutableStateOf(true) }
     var uiFadeSec by remember { mutableFloatStateOf(0.65f) }
     var uiIntroDelayMs by remember { mutableFloatStateOf(0.0f) }
 
@@ -573,11 +574,12 @@ fun ChartStepCueDialog(
                                     uiBlackAlpha = 1.0f
                                     uiHideHud = true
                                     uiHideArrows = true
+                                    uiRevealOnStart = true
                                 },
                                 modifier = Modifier.weight(1f)
                             )
                             ActionChip(
-                                label = "Apagar / Ocultar",
+                                label = "Ocultar Todo",
                                 selected = uiPresetAction == "hide",
                                 color = StudioColors.AccentAmber,
                                 onClick = {
@@ -586,7 +588,7 @@ fun ChartStepCueDialog(
                                     uiHideHud = true
                                     uiHideArrows = true
                                 },
-                                modifier = Modifier.weight(1.1f)
+                                modifier = Modifier.weight(1f)
                             )
                             ActionChip(
                                 label = "Mostrar Todo",
@@ -600,12 +602,27 @@ fun ChartStepCueDialog(
                                 },
                                 modifier = Modifier.weight(1f)
                             )
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            ActionChip(
+                                label = "Solo Flechas Ocultas",
+                                selected = uiPresetAction == "arrows_hide",
+                                color = StudioColors.AccentPurple,
+                                onClick = {
+                                    uiPresetAction = "arrows_hide"
+                                    uiBlackAlpha = 0.0f
+                                    uiHideHud = false
+                                    uiHideArrows = true
+                                },
+                                modifier = Modifier.weight(1.2f)
+                            )
                             ActionChip(
                                 label = "Alternar UI",
                                 selected = uiPresetAction == "toggle",
                                 color = StudioColors.AccentCyan,
                                 onClick = { uiPresetAction = "toggle" },
-                                modifier = Modifier.weight(0.95f)
+                                modifier = Modifier.weight(0.9f)
                             )
                         }
 
@@ -637,6 +654,14 @@ fun ChartStepCueDialog(
                                 Text("Ocultar flechas y notas", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
                                 Switch(checked = uiHideArrows, onCheckedChange = { uiHideArrows = it })
                             }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Revelar tras '3, 2, 1, ¡YA!' (onStart)", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Switch(checked = uiRevealOnStart, onCheckedChange = { uiRevealOnStart = it })
+                            }
                         }
 
                         Text(
@@ -656,7 +681,7 @@ fun ChartStepCueDialog(
                             }
                         }
 
-                        if (uiPresetAction == "intro") {
+                        if (uiPresetAction == "intro" || (uiPresetAction != "show" && uiRevealOnStart)) {
                             Text(
                                 text = "Esperar tras '¡YA!' antes de aparecer:",
                                 color = StudioColors.AccentAmber,
@@ -689,16 +714,20 @@ fun ChartStepCueDialog(
                                     uiHideArrows -> 0.0f
                                     else -> 1.0f
                                 }
+                                val effectiveAction = if (uiPresetAction == "arrows_hide") "hide" else uiPresetAction
+                                val effectiveEventName = if (uiPresetAction == "arrows_hide") "Hide Arrows" else "UI Blackout"
+                                val revealFlag = if (uiPresetAction == "intro") true else uiRevealOnStart
                                 val v2 = String.format(
                                     Locale.US,
-                                    "black=%.2f;hud=%.2f;arrows=%.2f;dur=%.2f;revealMs=%.0f;onStart=1",
+                                    "black=%.2f;hud=%.2f;arrows=%.2f;dur=%.2f;revealMs=%.0f;onStart=%d",
                                     targetBlack,
                                     targetHud,
                                     targetArrows,
                                     uiFadeSec,
-                                    if (uiPresetAction == "intro") uiIntroDelayMs else 0.0f
+                                    if (revealFlag) uiIntroDelayMs else 0.0f,
+                                    if (revealFlag) 1 else 0
                                 )
-                                onAddChartEvent(stepRow.stepTimeMs, "UI Blackout", uiPresetAction, v2)
+                                onAddChartEvent(stepRow.stepTimeMs, effectiveEventName, effectiveAction, v2)
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.AccentCoral,
@@ -709,7 +738,11 @@ fun ChartStepCueDialog(
                             Icon(Icons.Rounded.VisibilityOff, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                text = if (uiPresetAction == "intro") "Guardar Intro Pantalla en Negro" else "Aplicar Evento UI / Negro en Paso #${stepRow.stepInSec}",
+                                text = when (uiPresetAction) {
+                                    "intro" -> "Guardar Intro Pantalla en Negro"
+                                    "arrows_hide" -> "Ocultar Flechas en Paso #${stepRow.stepInSec}"
+                                    else -> "Aplicar Evento UI / Negro en Paso #${stepRow.stepInSec}"
+                                },
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
                             )

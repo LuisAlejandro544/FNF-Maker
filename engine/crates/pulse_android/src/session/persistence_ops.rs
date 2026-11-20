@@ -25,7 +25,7 @@ fn normalize_loaded_project(proj: &mut ModProject) {
     proj.stage.camera.ensure_default_cameras();
     proj.ensure_camera_script();
     proj.ensure_stage_events_script();
-    proj.ensure_ui_blackout_script();
+    proj.sync_ui_blackout_script();
     for ent in &mut proj.stage.entities {
         let no_manual_offsets = ent.character_config_path.is_none()
             && ent
@@ -362,6 +362,7 @@ impl EngineSession {
                 }
                 self.prune_unreferenced_user_storage();
                 self.reload_project_audio_tracks();
+                self.sync_mixer_chart_duration();
                 return;
             }
         }
@@ -401,9 +402,11 @@ impl EngineSession {
             }
             self.prune_unreferenced_user_storage();
             self.reload_project_audio_tracks();
+            self.sync_mixer_chart_duration();
         } else {
             self.save_active_project_now();
             self.prune_unreferenced_user_storage();
+            self.sync_mixer_chart_duration();
         }
     }
 
@@ -550,6 +553,7 @@ impl EngineSession {
         let new_id = format!("proj_{}", current_epoch_ms());
         self.project = ModProject::new_blank(new_id, clean_name.clone(), clean_author);
         self.reload_project_audio_tracks();
+        self.sync_mixer_chart_duration();
         self.save_active_project_now();
         self.ok_response(format!("Proyecto '{}' creado y guardado", clean_name))
     }
@@ -573,6 +577,7 @@ impl EngineSession {
             touch_dir_last_used(&comp_dir);
         }
         self.reload_project_audio_tracks();
+        self.sync_mixer_chart_duration();
         let name = self.project.name.clone();
         self.ok_response(format!("Proyecto '{}' abierto", name))
     }
@@ -632,7 +637,7 @@ impl EngineSession {
         cloned.updated_at_ms = current_epoch_ms();
         cloned.ensure_camera_script();
         cloned.ensure_stage_events_script();
-        cloned.ensure_ui_blackout_script();
+        cloned.sync_ui_blackout_script();
 
         self.gameplay = None;
         self.compiled_bundle = None;
@@ -640,6 +645,7 @@ impl EngineSession {
         self.last_compile_report = None;
         self.project = cloned;
         self.reload_project_audio_tracks();
+        self.sync_mixer_chart_duration();
         self.save_active_project_now();
         self.ok_response(format!("Proyecto duplicado: '{}'", self.project.name))
     }
@@ -689,6 +695,7 @@ impl EngineSession {
 
             self.project = replacement.unwrap_or_else(ModProject::new_demo);
             self.reload_project_audio_tracks();
+            self.sync_mixer_chart_duration();
             self.save_active_project_now();
         }
 
@@ -793,6 +800,7 @@ impl EngineSession {
             sanitize_project_id(&self.project.id).as_bytes(),
         );
         self.reload_project_audio_tracks();
+        self.sync_mixer_chart_duration();
 
         let name = self.project.name.clone();
         self.ok_response(format!(

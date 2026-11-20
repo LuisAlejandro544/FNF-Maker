@@ -12,12 +12,14 @@
 //!    flechas `.svg` con `resvg`.
 
 use crate::astc_loader::{
-    is_astc_path, is_webp_path, load_sprite_image, read_sprite_dimensions, save_lossless_webp,
+    is_astc_path, is_webp_path, load_sprite_image, read_sprite_dimensions, save_optimized_webp,
 };
+use crate::atlas_repack::{collect_referenced_anim_prefixes, optimize_and_repack_sparrow_atlas};
 use crate::chart::NoteDirection;
 use crate::project::{AudioTrackSlot, ModProject, ScriptAsset, ScriptLanguage};
 use crate::script_optimizer::optimize_single_script;
-use crate::stage::StageEntity;
+use crate::sparrow::SparrowAtlas;
+use crate::stage::{EntityRole, StageEntity};
 use crate::svg_skin::{RasterizedArrow, rasterize_arrow_skin};
 use image::imageops::FilterType;
 use rayon::prelude::*;
@@ -30,7 +32,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, UNIX_EPOCH};
 
 /// Versión del esquema de manifiesto incremental en `compiled_cache/manifest.json`.
-pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 4;
 /// Versión del analizador de bucles en scripts; incrementarla invalida caché previa de scripts.
 pub const SCRIPT_OPTIMIZER_CACHE_VERSION: u32 = 3;
 
@@ -63,17 +65,29 @@ impl DeviceResourceTier {
     }
 
     /// Los atlas multi-frame (Sparrow/Animate) dividen la hoja entre decenas de cuadros,
-    /// por lo que conservar mayor margen en atlas evita borrosidad del personaje.
-    pub fn max_dim_for_entity(self, has_atlas: bool) -> u32 {
+    /// y los fondos de escenario (`Background`) necesitan al menos Full HD (1920px) para evitar
+    /// pixelación en texto fino o al hacer zoom con la cámara.
+    pub fn max_dim_for_role(self, has_atlas: bool, is_background: bool) -> u32 {
         if has_atlas {
             match self {
                 DeviceResourceTier::LowRam32Bit => 2560,
                 DeviceResourceTier::Balanced => 4096,
                 DeviceResourceTier::HighQuality => 4096,
             }
+        } else if is_background {
+            match self {
+                DeviceResourceTier::LowRam32Bit => 1920,
+                DeviceResourceTier::Balanced => 2560,
+                DeviceResourceTier::HighQuality => 3840,
+            }
         } else {
             self.max_texture_dim()
         }
+    }
+
+    /// Compatibilidad con llamadas existentes que no distinguen entre fondo y prop estático.
+    pub fn max_dim_for_entity(self, has_atlas: bool) -> u32 {
+        self.max_dim_for_role(has_atlas, false)
     }
 
     /// Presupuesto de memoria RAM recomendado para caché auxiliar según la gama del dispositivo.
@@ -179,27 +193,48 @@ pub struct TextureFingerprint {
     pub entity_h_bits: u32,
     pub scale_bits: u32,
     pub atlas_frame_hash: u64,
+    #[serde(default)]
+    pub referenced_anim_hash: u64,
 }
 
 impl TextureFingerprint {
     pub fn compute(entity: &StageEntity, path: &Path, tier: DeviceResourceTier) -> Option<Self> {
+        Self::compute_with_refs(entity, path, tier, None)
+    }
+
+    pub fn compute_with_refs(
+        entity: &StageEntity,
+        path: &Path,
+        tier: DeviceResourceTier,
+        referenced_anim_prefixes: Option<&HashSet<String>>,
+    ) -> Option<Self> {
         let file = AssetFileFingerprint::from_path(path)?;
         let mut atlas_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut ref_anim_hash: u64 = 0xcbf2_9ce4_8422_2325;
         if let Some(atlas) = &entity.atlas {
             let mut max_frame_w = 0u32;
             let mut max_frame_h = 0u32;
             let mut count = 0u64;
-            for anim in atlas.animations.values() {
+            for (prefix, anim) in &atlas.animations {
                 for fr in &anim.frames {
                     max_frame_w = max_frame_w.max(fr.width);
                     max_frame_h = max_frame_h.max(fr.height);
                     count += 1;
+                }
+                if referenced_anim_prefixes.is_some_and(|set| set.contains(prefix)) {
+                    for &b in prefix.as_bytes() {
+                        ref_anim_hash ^= b as u64;
+                        ref_anim_hash = ref_anim_hash.wrapping_mul(0x0000_0100_0000_01B3);
+                    }
+                    ref_anim_hash ^= 0xFF;
+                    ref_anim_hash = ref_anim_hash.wrapping_mul(0x0000_0100_0000_01B3);
                 }
             }
             for bytes in [
                 max_frame_w.to_le_bytes().as_slice(),
                 max_frame_h.to_le_bytes().as_slice(),
                 count.to_le_bytes().as_slice(),
+                (atlas.bindings.len() as u64).to_le_bytes().as_slice(),
             ] {
                 for &b in bytes {
                     atlas_hash ^= b as u64;
@@ -215,6 +250,7 @@ impl TextureFingerprint {
             entity_h_bits: entity.height.to_bits(),
             scale_bits: entity.scale.to_bits(),
             atlas_frame_hash: atlas_hash,
+            referenced_anim_hash: ref_anim_hash,
         })
     }
 }
@@ -227,6 +263,18 @@ pub struct CachedTextureEntry {
     pub compiled_webp_path: PathBuf,
     pub downscaled: bool,
     pub vram_saved_bytes: usize,
+    #[serde(default)]
+    pub atlas_repacked: bool,
+    #[serde(default)]
+    pub repacked_atlas: Option<SparrowAtlas>,
+    #[serde(default)]
+    pub dead_frames_removed: usize,
+    #[serde(default)]
+    pub duplicate_frames_merged: usize,
+    #[serde(default)]
+    pub trimmed_frames: usize,
+    #[serde(default)]
+    pub pruned_unused_anims: usize,
 }
 
 /// Huella de una ranura de audio para invalidar mezcla WAV solo cuando cambia archivo, ganancia o mute.
@@ -386,6 +434,12 @@ pub struct HotCompileReport {
     pub discarded_heavy_loops: usize,
     pub neutralized_unbounded_loops: usize,
     pub estimated_vram_saved_kb: usize,
+    pub dead_frames_removed: usize,
+    pub duplicate_frames_merged: usize,
+    pub trimmed_frames: usize,
+    pub pruned_unused_anims: usize,
+    pub repacked_atlases: usize,
+    pub repacked_entity_ids: Vec<String>,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<PathBuf>,
     pub estimated_audio_ram_saved_kb: usize,
@@ -530,7 +584,8 @@ pub fn compute_smart_texture_scale(
     }
     let largest = orig_w.max(orig_h);
     let has_atlas = entity.atlas.is_some();
-    let tier_cap = tier.max_dim_for_entity(has_atlas);
+    let is_background = entity.role == EntityRole::Background;
+    let tier_cap = tier.max_dim_for_role(has_atlas, is_background);
 
     // 1. Límite duro de arquitectura/GPU del dispositivo
     let mut target_ratio = if largest > tier_cap {
@@ -556,8 +611,16 @@ pub fn compute_smart_texture_scale(
                 target_ratio = target_ratio.min(frame_ratio);
             }
         }
+    } else if is_background {
+        // Escenarios/Fondos: conservar nitidez Full HD (mínimo 1600..1920px según tier) para que
+        // texto, líneas finas y zooms de cámara nunca se vean pixelados, reduciendo solo excesos 4K+.
+        let ideal_bg_max = (display_max * 1.6).clamp(1600.0, tier_cap as f32);
+        if (largest as f32) > ideal_bg_max * 1.12 {
+            let bg_ratio = (ideal_bg_max / (largest as f32)).clamp(0.45, 1.0);
+            target_ratio = target_ratio.min(bg_ratio);
+        }
     } else {
-        // Imagen estática o fondo: conservar al menos 1.5x del tamaño en pantalla (mínimo 720p/1280p)
+        // Props estáticos: conservar al menos 1.5x del tamaño en pantalla (mínimo 960px)
         let ideal_static_max = (display_max * 1.5).max(960.0);
         if (largest as f32) > ideal_static_max * 1.2 {
             let static_ratio = (ideal_static_max / (largest as f32)).clamp(0.40, 1.0);
@@ -573,14 +636,29 @@ pub fn compute_smart_texture_scale(
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct AtlasRepackStats {
+    dead_frames_removed: usize,
+    duplicate_frames_merged: usize,
+    trimmed_frames: usize,
+    pruned_unused_anims: usize,
+}
+
 enum CompiledTexOutcome {
     CacheHit(String, CachedTextureEntry),
     DiskWebp {
         entity_id: String,
         entry: Option<CachedTextureEntry>,
         path: PathBuf,
+        repacked_atlas: Option<SparrowAtlas>,
+        repack_stats: Option<AtlasRepackStats>,
     },
-    InMemory(String, OptimizedTexture),
+    InMemory {
+        entity_id: String,
+        texture: OptimizedTexture,
+        repacked_atlas: Option<SparrowAtlas>,
+        repack_stats: Option<AtlasRepackStats>,
+    },
     PassThrough(String, PathBuf),
 }
 
@@ -731,7 +809,10 @@ where
         let _ = std::fs::create_dir_all(dir);
     }
 
-    on_progress(0.22, "Verificando caché incremental y compilando WebP sin pérdida...");
+    on_progress(0.22, "Deduplicando frames y compilando WebP sin pérdida...");
+
+    let referenced_anim_prefixes =
+        collect_referenced_anim_prefixes(&active_entities, &project.scripts, &project.chart);
 
     let total_entities = active_entities.len().max(1);
     let done_counter = Arc::new(AtomicUsize::new(0));
@@ -740,6 +821,10 @@ where
     let skipped_optimal_count = Arc::new(AtomicUsize::new(0));
     let cached_reused_count = Arc::new(AtomicUsize::new(0));
     let webp_encoded_count = Arc::new(AtomicUsize::new(0));
+    let dead_frames_count = Arc::new(AtomicUsize::new(0));
+    let dup_frames_count = Arc::new(AtomicUsize::new(0));
+    let trimmed_frames_count = Arc::new(AtomicUsize::new(0));
+    let pruned_anims_count = Arc::new(AtomicUsize::new(0));
 
     let prev_textures = &manifest.textures;
 
@@ -748,7 +833,12 @@ where
         .filter_map(|entity| {
             let path = entity.image_path.as_ref()?;
             let is_astc = is_astc_path(path);
-            let fp_opt = TextureFingerprint::compute(entity, path, tier);
+            let fp_opt = TextureFingerprint::compute_with_refs(
+                entity,
+                path,
+                tier,
+                Some(&referenced_anim_prefixes),
+            );
 
             // 1. Cache Hit incremental en disco: misma huella, mismo tier y WebP existente
             if out_dir.is_some() {
@@ -759,6 +849,10 @@ where
                     {
                         cached_reused_count.fetch_add(1, Ordering::Relaxed);
                         vram_saved_bytes.fetch_add(cached.vram_saved_bytes, Ordering::Relaxed);
+                        dead_frames_count.fetch_add(cached.dead_frames_removed, Ordering::Relaxed);
+                        dup_frames_count.fetch_add(cached.duplicate_frames_merged, Ordering::Relaxed);
+                        trimmed_frames_count.fetch_add(cached.trimmed_frames, Ordering::Relaxed);
+                        pruned_anims_count.fetch_add(cached.pruned_unused_anims, Ordering::Relaxed);
                         if cached.downscaled {
                             downscaled_count.fetch_add(1, Ordering::Relaxed);
                         } else {
@@ -778,56 +872,144 @@ where
                 }
             }
 
-            // 2. Si el sprite ya es .webp nativo y su escala inteligente es 1.0, pasar directo 1:1
-            if let Some((orig_w, orig_h)) = read_sprite_dimensions(path) {
-                let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
-                if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
-                    skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
-                    let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
-                    on_progress(
-                        pct,
-                        &format!("WebP óptimo directo ({}/{})", completed, total_entities),
-                    );
-                    return Some(CompiledTexOutcome::PassThrough(entity.id.clone(), path.clone()));
+            // 2. Si NO tiene atlas y ya es .webp nativo con escala inteligente 1.0, pasar directo 1:1
+            if entity.atlas.is_none() {
+                if let Some((orig_w, orig_h)) = read_sprite_dimensions(path) {
+                    let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
+                    if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
+                        skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                        let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                        let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+                        on_progress(
+                            pct,
+                            &format!("WebP óptimo directo ({}/{})", completed, total_entities),
+                        );
+                        return Some(CompiledTexOutcome::PassThrough(
+                            entity.id.clone(),
+                            path.clone(),
+                        ));
+                    }
                 }
             }
 
-            // 3. Cargar imagen origen (.png, .jpg, .astc, etc.) y compilar a WebP sin pérdida
+            // 3. Cargar imagen origen (.png, .jpg, .astc, .webp)
             let img = load_sprite_image(path).ok()?;
             let orig_w = img.width();
             let orig_h = img.height();
-            let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
 
-            if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
-                skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
-                let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
-                on_progress(
-                    pct,
-                    &format!("WebP óptimo directo ({}/{})", completed, total_entities),
-                );
-                return Some(CompiledTexOutcome::PassThrough(entity.id.clone(), path.clone()));
-            }
+            // 3A. Si tiene SparrowAtlas, eliminar frames muertos, deduplicar repetidos, recortar alfa y reempaquetar
+            let (final_img, scale_applied, downscaled, saved_bytes, repacked_atlas, repack_stats) =
+                if let Some(orig_atlas) = &entity.atlas {
+                    let atlas_cap = tier.max_dim_for_role(true, false);
+                    if let Some(repack) = optimize_and_repack_sparrow_atlas(
+                        entity,
+                        orig_atlas,
+                        &img,
+                        atlas_cap,
+                        Some(&referenced_anim_prefixes),
+                    ) {
+                        if !repack.modified && !is_astc && is_webp_path(path) {
+                            skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                            let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+                            on_progress(
+                                pct,
+                                &format!("Atlas WebP óptimo ({}/{})", completed, total_entities),
+                            );
+                            return Some(CompiledTexOutcome::PassThrough(
+                                entity.id.clone(),
+                                path.clone(),
+                            ));
+                        }
 
-            let (final_img, scale_applied, downscaled, saved_bytes) = if smart_scale < 0.999 {
-                let new_w = ((orig_w as f32) * smart_scale).round().max(1.0) as u32;
-                let new_h = ((orig_h as f32) * smart_scale).round().max(1.0) as u32;
-                let orig_bytes = (orig_w as usize) * (orig_h as usize) * 4;
-                let new_bytes = (new_w as usize) * (new_h as usize) * 4;
-                let saved = orig_bytes.saturating_sub(new_bytes);
-                vram_saved_bytes.fetch_add(saved, Ordering::Relaxed);
-                downscaled_count.fetch_add(1, Ordering::Relaxed);
-                (
-                    img.resize_exact(new_w, new_h, FilterType::CatmullRom),
-                    smart_scale,
-                    true,
-                    saved,
-                )
-            } else {
-                skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
-                (img, 1.0, false, 0)
-            };
+                        let stats = AtlasRepackStats {
+                            dead_frames_removed: repack.dead_frames_removed,
+                            duplicate_frames_merged: repack.duplicate_frames_merged,
+                            trimmed_frames: repack.trimmed_frames,
+                            pruned_unused_anims: repack.pruned_unused_anims,
+                        };
+                        dead_frames_count.fetch_add(stats.dead_frames_removed, Ordering::Relaxed);
+                        dup_frames_count.fetch_add(stats.duplicate_frames_merged, Ordering::Relaxed);
+                        trimmed_frames_count.fetch_add(stats.trimmed_frames, Ordering::Relaxed);
+                        pruned_anims_count.fetch_add(stats.pruned_unused_anims, Ordering::Relaxed);
+                        vram_saved_bytes.fetch_add(repack.vram_saved_bytes, Ordering::Relaxed);
+
+                        let was_downscaled = repack.frame_scale_applied < 0.999;
+                        if was_downscaled {
+                            downscaled_count.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                        }
+
+                        (
+                            repack.image,
+                            repack.frame_scale_applied,
+                            was_downscaled,
+                            repack.vram_saved_bytes,
+                            Some(repack.atlas),
+                            Some(stats),
+                        )
+                    } else {
+                        let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
+                        if smart_scale < 0.999 {
+                            let new_w = ((orig_w as f32) * smart_scale).round().max(1.0) as u32;
+                            let new_h = ((orig_h as f32) * smart_scale).round().max(1.0) as u32;
+                            let orig_bytes = (orig_w as usize) * (orig_h as usize) * 4;
+                            let new_bytes = (new_w as usize) * (new_h as usize) * 4;
+                            let saved = orig_bytes.saturating_sub(new_bytes);
+                            vram_saved_bytes.fetch_add(saved, Ordering::Relaxed);
+                            downscaled_count.fetch_add(1, Ordering::Relaxed);
+                            (
+                                img.resize_exact(new_w, new_h, FilterType::CatmullRom),
+                                smart_scale,
+                                true,
+                                saved,
+                                None,
+                                None,
+                            )
+                        } else {
+                            skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                            (img, 1.0, false, 0, None, None)
+                        }
+                    }
+                } else {
+                    // 3B. Fondos y props estáticos sin atlas
+                    let smart_scale = compute_smart_texture_scale(entity, orig_w, orig_h, tier);
+                    if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
+                        skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                        let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                        let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
+                        on_progress(
+                            pct,
+                            &format!("WebP óptimo directo ({}/{})", completed, total_entities),
+                        );
+                        return Some(CompiledTexOutcome::PassThrough(
+                            entity.id.clone(),
+                            path.clone(),
+                        ));
+                    }
+
+                    if smart_scale < 0.999 {
+                        let new_w = ((orig_w as f32) * smart_scale).round().max(1.0) as u32;
+                        let new_h = ((orig_h as f32) * smart_scale).round().max(1.0) as u32;
+                        let orig_bytes = (orig_w as usize) * (orig_h as usize) * 4;
+                        let new_bytes = (new_w as usize) * (new_h as usize) * 4;
+                        let saved = orig_bytes.saturating_sub(new_bytes);
+                        vram_saved_bytes.fetch_add(saved, Ordering::Relaxed);
+                        downscaled_count.fetch_add(1, Ordering::Relaxed);
+                        (
+                            img.resize_exact(new_w, new_h, FilterType::Lanczos3),
+                            smart_scale,
+                            true,
+                            saved,
+                            None,
+                            None,
+                        )
+                    } else {
+                        skipped_optimal_count.fetch_add(1, Ordering::Relaxed);
+                        (img, 1.0, false, 0, None, None)
+                    }
+                };
 
             let completed = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
             let pct = 0.22 + 0.43 * ((completed as f32) / (total_entities as f32));
@@ -841,24 +1023,34 @@ where
 
             if let Some(dir) = out_dir {
                 let target_webp = dir.join(format!("{}.webp", entity.id));
-                if save_lossless_webp(&final_img, &target_webp).is_ok() {
+                let strip_alpha = entity.atlas.is_none();
+                if save_optimized_webp(&final_img, &target_webp, strip_alpha).is_ok() {
                     webp_encoded_count.fetch_add(1, Ordering::Relaxed);
                     // Limpiar formato heredado `.png` si existía de versiones previas del caché
                     let legacy_png = dir.join(format!("{}.png", entity.id));
                     if legacy_png.exists() {
                         let _ = std::fs::remove_file(&legacy_png);
                     }
+                    let stats = repack_stats.unwrap_or_default();
                     let entry = fp_opt.map(|fingerprint| CachedTextureEntry {
                         entity_id: entity.id.clone(),
                         fingerprint,
                         compiled_webp_path: target_webp.clone(),
                         downscaled,
                         vram_saved_bytes: saved_bytes,
+                        atlas_repacked: repacked_atlas.is_some(),
+                        repacked_atlas: repacked_atlas.clone(),
+                        dead_frames_removed: stats.dead_frames_removed,
+                        duplicate_frames_merged: stats.duplicate_frames_merged,
+                        trimmed_frames: stats.trimmed_frames,
+                        pruned_unused_anims: stats.pruned_unused_anims,
                     });
                     return Some(CompiledTexOutcome::DiskWebp {
                         entity_id: entity.id.clone(),
                         entry,
                         path: target_webp,
+                        repacked_atlas,
+                        repack_stats,
                     });
                 }
             }
@@ -866,16 +1058,18 @@ where
             let rgba8 = final_img.to_rgba8();
             let w = rgba8.width();
             let h = rgba8.height();
-            Some(CompiledTexOutcome::InMemory(
-                entity.id.clone(),
-                OptimizedTexture {
+            Some(CompiledTexOutcome::InMemory {
+                entity_id: entity.id.clone(),
+                texture: OptimizedTexture {
                     entity_id: entity.id.clone(),
                     width: w,
                     height: h,
                     scale_factor_applied: scale_applied,
                     rgba: rgba8.into_raw(),
                 },
-            ))
+                repacked_atlas,
+                repack_stats,
+            })
         })
         .collect();
 
@@ -883,30 +1077,59 @@ where
     let mut compiled_texture_paths = HashMap::new();
     let mut passthrough_paths = HashMap::new();
     let mut next_cached_textures = HashMap::new();
+    let mut repacked_atlases_map: HashMap<String, SparrowAtlas> = HashMap::new();
+    let mut repacked_entity_ids: Vec<String> = Vec::new();
 
     for item in outcomes {
         match item {
             CompiledTexOutcome::CacheHit(id, entry) => {
                 compiled_texture_paths.insert(id.clone(), entry.compiled_webp_path.clone());
+                if entry.atlas_repacked {
+                    if let Some(atlas) = entry.repacked_atlas.clone() {
+                        repacked_atlases_map.insert(id.clone(), atlas);
+                        repacked_entity_ids.push(id.clone());
+                    }
+                }
                 next_cached_textures.insert(id, entry);
             }
             CompiledTexOutcome::DiskWebp {
                 entity_id,
                 entry,
                 path,
+                repacked_atlas,
+                repack_stats: _,
             } => {
                 compiled_texture_paths.insert(entity_id.clone(), path);
+                if let Some(atlas) = repacked_atlas {
+                    repacked_atlases_map.insert(entity_id.clone(), atlas);
+                    repacked_entity_ids.push(entity_id.clone());
+                }
                 if let Some(e) = entry {
                     next_cached_textures.insert(entity_id, e);
                 }
             }
-            CompiledTexOutcome::InMemory(id, tex) => {
-                textures.insert(id, tex);
+            CompiledTexOutcome::InMemory {
+                entity_id,
+                texture,
+                repacked_atlas,
+                repack_stats: _,
+            } => {
+                if let Some(atlas) = repacked_atlas {
+                    repacked_atlases_map.insert(entity_id.clone(), atlas);
+                    repacked_entity_ids.push(entity_id.clone());
+                }
+                textures.insert(entity_id, texture);
             }
             CompiledTexOutcome::PassThrough(id, path) => {
                 compiled_texture_paths.insert(id.clone(), path.clone());
                 passthrough_paths.insert(id, path);
             }
+        }
+    }
+
+    for ent in &mut active_entities {
+        if let Some(repacked) = repacked_atlases_map.remove(&ent.id) {
+            ent.atlas = Some(repacked);
         }
     }
 
@@ -946,8 +1169,9 @@ where
     on_progress(0.68, "Rasterizando skin de flechas SVG con resvg...");
     let arrow_textures = rasterize_arrow_skin(&project.arrow_skin).unwrap_or_default();
 
-    on_progress(0.72, "Sprites listos en WebP sin pérdida");
+    on_progress(0.72, "Sprites deduplicados y listos en WebP sin pérdida");
 
+    let repacked_atlases = repacked_entity_ids.len();
     let report = HotCompileReport {
         elapsed_ms: started.elapsed().as_millis() as u64,
         kept_entities: active_entities.len(),
@@ -959,6 +1183,12 @@ where
         discarded_heavy_loops,
         neutralized_unbounded_loops,
         estimated_vram_saved_kb: vram_saved_bytes.load(Ordering::Relaxed) / 1024,
+        dead_frames_removed: dead_frames_count.load(Ordering::Relaxed),
+        duplicate_frames_merged: dup_frames_count.load(Ordering::Relaxed),
+        trimmed_frames: trimmed_frames_count.load(Ordering::Relaxed),
+        pruned_unused_anims: pruned_anims_count.load(Ordering::Relaxed),
+        repacked_atlases,
+        repacked_entity_ids,
         merged_audio_tracks: 0,
         compiled_audio_path: None,
         estimated_audio_ram_saved_kb: 0,
@@ -996,10 +1226,15 @@ mod tests {
             compute_smart_texture_scale(&prop, 1920, 1080, DeviceResourceTier::Balanced),
             1.0
         );
+        // Incluso en gama económica (LowRam32Bit), un fondo Full HD 1920x1080 se conserva 1:1 nítido
+        assert_eq!(
+            compute_smart_texture_scale(&prop, 1920, 1080, DeviceResourceTier::LowRam32Bit),
+            1.0
+        );
 
         let low_ratio =
             compute_smart_texture_scale(&prop, 4096, 2048, DeviceResourceTier::LowRam32Bit);
-        assert!(low_ratio <= 1536.0 / 4096.0 + 0.001);
+        assert!(low_ratio <= 1920.0 / 4096.0 + 0.001);
 
         let mut icon = StageEntity::new("icon", "Decoración", EntityRole::Decoration);
         icon.width = 200.0;
@@ -1104,5 +1339,84 @@ mod tests {
         let reused = analyze_reused_entity_ids(&project);
         assert!(reused.contains("bg_day"));
         assert!(!reused.contains("bg_night"));
+    }
+
+    #[test]
+    fn hot_compile_repacks_atlas_and_reuses_repacked_atlas_on_cache_hit() {
+        let base_dir = std::env::temp_dir().join("beatforge_atlas_repack_cache_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let cache_dir = base_dir.join("compiled_cache");
+        std::fs::create_dir_all(&base_dir).unwrap();
+
+        let src_png = base_dir.join("singer.png");
+        let mut img = RgbaImage::new(512, 256);
+        for y in 20..50 {
+            for x in 20..40 {
+                img.put_pixel(x, y, Rgba([220, 40, 120, 255]));
+                img.put_pixel(x + 128, y, Rgba([220, 40, 120, 255]));
+            }
+        }
+        DynamicImage::ImageRgba8(img)
+            .save_with_format(&src_png, image::ImageFormat::Png)
+            .unwrap();
+
+        let xml = r#"
+        <TextureAtlas imagePath="singer.png">
+            <SubTexture name="singer idle0000" x="0" y="0" width="64" height="64" />
+            <SubTexture name="singer idle0001" x="128" y="0" width="64" height="64" />
+            <SubTexture name="singer idle0002" x="256" y="0" width="64" height="64" />
+        </TextureAtlas>
+        "#;
+        let atlas = SparrowAtlas::from_xml_str(xml).unwrap();
+
+        let mut project = ModProject::new_demo();
+        project.stage.entities.clear();
+        let mut singer = StageEntity::new("singer_1", "Singer", EntityRole::Player);
+        singer.image_path = Some(src_png);
+        singer.atlas = Some(atlas);
+        singer.width = 280.0;
+        singer.height = 380.0;
+        project.stage.entities.push(singer);
+
+        // 1ra compilación: deduplica idle0001, elimina frame muerto idle0002, recorta alfa y reempaqueta
+        let b1 = hot_compile_project_to_dir(
+            &project,
+            DeviceResourceTier::Balanced,
+            Some(&cache_dir),
+            |_, _| {},
+        );
+        assert_eq!(b1.report.repacked_atlases, 1);
+        assert_eq!(b1.report.dead_frames_removed, 1);
+        assert_eq!(b1.report.duplicate_frames_merged, 1);
+        assert_eq!(b1.report.trimmed_frames, 2);
+        assert_eq!(b1.report.repacked_entity_ids, vec!["singer_1".to_string()]);
+        let compiled_atlas_1 = b1.active_entities[0].atlas.as_ref().unwrap();
+        assert_eq!(compiled_atlas_1.animations["singer idle"].frames.len(), 3);
+        assert_eq!(compiled_atlas_1.animations["singer idle"].frames[0].width, 20);
+        assert_eq!(compiled_atlas_1.animations["singer idle"].frames[1].x, compiled_atlas_1.animations["singer idle"].frames[0].x);
+        assert_eq!(compiled_atlas_1.animations["singer idle"].frames[2].width, 1);
+
+        // 2da compilación (Cache Hit): conserva exactamente las coordenadas del atlas reempaquetado
+        let b2 = hot_compile_project_to_dir(
+            &project,
+            DeviceResourceTier::Balanced,
+            Some(&cache_dir),
+            |_, _| {},
+        );
+        assert_eq!(b2.report.cached_textures_reused, 1);
+        assert_eq!(b2.report.repacked_atlases, 1);
+        assert_eq!(b2.report.duplicate_frames_merged, 1);
+        assert_eq!(b2.report.dead_frames_removed, 1);
+        let compiled_atlas_2 = b2.active_entities[0].atlas.as_ref().unwrap();
+        assert_eq!(
+            compiled_atlas_2.animations["singer idle"].frames[0].x,
+            compiled_atlas_1.animations["singer idle"].frames[0].x
+        );
+        assert_eq!(
+            compiled_atlas_2.animations["singer idle"].frames[2].width,
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }

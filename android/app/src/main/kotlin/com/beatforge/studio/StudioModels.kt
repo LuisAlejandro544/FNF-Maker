@@ -23,7 +23,7 @@ enum class StudioScreen(val label: String) {
 }
 
 enum class DeviceTier(val code: Int, val label: String, val subtitle: String) {
-    LowRam32Bit(0, "32-bit / RAM Baja", "Fondos <=1536px, atlas <=2560px y audio streaming"),
+    LowRam32Bit(0, "32-bit / RAM Baja", "Fondos <=1920px, atlas <=2560px y audio streaming"),
     Balanced(1, "Equilibrado HD", "Atlas hasta 4096px y fondos <=2560px en 32/64 bits"),
     HighQuality(2, "Alta Calidad", "Texturas y atlas hasta 4096px, máxima nitidez HD")
 }
@@ -105,6 +105,16 @@ data class ChartSectionSnapshot(
     val cameraSlot: Int? = null
 )
 
+data class ChartIntroUiSnapshot(
+    val startBlackout: Boolean = false,
+    val blackoutAlpha: Float = 1.0f,
+    val hideHud: Boolean = false,
+    val hideArrows: Boolean = false,
+    val revealOnSongStart: Boolean = true,
+    val revealDelayMs: Double = 0.0,
+    val fadeSec: Float = 0.65f
+)
+
 data class ChartSnapshot(
     val title: String = "Demo Pulse",
     val bpm: Double = 120.0,
@@ -122,6 +132,7 @@ data class ChartSnapshot(
     val durationMs: Double = 0.0,
     val densityBuckets: List<Int> = emptyList(),
     val sourcePath: String? = null,
+    val introUi: ChartIntroUiSnapshot = ChartIntroUiSnapshot(),
     val sections: List<ChartSectionSnapshot> = emptyList(),
     val notes: List<VisibleNote> = emptyList(),
     val events: List<ChartEventSnapshot> = emptyList()
@@ -192,6 +203,12 @@ data class CompileReportSnapshot(
     val discardedHeavyLoops: Int = 0,
     val neutralizedUnboundedLoops: Int = 0,
     val estimatedVramSavedKb: Int = 0,
+    val deadFramesRemoved: Int = 0,
+    val duplicateFramesMerged: Int = 0,
+    val trimmedFrames: Int = 0,
+    val prunedUnusedAnims: Int = 0,
+    val repackedAtlases: Int = 0,
+    val repackedEntityIds: List<String> = emptyList(),
     val mergedAudioTracks: Int = 0,
     val compiledAudioPath: String? = null,
     val estimatedAudioRamSavedKb: Int = 0,
@@ -250,6 +267,7 @@ data class StageCameraSnapshot(
     val smoothSpeed: Float = 6f,
     val panStrength: Float = 0.72f,
     val activeCameraIndex: Int = 0,
+    val clampToBackground: Boolean = true,
     val cameras: List<StageCameraSlotSnapshot> = defaultStageCameraSlots()
 ) {
     fun resolvedCameras(): List<StageCameraSlotSnapshot> =
@@ -547,6 +565,20 @@ object StudioJsonParser {
                 )
             }
         }
+        val introUiObj = chartObj.optJSONObject("introUi")
+        val introUi = if (introUiObj != null) {
+            ChartIntroUiSnapshot(
+                startBlackout = introUiObj.optBoolean("startBlackout", false),
+                blackoutAlpha = introUiObj.optDouble("blackoutAlpha", 1.0).toFloat().coerceIn(0f, 1f),
+                hideHud = introUiObj.optBoolean("hideHud", false),
+                hideArrows = introUiObj.optBoolean("hideArrows", false),
+                revealOnSongStart = introUiObj.optBoolean("revealOnSongStart", true),
+                revealDelayMs = introUiObj.optDouble("revealDelayMs", 0.0).coerceAtLeast(0.0),
+                fadeSec = introUiObj.optDouble("fadeSec", 0.65).toFloat().coerceAtLeast(0f)
+            )
+        } else {
+            ChartIntroUiSnapshot()
+        }
         val chart = ChartSnapshot(
             title = chartObj.optString("title", "Demo"),
             bpm = chartObj.optDouble("bpm", 120.0),
@@ -564,6 +596,7 @@ object StudioJsonParser {
             durationMs = chartObj.optDouble("durationMs", 0.0),
             densityBuckets = intList(chartObj.optJSONArray("densityBuckets")),
             sourcePath = optNullableString(chartObj, "sourcePath"),
+            introUi = introUi,
             sections = sections,
             notes = chartNotes,
             events = chartEvents
@@ -653,6 +686,12 @@ object StudioJsonParser {
                 discardedHeavyLoops = r.optInt("discardedHeavyLoops", 0),
                 neutralizedUnboundedLoops = r.optInt("neutralizedUnboundedLoops", 0),
                 estimatedVramSavedKb = r.optInt("estimatedVramSavedKb", 0),
+                deadFramesRemoved = r.optInt("deadFramesRemoved", 0),
+                duplicateFramesMerged = r.optInt("duplicateFramesMerged", 0),
+                trimmedFrames = r.optInt("trimmedFrames", 0),
+                prunedUnusedAnims = r.optInt("prunedUnusedAnims", 0),
+                repackedAtlases = r.optInt("repackedAtlases", 0),
+                repackedEntityIds = stringList(r.optJSONArray("repackedEntityIds")),
                 mergedAudioTracks = r.optInt("mergedAudioTracks", 0),
                 compiledAudioPath = optNullableString(r, "compiledAudioPath"),
                 estimatedAudioRamSavedKb = r.optInt("estimatedAudioRamSavedKb", 0),
@@ -705,6 +744,7 @@ object StudioJsonParser {
                 panStrength = panStrength,
                 activeCameraIndex = camObj.optInt("activeCameraIndex", 0)
                     .coerceIn(0, (parsedSlots.size - 1).coerceAtLeast(0)),
+                clampToBackground = camObj.optBoolean("clampToBackground", true),
                 cameras = parsedSlots
             )
         } else {

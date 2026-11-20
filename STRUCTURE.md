@@ -17,7 +17,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 ├── package.json                         # Dependencias web + tsx para tests del SDK
 │
 ├── engine/                              # Motor nativo modular en Rust (Workspace Cargo, sin UI)
-│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, texture2ddecoder, zstd)
+│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, crunch, texture2ddecoder, zstd)
 │   ├── .cargo/
 │   │   └── config.toml                  # Flags de enlazador Android (alineación 16KB para Android 15+)
 │   └── crates/
@@ -41,7 +41,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── project.rs           # Modelo ModProject (incl. `render_backend`), `camera_system.lua` V2 (`-- [CAM_RUNTIME_V2]`) y `stage_events.lua`
 │       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
 │       │       ├── script_optimizer.rs  # Poda segura preservando API completa (flashes, swap, preload/retire, personaje)
-│       │       ├── hot_compile.rs       # Compilación incremental (`HotCompileManifest`, FNV-1a, WebP lossless, preservación de eventos y reuso)
+│       │       ├── atlas_repack.rs      # Optimizador y reempaquetador (`crunch`): alpha-trim, frames muertos `(0,0) 1x1`, deduplicación exacta y poda segura
+│       │       ├── hot_compile.rs       # Compilación incremental (`HotCompileManifest` v4, FNV-1a, WebP lossless, reuso de `repacked_atlas` y preservación Full HD en fondos)
 │       │       ├── disk_cache.rs        # Presupuestos 65%/35% por cuota del sistema, limpieza plana heredada y desalojo LRU en disco
 │       │       └── vanilla.rs           # Contenedor portátil Vanilla (`.mod`) con Zstandard, PNG->WebP lossless, dedup y FNV-1a
 │       │
@@ -71,7 +72,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               ├── lib.rs               # Exportaciones JNI (multicámara `Cam 0..3+`, `section.cameraSlot`, Game Over, Debug Botplay/Práctica, Arrow Atlas y `gfx` probe)
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
-│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `StageCameraSlotSnapshotJson`, `cameraSlot`, `render_backend`, `gfx_capabilities`, `anim_offsets`)
+│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `StageCameraSlotSnapshotJson`, `cameraSlot`, `clamp_to_background`, `repacked_entity_ids`, `render_backend`, `anim_offsets`)
 │                   ├── editor_ops.rs    # Operaciones de editor (`select_stage_camera`, `update_camera_slot`, `add/remove_custom_camera`, `set_section_camera_slot`, `import_stage_config`, `stage_events.lua`)
 │                   ├── gfx_probe.rs     # Sondeo dinámico `dlopen` en Android 32/64b de `libEGL.so`, `libGLESv2.so`, `libGLESv3.so` y `libvulkan.so`
 │                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP, Sparrow XML, Animate, auto-dimensionado en escenario, `import_character_config` y `set_entity_anim_offset`
@@ -105,7 +106,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               ├── GameplayFrameState.kt# Decoder binario BFGP v2 (`152B` cabecera: GameOver, Botplay, Práctica, `noteKindCode`, flash, preload/retired)
 │               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so` (incl. Game Over, Debug, Arrow Atlas y Backend GPU)
 │               ├── SafFileBridge.kt     # Staging temporal de URIs SAF en `cacheDir/import_staging/` y barrido al arranque
-│               ├── StudioModels.kt      # Data classes Kotlin (`NoteSpecialKind`, `HotCompileProgress`, `ArrowSkinCatalog`, `ImportKind.ArrowAtlas*`)
+│               ├── StudioModels.kt      # Data classes Kotlin (`NoteSpecialKind`, `HotCompileProgress`, `CompileReportSnapshot` con métricas de deduplicación/reempaque, `ArrowSkinCatalog`)
 │               ├── StudioUiState.kt     # Estado reactivo (`hasSelectedProject`, `isLoadingProject`, `debug*`, `stagedArrowAtlas*`) y `LoadedEntityBitmap`
 │               ├── StudioViewModel.kt   # Coordinador principal (`StateFlow`) que delega en `viewmodel/*` sobre `Dispatchers.IO`
 │               ├── gfx/                 # Capa modular de preparación GPU (OpenGL ES 2.0/3.x y Vulkan)
@@ -113,9 +114,9 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   ├── VulkanProbeBridge.kt   # Sondeo ligero Android PackageManager (GLES / Vulkan) enlazado con el reporte Rust
 │               │   └── GlesSurfaceHost.kt     # Contenedor base GLSurfaceView (ES 2.0 / 3.x) listo para futuro renderizado GPU
 │               ├── viewmodel/           # Submódulos especializados del ViewModel
-│               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow y decodificación de bitmaps/SVG (`hurt_x.svg`)
+│               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow, alineación de `repackedEntityIds` y decodificación bitmaps/SVG
 │               │   ├── StudioEditorDelegate.kt    # Lobby/Carga de proyectos, cuota `StorageManager`, staging SAF, `NOTE_assets.png+.xml`, `.mod` y backend GPU
-│               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (skip ocultos, precarga 4s IO, recycle diferido 3 frames, retry Game Over) y BFGP v2
+│               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (skip ocultos, `repackedEntityIds`, precarga 4s IO, recycle diferido 3 frames) y BFGP v2
 │               └── ui/
 │                   ├── theme/
 │                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
@@ -160,8 +161,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, multicámara (`resolveCameraSlotTarget`, `parseChartCameraEvent`), sustain, hilo, ciclo RAM, `.mod`, `BFGP` v2
-│       └── engine-tools.test.ts         # 50 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, multicámara (`resolveCameraSlotTarget`, `clampCameraToBackground`), `optimizeSparrowAtlasPlan`, sustain, hilo, ciclo RAM, `.mod`, `BFGP` v2
+│       └── engine-tools.test.ts         # 52 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

@@ -182,7 +182,7 @@ internal fun DrawScope.drawGameplaySceneLayer(
                                 dstSize = IntSize(w.roundToInt().coerceAtLeast(2), h.roundToInt().coerceAtLeast(2)),
                                 alpha = ent.opacity.coerceIn(0f, 1f),
                                 colorFilter = deathFilter,
-                                filterQuality = FilterQuality.Medium
+                                filterQuality = if (ent.roleCode == 0 || entCount <= 20) FilterQuality.High else FilterQuality.Medium
                             )
                         }
                     } else {

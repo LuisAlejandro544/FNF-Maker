@@ -70,6 +70,7 @@ fun StageEditorScreen(
         followIntervalBeats: Int,
         smoothSpeed: Float,
         panStrength: Float,
+        clampToBackground: Boolean,
         commitSave: Boolean
     ) -> Unit,
     onSelectCameraSlot: (slotIndex: Int) -> Unit,
@@ -161,6 +162,7 @@ fun StageEditorScreen(
                     stageCamera.followIntervalBeats,
                     stageCamera.smoothSpeed,
                     stageCamera.panStrength,
+                    stageCamera.clampToBackground,
                     true
                 )
             },
