@@ -164,6 +164,27 @@ fn chart_section_camera_slot_and_camera_events_parse_cleanly() {
             ease: "sineOut".to_string(),
         })
     );
+    assert_eq!(
+        parse_chart_camera_event("FocusCamera", "0", "", 120.0),
+        Some(ParsedChartCameraAction::SelectCamera {
+            slot: Some(1),
+            focus_gf: false,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            zoom: None,
+            duration_sec: 0.0,
+            ease: "sineOut".to_string(),
+        })
+    );
+    assert_eq!(
+        parse_chart_camera_event("ZoomCamera", "1.55", "0.5", 120.0),
+        Some(ParsedChartCameraAction::SetZoom {
+            zoom: 1.55,
+            is_direct_stage: false,
+            duration_sec: 0.5,
+            ease: "sineOut".to_string(),
+        })
+    );
 }
 
 #[test]

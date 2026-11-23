@@ -189,8 +189,9 @@ pub fn parse_chart_camera_event(
             })
         }
         "focuscamera" | "focus camera" => {
-            if let Ok(obj) = serde_json::from_str::<Value>(v1) {
-                let explicit_cam = obj
+            if v1.starts_with('{') {
+                if let Ok(obj) = serde_json::from_str::<Value>(v1) {
+                    let explicit_cam = obj
                     .get("cam")
                     .or_else(|| obj.get("slot"))
                     .and_then(json_as_f64)
@@ -282,6 +283,7 @@ pub fn parse_chart_camera_event(
                         ease,
                     }),
                 };
+                }
             }
             // Formato escalar directo: v1 = "0"|"1"|"2"|"bf"|"dad"|"gf"
             match v1.to_ascii_lowercase().as_str() {
@@ -325,24 +327,26 @@ pub fn parse_chart_camera_event(
             }
         }
         "zoomcamera" | "zoom camera" => {
-            if let Ok(obj) = serde_json::from_str::<Value>(v1) {
-                let zoom = obj.get("zoom").and_then(json_as_f64)? as f32;
-                let dur_steps = obj.get("duration").and_then(json_as_f64).unwrap_or(4.0).max(0.0) as f32;
-                let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("direct");
-                let ease = obj
-                    .get("ease")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("sineOut")
-                    .to_string();
-                if !zoom.is_finite() {
-                    return None;
+            if v1.starts_with('{') {
+                if let Ok(obj) = serde_json::from_str::<Value>(v1) {
+                    let zoom = obj.get("zoom").and_then(json_as_f64)? as f32;
+                    let dur_steps = obj.get("duration").and_then(json_as_f64).unwrap_or(4.0).max(0.0) as f32;
+                    let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("direct");
+                    let ease = obj
+                        .get("ease")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("sineOut")
+                        .to_string();
+                    if !zoom.is_finite() {
+                        return None;
+                    }
+                    return Some(ParsedChartCameraAction::SetZoom {
+                        zoom,
+                        is_direct_stage: mode.eq_ignore_ascii_case("stage"),
+                        duration_sec: dur_steps * step_sec,
+                        ease,
+                    });
                 }
-                return Some(ParsedChartCameraAction::SetZoom {
-                    zoom,
-                    is_direct_stage: mode.eq_ignore_ascii_case("stage"),
-                    duration_sec: dur_steps * step_sec,
-                    ease,
-                });
             }
             let zoom = v1.parse::<f32>().ok().filter(|z| z.is_finite() && *z > 0.1)?;
             let dur = v2.parse::<f32>().ok().filter(|d| d.is_finite() && *d >= 0.0).unwrap_or(0.0);
