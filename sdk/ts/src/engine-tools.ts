@@ -1569,6 +1569,7 @@ export interface DecodedBinaryEntity {
   roleCode: number;
   preloadRequested: boolean;
   retired: boolean;
+  pageIndex: number;
   atlasX: number;
   atlasY: number;
   atlasW: number;
@@ -1763,6 +1764,7 @@ export function decodeBinaryGameplayFrame(
       roleCode: (entFlags >> 4) & 3,
       preloadRequested: (entFlags & (1 << 6)) !== 0,
       retired: (entFlags & (1 << 7)) !== 0,
+      pageIndex: (entFlags >>> 8) & 0xff,
       atlasX,
       atlasY,
       atlasW,
@@ -5385,9 +5387,1389 @@ export function optimizeSparrowAtlasPlan(params: {
   };
 }
 
+export interface TimelineStageEntity {
+  id: string;
+  role: 'background' | 'opponent' | 'player' | 'decoration';
+  visible: boolean;
+  opacity?: number;
+}
 
+export interface TimelineChartEvent {
+  timeMs: number;
+  name: string;
+  value1: string;
+  value2: string;
+}
 
+export interface ResolvedChartStepStageState {
+  activePlayerId: string;
+  activeOpponentId: string;
+  visibleIds: Set<string>;
+  changedEarlierIds: Set<string>;
+  changedAtThisStepIds: Set<string>;
+}
 
+function parseSemiKvMap(raw: string): Record<string, string> {
+  if (!raw.trim()) return {};
+  const out: Record<string, string> = {};
+  for (const part of raw.split(';')) {
+    const trimmed = part.trim();
+    const idx = trimmed.indexOf('=');
+    if (idx > 0) {
+      out[trimmed.slice(0, idx).trim().toLowerCase()] = trimmed.slice(idx + 1).trim();
+    }
+  }
+  return out;
+}
 
+function splitCsvTokenIds(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
 
+/**
+ * Espejo puro de `resolveChartStageStateAtStep` (Kotlin) y `stage_events.lua` (Rust):
+ * resuelve qué jugador, enemigo y objetos están activos/visibles en un paso `#` concreto.
+ */
+export function resolveChartStageStateAtTime(
+  entities: TimelineStageEntity[],
+  events: TimelineChartEvent[],
+  stepTimeMs: number,
+  stepMs: number = 125,
+): ResolvedChartStepStageState {
+  const visible = new Set<string>();
+  for (const ent of entities) {
+    if (ent.visible && (ent.opacity ?? 1) > 0.005) {
+      visible.add(ent.id);
+    }
+  }
+
+  let activePlayerId =
+    entities.find((e) => e.role === 'player' && visible.has(e.id))?.id ??
+    entities.find((e) => e.role === 'player')?.id ??
+    '';
+  let activeOpponentId =
+    entities.find((e) => e.role === 'opponent' && visible.has(e.id))?.id ??
+    entities.find((e) => e.role === 'opponent')?.id ??
+    '';
+
+  const changedEarlier = new Set<string>();
+  const changedHere = new Set<string>();
+  const stepTolMs = Math.max(1, stepMs * 0.5);
+  const sorted = [...events].sort((a, b) => a.timeMs - b.timeMs);
+
+  for (const ev of sorted) {
+    if (ev.timeMs > stepTimeMs + stepTolMs) break;
+    const lowerName = ev.name.trim().toLowerCase();
+    if (lowerName !== 'stage swap' && lowerName !== 'swap stage' && lowerName !== 'change character') {
+      continue;
+    }
+    const isAtThisStep = Math.abs(ev.timeMs - stepTimeMs) <= stepTolMs;
+    const targetModified = isAtThisStep ? changedHere : changedEarlier;
+
+    const showIds: string[] = [];
+    const hideIds: string[] = [];
+    let nextPlayerId = '';
+    let nextOppId = '';
+
+    const p1 = parseSemiKvMap(ev.value1);
+    const p1Keys = Object.keys(p1);
+    if (p1Keys.length === 0 && ev.value1.trim().length > 0) {
+      showIds.push(...splitCsvTokenIds(ev.value1));
+    } else {
+      for (const [k, v] of Object.entries(p1)) {
+        if (k === 'show' || k === 'mostrar') showIds.push(...splitCsvTokenIds(v));
+        else if (k === 'hide' || k === 'ocultar') hideIds.push(...splitCsvTokenIds(v));
+        else if (k === 'player' || k === 'jugador') nextPlayerId = v;
+        else if (k === 'opp' || k === 'opponent' || k === 'enemigo' || k === 'rival') nextOppId = v;
+      }
+    }
+
+    const p2 = parseSemiKvMap(ev.value2);
+    for (const [k, v] of Object.entries(p2)) {
+      if (k === 'show' || k === 'mostrar') showIds.push(...splitCsvTokenIds(v));
+      else if (k === 'hide' || k === 'ocultar') hideIds.push(...splitCsvTokenIds(v));
+      else if (k === 'player' || k === 'jugador') nextPlayerId = v;
+      else if (k === 'opp' || k === 'opponent' || k === 'enemigo' || k === 'rival') nextOppId = v;
+    }
+
+    for (const id of hideIds) {
+      visible.delete(id);
+      targetModified.add(id);
+    }
+    for (const id of showIds) {
+      visible.add(id);
+      targetModified.add(id);
+    }
+    if (nextPlayerId) {
+      if (activePlayerId && activePlayerId !== nextPlayerId) {
+        visible.delete(activePlayerId);
+        targetModified.add(activePlayerId);
+      }
+      activePlayerId = nextPlayerId;
+      visible.add(nextPlayerId);
+      targetModified.add(nextPlayerId);
+    }
+    if (nextOppId) {
+      if (activeOpponentId && activeOpponentId !== nextOppId) {
+        visible.delete(activeOpponentId);
+        targetModified.add(activeOpponentId);
+      }
+      activeOpponentId = nextOppId;
+      visible.add(nextOppId);
+      targetModified.add(nextOppId);
+    }
+  }
+
+  return {
+    activePlayerId,
+    activeOpponentId,
+    visibleIds: visible,
+    changedEarlierIds: changedEarlier,
+    changedAtThisStepIds: changedHere,
+  };
+}
+
+export interface LiveRatingEntityInput {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  visible: boolean;
+  retired: boolean;
+  roleCode: number; // 0=bg, 1=opponent, 2=player, 3=decoration
+}
+
+export interface LiveRatingPopupPosition {
+  anchorX: number;
+  anchorY: number;
+  worldX: number;
+  worldY: number;
+  sideSign: number;
+}
+
+/**
+ * Espejo puro de `resolveLivePlayerAnchor` + trayectoria balística en `GameplayWorldRenderer.kt`:
+ * verifica que `SICK!`/`GOOD!`/`BAD`/`MISS` sigan en tiempo real al jugador activo aunque
+ * cambie su posición, escala, pose o personaje activo.
+ */
+export function resolveRatingPopupPlayerAnchor(
+  entities: LiveRatingEntityInput[],
+  activePlayerIdx: number,
+  activeOpponentIdx: number,
+  ageSec: number = 0,
+  virtualWidth: number = 1280,
+): LiveRatingPopupPosition {
+  let playerIdx = -1;
+  if (activePlayerIdx >= 0 && activePlayerIdx < entities.length && !entities[activePlayerIdx].retired) {
+    playerIdx = activePlayerIdx;
+  } else {
+    playerIdx = entities.findIndex((e) => e.roleCode === 2 && e.visible && !e.retired);
+    if (playerIdx < 0) {
+      playerIdx = entities.findIndex((e) => e.roleCode === 2 && !e.retired);
+    }
+  }
+
+  const px = playerIdx >= 0 ? entities[playerIdx].x : 880;
+  const py = playerIdx >= 0 ? entities[playerIdx].y : 430;
+  const pw = Math.max(80, playerIdx >= 0 ? entities[playerIdx].width * entities[playerIdx].scale : 240);
+  const ph = Math.max(100, playerIdx >= 0 ? entities[playerIdx].height * entities[playerIdx].scale : 300);
+
+  let oppIdx = -1;
+  if (activeOpponentIdx >= 0 && activeOpponentIdx < entities.length && !entities[activeOpponentIdx].retired) {
+    oppIdx = activeOpponentIdx;
+  } else {
+    oppIdx = entities.findIndex((e) => e.roleCode === 1 && e.visible && !e.retired);
+    if (oppIdx < 0) {
+      oppIdx = entities.findIndex((e) => e.roleCode === 1 && !e.retired);
+    }
+  }
+
+  const sideSign =
+    oppIdx >= 0
+      ? px < entities[oppIdx].x - 40
+        ? 1
+        : -1
+      : px < virtualWidth * 0.42
+        ? 1
+        : -1;
+
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const baseOffsetX = sideSign * clamp(pw * 0.32, 68, 155);
+  const baseOffsetY = -clamp(ph * 0.22, 48, 118);
+
+  const anchorX = px + baseOffsetX;
+  const anchorY = py + baseOffsetY;
+  return {
+    anchorX,
+    anchorY,
+    worldX: anchorX + sideSign * 18 * ageSec,
+    worldY: anchorY - 115 * ageSec + 260 * ageSec * ageSec,
+    sideSign,
+  };
+}
+
+export interface ScreenViewportMetrics {
+  pixelWidth: number;
+  pixelHeight: number;
+}
+
+function normalizeViewportMetrics(vp?: ScreenViewportMetrics): ScreenViewportMetrics {
+  const w = Math.max(640, vp?.pixelWidth ?? 1280);
+  const h = Math.max(360, vp?.pixelHeight ?? 720);
+  return {
+    pixelWidth: Math.max(w, h),
+    pixelHeight: Math.min(w, h),
+  };
+}
+
+function maxDimForRoleAndTier(tier: DeviceResourceTier, hasAtlas: boolean, isBackground: boolean): number {
+  if (hasAtlas) {
+    return tier === 'low_32bit' ? 2560 : 4096;
+  }
+  if (isBackground) {
+    if (tier === 'low_32bit') return 1920;
+    if (tier === 'balanced') return 2560;
+    return 3840;
+  }
+  if (tier === 'low_32bit') return 1536;
+  if (tier === 'balanced') return 2560;
+  return 4096;
+}
+
+/**
+ * Espejo puro de `pulse_core::hot_compile::analysis::compute_project_max_camera_zoom`:
+ * calcula el zoom máximo alcanzado por ranuras `Cam 0..N` + eventos `ZoomCamera`/`Add Camera Zoom`.
+ */
+export function computeProjectMaxCameraZoom(params: {
+  baseZoom: number;
+  cameras?: Array<{ zoom: number }>;
+  events?: Array<{ name: string; value1: string; value2: string }>;
+  bpm?: number;
+}): number {
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  let maxZoom = Number.isFinite(params.baseZoom) ? clamp(params.baseZoom, 0.35, 2.5) : 1.0;
+
+  for (const cam of params.cameras ?? []) {
+    if (Number.isFinite(cam.zoom)) {
+      maxZoom = Math.max(maxZoom, clamp(cam.zoom, 0.35, 2.5));
+    }
+  }
+
+  let maxBump = 0;
+  for (const ev of params.events ?? []) {
+    const parsed = parseChartCameraEvent({
+      name: ev.name,
+      value1: ev.value1,
+      value2: ev.value2,
+      activeBpm: params.bpm ?? 120,
+    });
+    if (!parsed) continue;
+    if (
+      (parsed.kind === 'select_camera' || parsed.kind === 'follow_pos' || parsed.kind === 'set_zoom') &&
+      typeof parsed.zoom === 'number' &&
+      Number.isFinite(parsed.zoom)
+    ) {
+      maxZoom = Math.max(maxZoom, clamp(parsed.zoom, 0.35, 2.5));
+    } else if (parsed.kind === 'add_zoom_bump' && Number.isFinite(parsed.camZoomAdd) && parsed.camZoomAdd > 0) {
+      maxBump = Math.max(maxBump, Math.min(0.25, parsed.camZoomAdd));
+    }
+  }
+
+  return clamp(maxZoom + maxBump, 0.55, 2.5);
+}
+
+/**
+ * Espejo puro de `compute_smart_texture_scale_for_viewport` en `pulse_core`:
+ * calcula la proporción de pre-escalado con filtro `Lanczos3` adaptada al tamaño real en pantalla
+ * del teléfono (`viewport`) multiplicado por el zoom máximo de cámara.
+ */
+export function computeSmartTextureScaleForViewport(params: {
+  origWidth: number;
+  origHeight: number;
+  entityWidth: number;
+  entityHeight: number;
+  entityScale: number;
+  hasAtlas: boolean;
+  isBackground?: boolean;
+  maxFrameSide?: number;
+  tier: DeviceResourceTier;
+  viewport: ScreenViewportMetrics;
+  maxCameraZoom?: number;
+  virtualWidth?: number;
+  virtualHeight?: number;
+}): number {
+  const {
+    origWidth,
+    origHeight,
+    entityWidth,
+    entityHeight,
+    entityScale,
+    hasAtlas,
+    isBackground = false,
+    maxFrameSide = 0,
+    tier,
+    viewport,
+    maxCameraZoom = 1.0,
+    virtualWidth = 1280,
+    virtualHeight = 720,
+  } = params;
+  if (origWidth <= 0 || origHeight <= 0) return 1.0;
+
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const largest = Math.max(origWidth, origHeight);
+  const tierCap = maxDimForRoleAndTier(tier, hasAtlas, isBackground);
+
+  let targetRatio = largest > tierCap ? tierCap / largest : 1.0;
+
+  const normVp = normalizeViewportMetrics(viewport);
+  const pxScale = Math.max(
+    normVp.pixelWidth / Math.max(1, virtualWidth),
+    normVp.pixelHeight / Math.max(1, virtualHeight),
+  );
+  const zoomFactor = Number.isFinite(maxCameraZoom) ? clamp(maxCameraZoom, 0.55, 2.5) : 1.0;
+  const screenFactor = clamp(pxScale * zoomFactor, 0.45, 3.2);
+  const renderedMaxPx = Math.max(128, Math.max(entityWidth, entityHeight) * entityScale * screenFactor);
+
+  if (hasAtlas) {
+    if (maxFrameSide > 0) {
+      const idealFrameMax = Math.max(384, renderedMaxPx * 1.45);
+      if (maxFrameSide > idealFrameMax * 1.15 && maxFrameSide > 384) {
+        const frameRatio = clamp(idealFrameMax / maxFrameSide, 0.35, 1.0);
+        targetRatio = Math.min(targetRatio, frameRatio);
+      }
+    }
+  } else if (isBackground) {
+    const bgFloor = clamp(normVp.pixelWidth * zoomFactor * 1.25, 1152, tierCap);
+    const idealBgMax = clamp(renderedMaxPx * 1.6, bgFloor, tierCap);
+    if (largest > idealBgMax * 1.12) {
+      const bgRatio = clamp(idealBgMax / largest, 0.35, 1.0);
+      targetRatio = Math.min(targetRatio, bgRatio);
+    }
+  } else {
+    const propFloor = clamp(normVp.pixelHeight * 0.9, 480, 960);
+    const idealStaticMax = Math.max(propFloor, renderedMaxPx * 1.5);
+    if (largest > idealStaticMax * 1.15) {
+      const staticRatio = clamp(idealStaticMax / largest, 0.25, 1.0);
+      targetRatio = Math.min(targetRatio, staticRatio);
+    }
+  }
+
+  if (targetRatio >= 0.92 && largest <= tierCap) {
+    return 1.0;
+  }
+  return clamp(targetRatio, 0.25, 1.0);
+}
+
+export type AndroidOutputRoute =
+  | 'builtin_speaker'
+  | 'wired_headphones'
+  | 'usb_audio'
+  | 'bluetooth_a2dp'
+  | 'bluetooth_le'
+  | 'hdmi_or_external'
+  | 'unknown';
+
+export interface DeviceAudioProbeInput {
+  route: AndroidOutputRoute;
+  deviceName?: string;
+  manufacturer?: string;
+  model?: string;
+  androidApiLevel?: number;
+  osSampleRate?: number;
+  osFramesPerBuffer?: number;
+  reportedChannelCount?: number;
+  isMonoSpeaker?: boolean;
+  supportsLowLatencyFeature?: boolean;
+  supportsProAudioFeature?: boolean;
+  supportedSampleRates?: number[];
+}
+
+export interface AAudioHardwareProbeInput {
+  aaudioActive: boolean;
+  sampleRate: number;
+  channelCount: number;
+  framesPerBurst: number;
+  bufferCapacityFrames?: number;
+  lowLatencyActive?: boolean;
+  deviceId?: number;
+  hardwareSampleRate?: number;
+  hardwareChannelCount?: number;
+}
+
+export interface EffectiveDeviceAcoustics {
+  route: AndroidOutputRoute;
+  routeLabel: string;
+  deviceName: string;
+  manufacturer: string;
+  model: string;
+  androidApiLevel: number;
+  effectiveSampleRate: number;
+  hardwareNativeSampleRate: number;
+  effectiveChannelCount: number;
+  isMonoSpeaker: boolean;
+  framesPerBurst: number;
+  bufferCapacityFrames: number;
+  lowLatencyActive: boolean;
+  aaudioActive: boolean;
+  aaudioDeviceId: number;
+}
+
+export interface SpectralBandProfile {
+  subBass2090Hz: number;
+  bass90220Hz: number;
+  lowMid220600Hz: number;
+  presence2k4kHz: number;
+  air6k14kHz: number;
+  spectralTiltDb: number;
+}
+
+export interface SongAcousticAnalysis {
+  sampleRate: number;
+  durationSec: number;
+  integratedLufs: number;
+  loudnessRangeLu: number;
+  truePeakDbtp: number;
+  crestFactorDb: number;
+  stereoCorrelation: number;
+  bands: SpectralBandProfile;
+}
+
+export interface EqBandAdjustment {
+  kind: 'high_pass' | 'peaking' | 'low_shelf' | 'high_shelf';
+  freqHz: number;
+  gainDb: number;
+  q: number;
+  reason: string;
+}
+
+export interface AdaptiveDspPlan {
+  profileName: string;
+  adaptationSummary: string;
+  targetLufs: number;
+  appliedMakeupGainDb: number;
+  ceilingDbtp: number;
+  highpassHz: number;
+  monoFoldEnabled: boolean;
+  resampleNeeded: boolean;
+  sourceSampleRate: number;
+  targetSampleRate: number;
+  eqBands: EqBandAdjustment[];
+}
+
+function routeLabelEs(route: AndroidOutputRoute): string {
+  switch (route) {
+    case 'builtin_speaker':
+      return 'Altavoz del Teléfono';
+    case 'wired_headphones':
+      return 'Audífonos por Cable';
+    case 'usb_audio':
+      return 'DAC / Audífonos USB-C';
+    case 'bluetooth_a2dp':
+      return 'Bluetooth A2DP';
+    case 'bluetooth_le':
+      return 'Bluetooth LE Audio';
+    case 'hdmi_or_external':
+      return 'HDMI / Salida Externa';
+    default:
+      return 'Salida Estándar';
+  }
+}
+
+/**
+ * Espejo puro de `pulse_audio::adaptive_master::fuse_device_and_aaudio_probe`:
+ * fusiona `AudioManager` + `AudioDeviceInfo` con el stream real de `libaaudio.so`.
+ */
+export function fuseDeviceAndAAudioProbe(
+  os: DeviceAudioProbeInput,
+  aaudio: AAudioHardwareProbeInput,
+): EffectiveDeviceAcoustics {
+  const effectiveSampleRate =
+    aaudio.aaudioActive && aaudio.sampleRate >= 8000
+      ? aaudio.sampleRate
+      : (os.osSampleRate ?? 0) >= 8000
+        ? (os.osSampleRate as number)
+        : 48000;
+
+  const supported = os.supportedSampleRates ?? [];
+  const hardwareNativeSampleRate =
+    (aaudio.hardwareSampleRate ?? 0) >= 8000
+      ? (aaudio.hardwareSampleRate as number)
+      : supported.length > 0
+        ? supported.includes(effectiveSampleRate)
+          ? effectiveSampleRate
+          : supported[0]
+        : effectiveSampleRate;
+
+  const effectiveChannelCount =
+    (os.reportedChannelCount ?? 0) >= 1
+      ? (os.reportedChannelCount as number)
+      : (aaudio.hardwareChannelCount ?? 0) >= 1
+        ? (aaudio.hardwareChannelCount as number)
+        : Math.max(1, aaudio.channelCount);
+
+  const isMonoSpeaker =
+    os.route === 'builtin_speaker' &&
+    (Boolean(os.isMonoSpeaker) || effectiveChannelCount === 1 || aaudio.hardwareChannelCount === 1);
+
+  return {
+    route: os.route,
+    routeLabel:
+      os.route === 'builtin_speaker'
+        ? isMonoSpeaker
+          ? 'Altavoz del Teléfono (Mono)'
+          : 'Altavoz del Teléfono (Estéreo)'
+        : routeLabelEs(os.route),
+    deviceName: os.deviceName?.trim() || routeLabelEs(os.route),
+    manufacturer: (os.manufacturer ?? 'Android').trim(),
+    model: (os.model ?? '').trim(),
+    androidApiLevel: Math.max(26, os.androidApiLevel ?? 26),
+    effectiveSampleRate,
+    hardwareNativeSampleRate,
+    effectiveChannelCount,
+    isMonoSpeaker,
+    framesPerBurst: aaudio.framesPerBurst > 0 ? aaudio.framesPerBurst : Math.max(64, os.osFramesPerBuffer ?? 192),
+    bufferCapacityFrames: aaudio.bufferCapacityFrames ?? 0,
+    lowLatencyActive: Boolean(aaudio.lowLatencyActive || os.supportsLowLatencyFeature),
+    aaudioActive: aaudio.aaudioActive,
+    aaudioDeviceId: aaudio.deviceId ?? 0,
+  };
+}
+
+/**
+ * Espejo puro de `pulse_audio::adaptive_master::build_adaptive_dsp_plan`:
+ * adapta el plan IIR `biquad`, remuestreo `rubato`, pliegue mono y nivelación EBU R128
+ * según la salida física de ese teléfono concreto y el análisis FFT/LUFS de la canción.
+ */
+export function buildAdaptiveDspPlan(
+  device: EffectiveDeviceAcoustics,
+  song: SongAcousticAnalysis,
+): AdaptiveDspPlan {
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const Q_BUTTERWORTH = Math.SQRT1_2;
+  const eqBands: EqBandAdjustment[] = [];
+  let highpassHz = 28;
+  let targetLufs = -14.5;
+  let ceilingDbtp = -1.0;
+  let monoFoldEnabled = false;
+  const summaryNotes: string[] = [];
+
+  const {
+    subBass2090Hz: sub,
+    bass90220Hz: bass,
+    lowMid220600Hz: lowMid,
+    presence2k4kHz: presence,
+    air6k14kHz: air,
+  } = song.bands;
+
+  let profileName = 'Salida Estándar Calibrada';
+  if (device.route === 'builtin_speaker') {
+    targetLufs = -13.5;
+    ceilingDbtp = -1.0;
+    if (device.isMonoSpeaker) {
+      highpassHz = sub > 0.22 ? 150 : 135;
+      monoFoldEnabled = song.stereoCorrelation < 0.92;
+      eqBands.push({
+        kind: 'high_pass',
+        freqHz: highpassHz,
+        gainDb: 0,
+        q: Q_BUTTERWORTH,
+        reason: 'Protege el micro-altavoz mono de excursión sub-grave',
+      });
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 195,
+        gainDb: clamp(2.6 - bass * 4.5, 0.4, 3.0),
+        q: 0.9,
+        reason: 'Refuerza pegada audible en altavoz pequeño sin saturar',
+      });
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 360,
+        gainDb: lowMid > 0.26 ? -2.4 : -1.2,
+        q: 1.1,
+        reason: 'Despeja medios-graves encajonados',
+      });
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 2800,
+        gainDb: presence > 0.24 ? 0.3 : 2.2,
+        q: 0.95,
+        reason: 'Mejora inteligibilidad vocal y transientes rítmicas',
+      });
+      summaryNotes.push('Corte sub-grave + pliegue mono seguro');
+      profileName = 'Altavoz Mono Adaptativo';
+    } else {
+      highpassHz = sub > 0.24 ? 105 : 88;
+      eqBands.push({
+        kind: 'high_pass',
+        freqHz: highpassHz,
+        gainDb: 0,
+        q: Q_BUTTERWORTH,
+        reason: 'Limpia sub-graves que el chasis del teléfono no reproduce',
+      });
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 165,
+        gainDb: clamp(2.2 - bass * 3.8, 0.5, 2.5),
+        q: 0.85,
+        reason: 'Añade cuerpo en graves altos adaptado a bocinas estéreo móviles',
+      });
+      if (lowMid > 0.22) {
+        eqBands.push({
+          kind: 'peaking',
+          freqHz: 340,
+          gainDb: -1.6,
+          q: 1.0,
+          reason: 'Reduce resonancia en medios-graves',
+        });
+      }
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 2900,
+        gainDb: presence > 0.24 ? -0.5 : 1.6,
+        q: 0.9,
+        reason: 'Ajusta presencia según brillo medido por FFT',
+      });
+      summaryNotes.push('Estéreo móvil calibrado por espectro');
+      profileName = 'Altavoz Estéreo Adaptativo';
+    }
+  } else if (device.route === 'wired_headphones') {
+    targetLufs = -15.5;
+    ceilingDbtp = -1.0;
+    highpassHz = 28;
+    eqBands.push({
+      kind: 'high_pass',
+      freqHz: highpassHz,
+      gainDb: 0,
+      q: Q_BUTTERWORTH,
+      reason: 'Limpieza subsónica DC sin tocar graves reales',
+    });
+    if (sub < 0.11) {
+      eqBands.push({
+        kind: 'low_shelf',
+        freqHz: 78,
+        gainDb: 1.6,
+        q: Q_BUTTERWORTH,
+        reason: 'Compensa falta de sub-grave en esta pista',
+      });
+    } else if (sub > 0.34) {
+      eqBands.push({
+        kind: 'low_shelf',
+        freqHz: 75,
+        gainDb: -1.4,
+        q: Q_BUTTERWORTH,
+        reason: 'Domina exceso de sub-grave para claridad en audífonos',
+      });
+    }
+    if (presence > 0.26) {
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 3200,
+        gainDb: -1.5,
+        q: 1.2,
+        reason: 'Suaviza dureza excesiva en 3.2 kHz',
+      });
+    }
+    if (air < 0.06) {
+      eqBands.push({
+        kind: 'high_shelf',
+        freqHz: 9500,
+        gainDb: 1.3,
+        q: Q_BUTTERWORTH,
+        reason: 'Aporta aire suave en agudos',
+      });
+    }
+    summaryNotes.push('Respuesta full-range fiel para audífonos');
+    profileName = 'Audífonos Cable Alta Fidelidad';
+  } else if (device.route === 'usb_audio') {
+    targetLufs = -16.0;
+    ceilingDbtp = -1.2;
+    highpassHz = 24;
+    eqBands.push({
+      kind: 'high_pass',
+      freqHz: highpassHz,
+      gainDb: 0,
+      q: Q_BUTTERWORTH,
+      reason: 'Filtro subsónico transparente para DAC externo',
+    });
+    if (air < 0.05) {
+      eqBands.push({
+        kind: 'high_shelf',
+        freqHz: 10500,
+        gainDb: 0.9,
+        q: Q_BUTTERWORTH,
+        reason: 'Micro-corrección de aire por espectro',
+      });
+    }
+    summaryNotes.push('Perfil audiófilo transparente DAC USB');
+    profileName = 'DAC USB-C Referencia';
+  } else if (device.route === 'bluetooth_a2dp' || device.route === 'bluetooth_le') {
+    targetLufs = -14.5;
+    ceilingDbtp = -1.6;
+    highpassHz = 38;
+    eqBands.push({
+      kind: 'high_pass',
+      freqHz: highpassHz,
+      gainDb: 0,
+      q: Q_BUTTERWORTH,
+      reason: 'Evita bombeo de compresor perceptual Bluetooth',
+    });
+    if (sub > 0.28) {
+      eqBands.push({
+        kind: 'low_shelf',
+        freqHz: 85,
+        gainDb: -1.3,
+        q: Q_BUTTERWORTH,
+        reason: 'Estabiliza sub-grave para códec inalámbrico',
+      });
+    }
+    if (air < 0.12) {
+      eqBands.push({
+        kind: 'high_shelf',
+        freqHz: 9000,
+        gainDb: 1.6,
+        q: Q_BUTTERWORTH,
+        reason: 'Compensa caída de agudos en enlace Bluetooth',
+      });
+    }
+    summaryNotes.push('Techo -1.6 dBTP anti-clipping para códec BT');
+    profileName = 'Bluetooth Anti-Clipping';
+  } else {
+    targetLufs = -15.0;
+    ceilingDbtp = -1.0;
+    highpassHz = 34;
+    eqBands.push({
+      kind: 'high_pass',
+      freqHz: highpassHz,
+      gainDb: 0,
+      q: Q_BUTTERWORTH,
+      reason: 'Protección subsónica para salida externa',
+    });
+    if (presence < 0.12) {
+      eqBands.push({
+        kind: 'peaking',
+        freqHz: 2600,
+        gainDb: 1.0,
+        q: 0.9,
+        reason: 'Balance de claridad',
+      });
+    }
+    summaryNotes.push('Nivelación balanceada EBU R128');
+    profileName = 'Salida Estándar Calibrada';
+  }
+
+  const targetSampleRate = Math.max(8000, device.effectiveSampleRate);
+  const resampleNeeded = song.sampleRate !== targetSampleRate;
+  if (resampleNeeded) {
+    summaryNotes.push(`Rubato ${song.sampleRate} -> ${targetSampleRate} Hz`);
+  }
+
+  const appliedMakeupGainDb = clamp(targetLufs - song.integratedLufs, -9.0, 8.0);
+  const modelTag = device.model || device.manufacturer || 'Móvil';
+  const adaptationSummary = `${profileName} (${modelTag}) · ${summaryNotes.join(' + ')} · ${song.integratedLufs.toFixed(1)} -> ${targetLufs.toFixed(1)} LUFS`;
+
+  return {
+    profileName,
+    adaptationSummary,
+    targetLufs,
+    appliedMakeupGainDb,
+    ceilingDbtp,
+    highpassHz,
+    monoFoldEnabled,
+    resampleNeeded,
+    sourceSampleRate: song.sampleRate,
+    targetSampleRate,
+    eqBands,
+  };
+}
+
+export const TIMELINE_PRELOAD_LEAD_MS = 4000;
+export const TIMELINE_RETIRE_GRACE_MS = 1500;
+
+export interface TimelineLifecycleEntityInput {
+  id: string;
+  visible: boolean;
+  opacity?: number;
+  scale?: number;
+}
+
+export interface TimelineLifecycleEventInput {
+  timeMs: number;
+  name: string;
+  value1: string;
+  value2: string;
+}
+
+export interface EntityLifecycleWindow {
+  entityId: string;
+  initiallyVisible: boolean;
+  preloadAtMs: number | null;
+  firstVisibleMs: number | null;
+  lastUsedMs: number | null;
+  retireAfterMs: number | null;
+  reusedLater: boolean;
+  triggerReason: string;
+}
+
+function parseStageSwapTargets(
+  rawName: string,
+  v1: string,
+  v2: string,
+): { shown: string[]; hidden: string[] } {
+  const lowerName = rawName.trim().toLowerCase();
+  const shown: string[] = [];
+  const hidden: string[] = [];
+
+  if (
+    lowerName !== 'stage swap' &&
+    lowerName !== 'swap stage' &&
+    lowerName !== 'change character' &&
+    lowerName !== 'preload sprite' &&
+    lowerName !== 'preload'
+  ) {
+    return { shown, hidden };
+  }
+
+  const parts = `${v1};${v2}`.split(';');
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx >= 0) {
+      const key = trimmed.slice(0, eqIdx).trim().toLowerCase();
+      const val = trimmed.slice(eqIdx + 1);
+      const ids = val
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (
+        key === 'show' ||
+        key === 'mostrar' ||
+        key === 'player' ||
+        key === 'jugador' ||
+        key === 'opp' ||
+        key === 'opponent' ||
+        key === 'enemigo' ||
+        key === 'rival' ||
+        key === 'preload'
+      ) {
+        shown.push(...ids);
+      } else if (key === 'hide' || key === 'ocultar') {
+        hidden.push(...ids);
+      }
+    } else if (lowerName === 'preload sprite' || lowerName === 'preload') {
+      const ids = trimmed
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      shown.push(...ids);
+    }
+  }
+
+  return { shown, hidden };
+}
+
+/**
+ * Espejo puro de `pulse_core::hot_compile::analysis::compute_timeline_asset_lifecycle`:
+ * precomputa ventanas temporales exactas (`preloadAtMs` con 4000 ms de anticipación y
+ * `retireAfterMs` con 1500 ms de cortesía) protegiendo entidades tocadas por scripts activos
+ * o reutilizadas posteriormente en la canción.
+ */
+export function computeTimelineAssetLifecycle(params: {
+  entities: TimelineLifecycleEntityInput[];
+  events: TimelineLifecycleEventInput[];
+  enabledScriptSources?: string[];
+}): EntityLifecycleWindow[] {
+  const sortedEvents = [...params.events].sort((a, b) => a.timeMs - b.timeMs);
+  const scriptSources = params.enabledScriptSources ?? [];
+  const windows: EntityLifecycleWindow[] = [];
+
+  for (const entity of params.entities) {
+    const id = entity.id;
+    const opacity = entity.opacity ?? 1;
+    const scale = entity.scale ?? 1;
+    const initiallyVisible = entity.visible && opacity > 0.005 && scale > 0.005;
+
+    let firstVisibleMs: number | null = initiallyVisible ? 0 : null;
+    let lastUsedMs: number | null = initiallyVisible ? 0 : null;
+    let hiddenAtMs: number | null = null;
+    let reusedLater = false;
+    const reasons: string[] = [];
+
+    if (initiallyVisible) {
+      reasons.push('visible_inicial');
+    }
+
+    for (const ev of sortedEvents) {
+      const t = Math.max(0, ev.timeMs);
+      const { shown, hidden } = parseStageSwapTargets(ev.name, ev.value1, ev.value2);
+      const explicitlyShown = shown.includes(id);
+      const explicitlyHidden = hidden.includes(id);
+
+      if (explicitlyShown) {
+        if (hiddenAtMs !== null) {
+          reusedLater = true;
+        }
+        hiddenAtMs = null;
+        if (firstVisibleMs === null) {
+          firstVisibleMs = t;
+        }
+        lastUsedMs = lastUsedMs === null ? t : Math.max(lastUsedMs, t);
+        if (!reasons.includes('evento_chart')) {
+          reasons.push('evento_chart');
+        }
+      } else if (explicitlyHidden) {
+        hiddenAtMs = t;
+        lastUsedMs = lastUsedMs === null ? t : Math.max(lastUsedMs, t);
+        if (!reasons.includes('evento_swap')) {
+          reasons.push('evento_swap');
+        }
+      } else if (ev.value1.includes(id) || ev.value2.includes(id) || ev.name.includes(id)) {
+        if (hiddenAtMs !== null) {
+          reusedLater = true;
+          hiddenAtMs = null;
+        }
+        if (firstVisibleMs === null) {
+          firstVisibleMs = t;
+        }
+        lastUsedMs = lastUsedMs === null ? t : Math.max(lastUsedMs, t);
+        if (!reasons.includes('ref_evento')) {
+          reasons.push('ref_evento');
+        }
+      }
+    }
+
+    const touchedByScript = scriptSources.some((src) => src.includes(id));
+    if (touchedByScript) {
+      if (!reasons.includes('script_activo')) {
+        reasons.push('script_activo');
+      }
+      if (hiddenAtMs !== null) {
+        reusedLater = true;
+      }
+    }
+
+    const preloadAtMs =
+      !initiallyVisible && firstVisibleMs !== null
+        ? Math.max(0, firstVisibleMs - TIMELINE_PRELOAD_LEAD_MS)
+        : null;
+    const retireAfterMs =
+      !touchedByScript && hiddenAtMs !== null ? hiddenAtMs + TIMELINE_RETIRE_GRACE_MS : null;
+
+    windows.push({
+      entityId: id,
+      initiallyVisible,
+      preloadAtMs,
+      firstVisibleMs,
+      lastUsedMs,
+      retireAfterMs,
+      reusedLater,
+      triggerReason: reasons.length > 0 ? reasons.join('+') : 'inactivo',
+    });
+  }
+
+  return windows;
+}
+
+export type WebpPixelPolicyMode =
+  | { kind: 'lossless_rgba' }
+  | { kind: 'rgb565_dithered_if_opaque' }
+  | { kind: 'quantized_rgba'; maxColors: number };
+
+/**
+ * Espejo puro de `pulse_core::hot_compile::pipeline::select_webp_pixel_policy`:
+ * asigna `RGB_565` con dithering a texturas sin atlas (si son opacas) y cuantización
+ * `exoquant` (`<= 256` colores) a atlas en gama baja o grandes en gama equilibrada.
+ */
+export function selectWebpPixelPolicy(params: {
+  hasAtlas: boolean;
+  tier: DeviceResourceTier;
+  width: number;
+  height: number;
+}): WebpPixelPolicyMode {
+  if (!params.hasAtlas) {
+    return { kind: 'rgb565_dithered_if_opaque' };
+  }
+  if (
+    params.tier === 'low_32bit' ||
+    (params.tier === 'balanced' && Math.max(params.width, params.height) >= 1024)
+  ) {
+    return { kind: 'quantized_rgba', maxColors: 256 };
+  }
+  return { kind: 'lossless_rgba' };
+}
+
+/**
+ * Espejo puro del muestreo inteligente en `pulse_core::astc_loader::quantize_rgba_with_exoquant`:
+ * decide si una textura RGBA supera `maxColors` colores únicos (ej. `<= 256` en pixel-art)
+ * antes de activar la cuantización perceptual `exoquant`.
+ */
+export function shouldQuantizePaletteWithExoquant(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  maxColors: number = 256,
+): boolean {
+  if (width <= 0 || height <= 0 || maxColors < 16 || rgba.length < width * height * 4) {
+    return false;
+  }
+  const pixelCount = width * height;
+  const targetColors = Math.max(16, Math.min(256, maxColors));
+  const stride = Math.max(1, Math.floor(pixelCount / 32768));
+  const seen = new Set<number>();
+  for (let pxIdx = 0; pxIdx < pixelCount; pxIdx += stride) {
+    const off = pxIdx * 4;
+    const a = rgba[off + 3];
+    const packed =
+      a === 0
+        ? 0
+        : ((rgba[off] | (rgba[off + 1] << 8) | (rgba[off + 2] << 16) | (a << 24)) >>> 0);
+    seen.add(packed);
+    if (seen.size > targetColors) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Espejo puro de `pulse_core::astc_loader::dither_image_to_rgb565_grid`:
+ * aplica dithering Floyd-Steinberg hacia la rejilla exacta `5-6-5` para decodificar
+ * en Android como `Bitmap.Config.RGB_565` (50 % menos VRAM y sin banding en degradados).
+ */
+export function ditherPixelGridToRgb565(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+): Uint8Array {
+  if (width <= 0 || height <= 0 || rgb.length < width * height * 3) {
+    return new Uint8Array(rgb);
+  }
+  const quantize5 = (v: number): number => {
+    const c = Math.max(0, Math.min(255, v));
+    const q = Math.trunc((c * 31 + 127) / 255);
+    return ((q << 3) | (q >> 2)) & 0xff;
+  };
+  const quantize6 = (v: number): number => {
+    const c = Math.max(0, Math.min(255, v));
+    const q = Math.trunc((c * 63 + 127) / 255);
+    return ((q << 2) | (q >> 4)) & 0xff;
+  };
+
+  let errCurr = Array.from({ length: width + 2 }, () => [0, 0, 0]);
+  let errNext = Array.from({ length: width + 2 }, () => [0, 0, 0]);
+  const out = new Uint8Array(width * height * 3);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let k = 0; k < errNext.length; k += 1) {
+      errNext[k][0] = 0;
+      errNext[k][1] = 0;
+      errNext[k][2] = 0;
+    }
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 3;
+      const ec = errCurr[x + 1];
+      const rIn = rgb[idx] + Math.trunc(ec[0] / 16);
+      const gIn = rgb[idx + 1] + Math.trunc(ec[1] / 16);
+      const bIn = rgb[idx + 2] + Math.trunc(ec[2] / 16);
+
+      const rQ = quantize5(rIn);
+      const gQ = quantize6(gIn);
+      const bQ = quantize5(bIn);
+
+      out[idx] = rQ;
+      out[idx + 1] = gQ;
+      out[idx + 2] = bQ;
+
+      const er = Math.max(0, Math.min(255, rIn)) - rQ;
+      const eg = Math.max(0, Math.min(255, gIn)) - gQ;
+      const eb = Math.max(0, Math.min(255, bIn)) - bQ;
+
+      errCurr[x + 2][0] += er * 7;
+      errCurr[x + 2][1] += eg * 7;
+      errCurr[x + 2][2] += eb * 7;
+
+      errNext[x][0] += er * 3;
+      errNext[x][1] += eg * 3;
+      errNext[x][2] += eb * 3;
+
+      errNext[x + 1][0] += er * 5;
+      errNext[x + 1][1] += eg * 5;
+      errNext[x + 1][2] += eb * 5;
+
+      errNext[x + 2][0] += er;
+      errNext[x + 2][1] += eg;
+      errNext[x + 2][2] += eb;
+    }
+    const swap = errCurr;
+    errCurr = errNext;
+    errNext = swap;
+  }
+
+  return out;
+}
+
+export interface MultiPageSpritePlacement {
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface MultiPageSparrowSplitPlan {
+  pageCount: number;
+  pageDims: Array<{ width: number; height: number }>;
+  appliedScale: number;
+  placements: MultiPageSpritePlacement[];
+}
+
+function shelfPackSubset(
+  sprites: Array<{ w: number; h: number }>,
+  start: number,
+  end: number,
+  scale: number,
+  cap: number,
+): { width: number; height: number; boxes: Array<{ x: number; y: number; w: number; h: number }> } | null {
+  const padEdge = 1;
+  const padBoth = 2;
+  let curX = 0;
+  let curY = 0;
+  let rowH = 0;
+  let maxUsedW = 4;
+  let maxUsedH = 4;
+  const boxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+
+  for (let i = start; i < end; i += 1) {
+    const sw = Math.max(1, Math.round(sprites[i].w * scale));
+    const sh = Math.max(1, Math.round(sprites[i].h * scale));
+    const pw = sw + padBoth;
+    const ph = sh + padBoth;
+    if (pw > cap || ph > cap) return null;
+
+    if (curX + pw > cap) {
+      curX = 0;
+      curY += rowH;
+      rowH = 0;
+    }
+    if (curY + ph > cap) return null;
+
+    const px = curX + padEdge;
+    const py = curY + padEdge;
+    boxes.push({ x: px, y: py, w: sw, h: sh });
+    curX += pw;
+    rowH = Math.max(rowH, ph);
+    maxUsedW = Math.max(maxUsedW, curX);
+    maxUsedH = Math.max(maxUsedH, curY + rowH);
+  }
+
+  return { width: maxUsedW, height: maxUsedH, boxes };
+}
+
+/**
+ * Espejo puro de `pulse_core::atlas_repack::pack_multi_page_with_crunch`:
+ * cuando un mega-atlas (`>= 6` frames únicos y `tierCap >= 1024`) no cabe a su escala
+ * óptima en una sola hoja `tierCap x tierCap`, lo pagina automáticamente hasta en `maxPages`
+ * hojas consecutivas manteniendo la nitidez del sprite.
+ */
+export function planMultiPageSparrowSplit(params: {
+  sprites: Array<{ w: number; h: number }>;
+  initialScale: number;
+  tierCap: number;
+  maxPages?: number;
+}): MultiPageSparrowSplitPlan | null {
+  const { sprites, tierCap, maxPages = 6 } = params;
+  if (sprites.length === 0) {
+    return { pageCount: 1, pageDims: [{ width: 4, height: 4 }], appliedScale: 1, placements: [] };
+  }
+  const scale = Math.max(0.25, Math.min(1, params.initialScale));
+  const cap = Math.max(64, tierCap);
+
+  const singleFit = shelfPackSubset(sprites, 0, sprites.length, scale, cap);
+  if (singleFit) {
+    return {
+      pageCount: 1,
+      pageDims: [{ width: singleFit.width, height: singleFit.height }],
+      appliedScale: scale,
+      placements: singleFit.boxes.map((b) => ({
+        pageIndex: 0,
+        x: b.x,
+        y: b.y,
+        width: b.w,
+        height: b.h,
+      })),
+    };
+  }
+
+  if (tierCap < 1024 || sprites.length < 6) {
+    return null;
+  }
+
+  const trySplitAtScale = (candidateScale: number): MultiPageSparrowSplitPlan | null => {
+    const pageDims: Array<{ width: number; height: number }> = [];
+    const placements: MultiPageSpritePlacement[] = [];
+    let cursor = 0;
+
+    for (let pageIdx = 0; pageIdx < maxPages && cursor < sprites.length; pageIdx += 1) {
+      let bestEnd = -1;
+      let bestPack: ReturnType<typeof shelfPackSubset> = null;
+      for (let end = sprites.length; end > cursor; end -= 1) {
+        const pack = shelfPackSubset(sprites, cursor, end, candidateScale, cap);
+        if (pack) {
+          bestEnd = end;
+          bestPack = pack;
+          break;
+        }
+      }
+      if (!bestPack || bestEnd <= cursor) {
+        return null;
+      }
+      pageDims.push({ width: bestPack.width, height: bestPack.height });
+      for (const b of bestPack.boxes) {
+        placements.push({
+          pageIndex: pageIdx,
+          x: b.x,
+          y: b.y,
+          width: b.w,
+          height: b.h,
+        });
+      }
+      cursor = bestEnd;
+    }
+
+    if (cursor < sprites.length || pageDims.length <= 1) {
+      return null;
+    }
+    return {
+      pageCount: pageDims.length,
+      pageDims,
+      appliedScale: candidateScale,
+      placements,
+    };
+  };
+
+  return trySplitAtScale(scale) ?? trySplitAtScale(Math.max(0.35, scale * 0.78));
+}
+
+export interface ArrowSkinTailPalette {
+  isMonochrome: boolean;
+  bodyRgb: [number, number, number];
+  coreRgb: [number, number, number];
+  splashRgb: [number, number, number];
+}
+
+/**
+ * Espejo puro de `ArrowPaletteExtractor.kt`: extrae la paleta dominante de los píxeles
+ * visibles de una flecha (`.svg` rasterizada o `NOTE_assets.png`) para colorear colas largas,
+ * receptores y Note Splash sin filtrar neón por defecto cuando la skin es blanco y negro.
+ */
+export function extractArrowSkinTailColor(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  fallbackRgb: [number, number, number]
+): ArrowSkinTailPalette {
+  const clampByte = (v: number): number => Math.max(0, Math.min(255, Math.round(v)));
+  const blendWhite = (rgb: [number, number, number], amount: number): [number, number, number] => {
+    const t = Math.max(0, Math.min(1, amount));
+    return [
+      clampByte(rgb[0] + (255 - rgb[0]) * t),
+      clampByte(rgb[1] + (255 - rgb[1]) * t),
+      clampByte(rgb[2] + (255 - rgb[2]) * t),
+    ];
+  };
+
+  if (width <= 0 || height <= 0 || rgba.length < width * height * 4) {
+    return {
+      isMonochrome: false,
+      bodyRgb: fallbackRgb,
+      coreRgb: blendWhite(fallbackRgb, 0.65),
+      splashRgb: fallbackRgb,
+    };
+  }
+
+  const stepX = Math.max(1, Math.floor(width / 36));
+  const stepY = Math.max(1, Math.floor(height / 36));
+  let opaqueCount = 0;
+  let chromaticCount = 0;
+  let chromaticWeightSum = 0;
+  let chromR = 0;
+  let chromG = 0;
+  let chromB = 0;
+  let midNeutralCount = 0;
+  let midNeutralLumaSum = 0;
+  let allNeutralLumaSum = 0;
+
+  for (let y = 0; y < height; y += stepY) {
+    for (let x = 0; x < width; x += stepX) {
+      const idx = (y * width + x) * 4;
+      const a = rgba[idx + 3];
+      if (a >= 96) {
+        opaqueCount += 1;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
+        const chroma = maxC - minC;
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        allNeutralLumaSum += luma;
+        if (luma >= 42 && luma <= 226) {
+          midNeutralCount += 1;
+          midNeutralLumaSum += luma;
+        }
+        if (chroma >= 34 && maxC >= 42) {
+          chromaticCount += 1;
+          const w = 1 + chroma / 128;
+          chromaticWeightSum += w;
+          chromR += r * w;
+          chromG += g * w;
+          chromB += b * w;
+        }
+      }
+    }
+  }
+
+  if (opaqueCount === 0) {
+    return {
+      isMonochrome: false,
+      bodyRgb: fallbackRgb,
+      coreRgb: blendWhite(fallbackRgb, 0.65),
+      splashRgb: fallbackRgb,
+    };
+  }
+
+  const minChromaticSamples = Math.max(3, Math.round(opaqueCount * 0.08));
+  if (chromaticCount >= minChromaticSamples && chromaticWeightSum > 0) {
+    const bodyRgb: [number, number, number] = [
+      clampByte(chromR / chromaticWeightSum),
+      clampByte(chromG / chromaticWeightSum),
+      clampByte(chromB / chromaticWeightSum),
+    ];
+    return {
+      isMonochrome: false,
+      bodyRgb,
+      coreRgb: blendWhite(bodyRgb, 0.62),
+      splashRgb: bodyRgb,
+    };
+  }
+
+  const rawLuma =
+    midNeutralCount > 0 ? midNeutralLumaSum / midNeutralCount : allNeutralLumaSum / opaqueCount;
+  const bodyGray = Math.max(108, Math.min(172, Math.round(rawLuma)));
+  const coreGray = Math.max(220, Math.min(245, bodyGray + 84));
+  const splashGray = Math.max(180, Math.min(228, bodyGray + 54));
+
+  return {
+    isMonochrome: true,
+    bodyRgb: [bodyGray, bodyGray, bodyGray],
+    coreRgb: [coreGray, coreGray, coreGray],
+    splashRgb: [splashGray, splashGray, splashGray],
+  };
+}
 

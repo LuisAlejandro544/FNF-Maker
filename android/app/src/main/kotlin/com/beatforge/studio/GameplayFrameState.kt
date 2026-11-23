@@ -74,6 +74,7 @@ class MutableGameplayEntity {
     var offY: Int = 0
     var logicalW: Int = 0
     var logicalH: Int = 0
+    var pageIndex: Int = 0
 }
 
 class MutableVisibleNote {
@@ -310,8 +311,10 @@ class GameplayFrameState {
                 dst.offY = f.frameY
                 dst.logicalW = f.frameWidth
                 dst.logicalH = f.frameHeight
+                dst.pageIndex = f.pageIndex.coerceAtLeast(0)
             } else {
                 dst.hasFrame = false
+                dst.pageIndex = 0
             }
         }
 
@@ -499,6 +502,7 @@ class GameplayFrameState {
             dst.roleCode = (ef ushr 4) and 0x3
             dst.preloadRequested = (ef and (1 shl 6)) != 0
             dst.retired = (ef and (1 shl 7)) != 0
+            dst.pageIndex = (ef ushr 8) and 0xFF
             dst.atlasX = buf.int
             dst.atlasY = buf.int
             dst.atlasW = buf.int

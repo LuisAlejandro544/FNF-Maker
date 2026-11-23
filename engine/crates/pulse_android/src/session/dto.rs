@@ -3,8 +3,9 @@
 //! Rust y Kotlin Compose, junto con la construcción de `ProjectSnapshotJson` y respuestas estándar.
 
 use super::{EngineSession, anim_kind_key, control_mode_to_key, lang_to_key, role_to_key};
+use pulse_audio::AudioAdaptationReport;
 use pulse_core::frame_memory::{FrameBumpArena, FrameVisibleNote, NoteSlidingWindow};
-use pulse_core::hot_compile::CompiledBundle;
+use pulse_core::hot_compile::{CompiledBundle, EntityLifecycleWindow};
 use pulse_core::project::MAX_AUDIO_TRACKS;
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::NoteSpecialKind;
@@ -85,7 +86,9 @@ pub struct ProjectSnapshotJson {
     pub has_custom_png_arrow_skin: bool,
     pub health_bar_svg_path: Option<String>,
     pub preferred_render_backend: String,
+    pub audio_adapt_enabled: bool,
     pub last_compile_report: Option<CompileReportJson>,
+    pub last_audio_adapt_report: Option<AudioAdaptationReport>,
 }
 
 #[derive(Serialize)]
@@ -220,6 +223,11 @@ pub struct CompileReportJson {
     pub pruned_unused_anims: usize,
     pub repacked_atlases: usize,
     pub repacked_entity_ids: Vec<String>,
+    pub rgb565_textures: usize,
+    pub quantized_textures: usize,
+    pub split_atlas_pages_total: usize,
+    pub scheduled_preload_entities: usize,
+    pub scheduled_retire_entities: usize,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<String>,
     pub estimated_audio_ram_saved_kb: usize,
@@ -228,6 +236,9 @@ pub struct CompileReportJson {
     pub cached_scripts_reused: usize,
     pub script_precompile_errors: Vec<String>,
     pub compiled_texture_paths: HashMap<String, String>,
+    pub compiled_texture_pages: HashMap<String, Vec<String>>,
+    pub texture_pixel_formats: HashMap<String, String>,
+    pub timeline_windows: Vec<EntityLifecycleWindow>,
 }
 
 #[derive(Serialize)]
@@ -244,6 +255,7 @@ pub struct SparrowFrameJson {
     pub frame_width: u32,
     pub frame_height: u32,
     pub rotated: bool,
+    pub page_index: u16,
 }
 
 #[derive(Serialize)]
@@ -435,6 +447,7 @@ pub struct ActiveTimerState {
 pub struct GameplayRuntimeState {
     pub bundle: CompiledBundle,
     pub compiled_texture_paths: HashMap<String, String>,
+    pub compiled_texture_pages: HashMap<String, Vec<String>>,
     pub runtime: ModScriptRuntime,
     pub script_errors: Vec<String>,
     pub note_window: NoteSlidingWindow,
@@ -489,6 +502,10 @@ pub struct GameplayRuntimeState {
     pub last_step: i32,
     pub next_event_idx: usize,
     pub next_preload_event_idx: usize,
+    pub timeline_preload_queue: Vec<(f64, String)>,
+    pub next_timeline_preload_idx: usize,
+    pub timeline_retire_queue: Vec<(f64, String)>,
+    pub next_timeline_retire_idx: usize,
     pub paused: bool,
     pub finished: bool,
     pub game_over: bool,
@@ -567,6 +584,7 @@ impl EngineSession {
                         frame_width: f.frame_width,
                         frame_height: f.frame_height,
                         rotated: f.rotated,
+                        page_index: f.page_index,
                     });
                 StageEntitySnapshotJson {
                     id: ent.id.clone(),
@@ -657,6 +675,11 @@ impl EngineSession {
             pruned_unused_anims: r.pruned_unused_anims,
             repacked_atlases: r.repacked_atlases,
             repacked_entity_ids: r.repacked_entity_ids.clone(),
+            rgb565_textures: r.rgb565_textures,
+            quantized_textures: r.quantized_textures,
+            split_atlas_pages_total: r.split_atlas_pages_total,
+            scheduled_preload_entities: r.scheduled_preload_entities,
+            scheduled_retire_entities: r.scheduled_retire_entities,
             merged_audio_tracks: r.merged_audio_tracks,
             compiled_audio_path: r
                 .compiled_audio_path
@@ -668,6 +691,9 @@ impl EngineSession {
             cached_scripts_reused: r.cached_scripts_reused,
             script_precompile_errors: r.script_precompile_errors.clone(),
             compiled_texture_paths: self.compiled_texture_paths.clone(),
+            compiled_texture_pages: self.compiled_texture_pages.clone(),
+            texture_pixel_formats: self.texture_pixel_formats.clone(),
+            timeline_windows: self.last_timeline_windows.clone(),
         });
 
         let cam_cfg = &self.project.stage.camera;
@@ -796,7 +822,9 @@ impl EngineSession {
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
             preferred_render_backend: self.project.preferred_render_backend.as_key().to_string(),
+            audio_adapt_enabled: self.project.audio_adapt_enabled,
             last_compile_report,
+            last_audio_adapt_report: self.last_audio_adapt_report.clone(),
         }
     }
 

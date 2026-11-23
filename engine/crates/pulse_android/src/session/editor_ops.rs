@@ -274,6 +274,7 @@ impl EngineSession {
                     .set_track(slot, Some(Arc::clone(&arc_track)));
                 self.decoded_tracks[slot] = Some(arc_track);
                 self.invalidate_compiled_bundle();
+                self.invalidate_adapted_audio();
                 self.save_active_project_now();
                 self.ok_response(format!("Pista {} decodificada y lista en Rust AAudio", slot + 1))
             }
@@ -292,6 +293,7 @@ impl EngineSession {
             self.audio_engine.mixer.set_track(slot, None);
             self.remove_managed_asset_if_unreferenced(old_path.as_deref());
             self.invalidate_compiled_bundle();
+            self.invalidate_adapted_audio();
             self.save_active_project_now();
         }
         self.ok_response(format!("Pista {} liberada", slot + 1))
@@ -317,9 +319,21 @@ impl EngineSession {
                 .duck_on_miss
                 .store(duck_on_miss, Ordering::Relaxed);
             self.invalidate_compiled_bundle();
+            self.invalidate_adapted_audio();
             self.mark_dirty_and_maybe_save(false);
         }
         self.ok_response("Configuración de pista actualizada")
+    }
+
+    pub fn set_audio_adapt_enabled(&mut self, enabled: bool) -> String {
+        self.project.audio_adapt_enabled = enabled;
+        self.invalidate_adapted_audio();
+        self.save_active_project_now();
+        self.ok_response(if enabled {
+            "Adaptador acústico activado para tu teléfono"
+        } else {
+            "Adaptador acústico desactivado (audio original)"
+        })
     }
 
     pub fn add_stage_entity(&mut self, name: &str, role_key: &str) -> String {

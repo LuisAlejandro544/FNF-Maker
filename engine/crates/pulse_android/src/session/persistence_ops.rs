@@ -427,6 +427,7 @@ impl EngineSession {
         self.audio_engine.mixer.pause();
         self.audio_engine.mixer.clear_stream_source();
         self.compiled_audio_path = None;
+        self.invalidate_adapted_audio();
         for slot in 0..MAX_AUDIO_TRACKS {
             self.decoded_tracks[slot] = None;
             self.audio_engine.mixer.set_track(slot, None);
@@ -538,7 +539,11 @@ impl EngineSession {
         self.gameplay = None;
         self.compiled_bundle = None;
         self.compiled_texture_paths.clear();
+        self.compiled_texture_pages.clear();
+        self.texture_pixel_formats.clear();
         self.last_compile_report = None;
+        self.last_timeline_windows.clear();
+        self.invalidate_adapted_audio();
 
         let clean_name = if name.trim().is_empty() {
             "Nuevo Mod BeatForge".to_string()
@@ -563,7 +568,11 @@ impl EngineSession {
         self.gameplay = None;
         self.compiled_bundle = None;
         self.compiled_texture_paths.clear();
+        self.compiled_texture_pages.clear();
+        self.texture_pixel_formats.clear();
         self.last_compile_report = None;
+        self.last_timeline_windows.clear();
+        self.invalidate_adapted_audio();
 
         if let Err(err) = self.try_load_project_from_disk(project_id) {
             return self.err_response(err);
@@ -642,7 +651,11 @@ impl EngineSession {
         self.gameplay = None;
         self.compiled_bundle = None;
         self.compiled_texture_paths.clear();
+        self.compiled_texture_pages.clear();
+        self.texture_pixel_formats.clear();
         self.last_compile_report = None;
+        self.last_timeline_windows.clear();
+        self.invalidate_adapted_audio();
         self.project = cloned;
         self.reload_project_audio_tracks();
         self.sync_mixer_chart_duration();
@@ -669,7 +682,11 @@ impl EngineSession {
             self.gameplay = None;
             self.compiled_bundle = None;
             self.compiled_texture_paths.clear();
+            self.compiled_texture_pages.clear();
+            self.texture_pixel_formats.clear();
             self.last_compile_report = None;
+            self.last_timeline_windows.clear();
+            self.invalidate_adapted_audio();
 
             // Buscar otro proyecto guardado o crear uno limpio si era el último
             let mut replacement: Option<ModProject> = None;
@@ -788,7 +805,11 @@ impl EngineSession {
         self.gameplay = None;
         self.compiled_bundle = None;
         self.compiled_texture_paths.clear();
+        self.compiled_texture_pages.clear();
+        self.texture_pixel_formats.clear();
         self.last_compile_report = None;
+        self.last_timeline_windows.clear();
+        self.invalidate_adapted_audio();
         let mut imported_proj = imported.project;
         normalize_loaded_project(&mut imported_proj);
         self.project = imported_proj;

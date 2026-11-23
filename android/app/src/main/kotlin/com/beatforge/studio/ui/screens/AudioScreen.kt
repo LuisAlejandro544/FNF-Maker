@@ -39,6 +39,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -61,7 +63,8 @@ fun AudioScreen(
     onRequestImport: (ImportKind) -> Unit,
     onToggleAudioPreview: () -> Unit,
     onUpdateTrackConfig: (slot: Int, gain: Float, muted: Boolean, duckOnMiss: Boolean) -> Unit,
-    onRemoveTrack: (slot: Int) -> Unit
+    onRemoveTrack: (slot: Int) -> Unit,
+    onSetAudioAdaptEnabled: (Boolean) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -134,6 +137,57 @@ fun AudioScreen(
                         softWrap = false
                     )
                 }
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = StudioColors.BgPanel,
+            border = BorderStroke(
+                1.dp,
+                if (snapshot.audioAdaptEnabled) StudioColors.AccentEmerald.copy(alpha = 0.45f) else StudioColors.BorderSubtle
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Adaptador Acústico Adaptativo (Rust DSP)",
+                        color = StudioColors.TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                    val lastReport = snapshot.lastAudioAdaptReport
+                    val subtitle = when {
+                        !snapshot.audioAdaptEnabled ->
+                            "Desactivado: reproduce el audio compilado sin calibración por teléfono"
+                        lastReport != null && !lastReport.bypassed ->
+                            "Última calibración: ${lastReport.device.routeLabel} (${lastReport.device.effectiveSampleRate} Hz) · ${lastReport.dspPlan?.profileName ?: "Listo"}"
+                        else ->
+                            "Sondea AudioManager + AAudio, mide LUFS/FFT por canción y ajusta Biquad/Rubato antes de jugar"
+                    }
+                    Text(
+                        text = subtitle,
+                        color = if (snapshot.audioAdaptEnabled) StudioColors.AccentEmerald else StudioColors.TextMuted,
+                        fontSize = 11.sp
+                    )
+                }
+
+                Spacer(Modifier.width(12.dp))
+
+                Switch(
+                    checked = snapshot.audioAdaptEnabled,
+                    onCheckedChange = onSetAudioAdaptEnabled,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color(0xFF042117),
+                        checkedTrackColor = StudioColors.AccentEmerald
+                    )
+                )
             }
         }
 

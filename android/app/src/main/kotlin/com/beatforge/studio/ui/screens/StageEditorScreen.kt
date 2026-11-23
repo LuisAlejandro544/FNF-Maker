@@ -187,7 +187,7 @@ fun StageEditorScreen(
                 )
             },
             onReorderEntity = onReorderEntity,
-            modifier = Modifier.weight(0.22f)
+            modifier = Modifier.weight(0.24f)
         )
 
         StageCanvasPreview(
@@ -208,7 +208,7 @@ fun StageEditorScreen(
             onSelectCameraSlot = onSelectCameraSlot,
             onUpdateEntity = onUpdateEntity,
             onUpdateCameraSlot = onUpdateCameraSlot,
-            modifier = Modifier.weight(0.47f)
+            modifier = Modifier.weight(0.45f)
         )
 
         // Columna derecha: Inspector de Cámara o del objeto seleccionado

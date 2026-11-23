@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 roxmltree.workspace = true
 image.workspace = true
+exoquant.workspace = true
 texture2ddecoder.workspace = true
 resvg.workspace = true
 crunch.workspace = true

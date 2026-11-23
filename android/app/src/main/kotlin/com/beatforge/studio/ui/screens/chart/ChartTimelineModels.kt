@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import com.beatforge.studio.ChartEventSnapshot
 import com.beatforge.studio.ChartSectionSnapshot
 import com.beatforge.studio.ChartSnapshot
+import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.VisibleNote
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -484,3 +485,125 @@ fun computeChartTotalDurationMs(chart: ChartSnapshot): Double {
     val stepMs = (60_000.0 / last.bpm.coerceAtLeast(40.0)) / 4.0
     return last.startMs + last.lengthInSteps * stepMs
 }
+
+/**
+ * Estado efectivo del escenario en un paso `#` del chart: qué personaje actúa como
+ * Jugador, cuál como Enemigo y qué objetos están visibles tras aplicar en orden cronológico
+ * los eventos `Stage Swap` / `Swap Stage` / `Change Character` hasta ese paso.
+ */
+data class ChartStepStageState(
+    val activePlayerId: String,
+    val activeOpponentId: String,
+    val visibleIds: Set<String>,
+    val changedEarlierIds: Set<String>,
+    val changedAtThisStepIds: Set<String>
+)
+
+private fun splitCsvIds(raw: String): List<String> {
+    if (raw.isBlank()) return emptyList()
+    return raw.split(',')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+}
+
+fun resolveChartStageStateAtStep(
+    entities: List<StageEntitySnapshot>,
+    events: List<ChartEventSnapshot>,
+    stepTimeMs: Double,
+    stepMs: Double
+): ChartStepStageState {
+    val visible = LinkedHashSet<String>()
+    for (ent in entities) {
+        if (ent.visible && ent.opacity > 0.005f) {
+            visible.add(ent.id)
+        }
+    }
+
+    var activePlayerId = entities.firstOrNull { it.role == "player" && visible.contains(it.id) }?.id
+        ?: entities.firstOrNull { it.role == "player" }?.id.orEmpty()
+    var activeOpponentId = entities.firstOrNull { it.role == "opponent" && visible.contains(it.id) }?.id
+        ?: entities.firstOrNull { it.role == "opponent" }?.id.orEmpty()
+
+    val changedEarlier = LinkedHashSet<String>()
+    val changedHere = LinkedHashSet<String>()
+    val stepToleranceMs = (stepMs * 0.5).coerceAtLeast(1.0)
+    val sortedEvents = events.sortedBy { it.timeMs }
+
+    for (ev in sortedEvents) {
+        if (ev.timeMs > stepTimeMs + stepToleranceMs) break
+        val lowerName = ev.name.trim().lowercase()
+        if (lowerName != "stage swap" && lowerName != "swap stage" && lowerName != "change character") {
+            continue
+        }
+
+        val isAtThisStep = abs(ev.timeMs - stepTimeMs) <= stepToleranceMs
+        val targetModifiedSet = if (isAtThisStep) changedHere else changedEarlier
+
+        val showIds = mutableListOf<String>()
+        val hideIds = mutableListOf<String>()
+        var nextPlayerId = ""
+        var nextOppId = ""
+
+        val p1 = parseSemiKv(ev.value1)
+        if (p1.isEmpty() && ev.value1.isNotBlank()) {
+            showIds.addAll(splitCsvIds(ev.value1))
+        } else {
+            for ((k, v) in p1) {
+                when (k) {
+                    "show", "mostrar" -> showIds.addAll(splitCsvIds(v))
+                    "hide", "ocultar" -> hideIds.addAll(splitCsvIds(v))
+                    "player", "jugador" -> nextPlayerId = v
+                    "opp", "opponent", "enemigo", "rival" -> nextOppId = v
+                }
+            }
+        }
+
+        val p2 = parseSemiKv(ev.value2)
+        if (p2.isNotEmpty()) {
+            for ((k, v) in p2) {
+                when (k) {
+                    "show", "mostrar" -> showIds.addAll(splitCsvIds(v))
+                    "hide", "ocultar" -> hideIds.addAll(splitCsvIds(v))
+                    "player", "jugador" -> nextPlayerId = v
+                    "opp", "opponent", "enemigo", "rival" -> nextOppId = v
+                }
+            }
+        }
+
+        for (id in hideIds) {
+            visible.remove(id)
+            targetModifiedSet.add(id)
+        }
+        for (id in showIds) {
+            visible.add(id)
+            targetModifiedSet.add(id)
+        }
+        if (nextPlayerId.isNotBlank()) {
+            if (activePlayerId.isNotBlank() && activePlayerId != nextPlayerId) {
+                visible.remove(activePlayerId)
+                targetModifiedSet.add(activePlayerId)
+            }
+            activePlayerId = nextPlayerId
+            visible.add(nextPlayerId)
+            targetModifiedSet.add(nextPlayerId)
+        }
+        if (nextOppId.isNotBlank()) {
+            if (activeOpponentId.isNotBlank() && activeOpponentId != nextOppId) {
+                visible.remove(activeOpponentId)
+                targetModifiedSet.add(activeOpponentId)
+            }
+            activeOpponentId = nextOppId
+            visible.add(nextOppId)
+            targetModifiedSet.add(nextOppId)
+        }
+    }
+
+    return ChartStepStageState(
+        activePlayerId = activePlayerId,
+        activeOpponentId = activeOpponentId,
+        visibleIds = visible,
+        changedEarlierIds = changedEarlier,
+        changedAtThisStepIds = changedHere
+    )
+}
+

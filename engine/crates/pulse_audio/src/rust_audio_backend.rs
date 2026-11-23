@@ -1,13 +1,48 @@
 //! Archivo: engine/crates/pulse_audio/src/rust_audio_backend.rs
 //! Propósito: Backend de audio de ultra-baja latencia 100% en Rust puro (cero C++, sin `oboe-sys`).
 //! En Android (API 26+ / Android 8.0+, `minSdk = 26`), carga dinámicamente `libaaudio.so` mediante
-//! `dlopen`/`dlsym` usando exclusivamente el C ABI estable de AAudio en modo `LOW_LATENCY` con callback en tiempo real.
+//! `dlopen`/`dlsym` usando exclusivamente el C ABI estable de AAudio en modo `LOW_LATENCY` con callback en tiempo real,
+//! y sondea en vivo el stream real (frecuencia nativa, ráfaga de frames, canales, modo de latencia y `deviceId`).
 //! En emuladores/OEMs que rechacen el stream de baja latencia o entornos de escritorio sin hardware de audio,
 //! mantiene un reloj de respaldo en Rust puro para que el juego siga sincronizado sin crashear.
 
 use crate::mixer::AudioMixerState;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Telemetría real leída desde el stream activo de `libaaudio.so` (o estado de respaldo).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioHardwareProbe {
+    pub aaudio_active: bool,
+    pub fallback_clock_active: bool,
+    pub sample_rate: u32,
+    pub channel_count: u32,
+    pub frames_per_burst: u32,
+    pub buffer_capacity_frames: u32,
+    pub low_latency_active: bool,
+    pub device_id: i32,
+    pub hardware_sample_rate: u32,
+    pub hardware_channel_count: u32,
+}
+
+impl Default for AudioHardwareProbe {
+    fn default() -> Self {
+        Self {
+            aaudio_active: false,
+            fallback_clock_active: false,
+            sample_rate: 48_000,
+            channel_count: 2,
+            frames_per_burst: 192,
+            buffer_capacity_frames: 768,
+            low_latency_active: false,
+            device_id: 0,
+            hardware_sample_rate: 0,
+            hardware_channel_count: 0,
+        }
+    }
+}
 
 /// Manejador vivo del stream de audio en Rust puro. Mientras permanezca en memoria, el audio fluye.
 /// Se inicializa de forma diferida (`new_deferred` + `ensure_started`) para evitar bloqueos o fallos
@@ -45,6 +80,47 @@ impl AudioEngineHandle {
         handle
     }
 
+    /// Sondea el hardware real de salida abriendo AAudio si aún no estaba iniciado y devolviendo
+    /// los parámetros físicos confirmados del stream activo (frecuencia, ráfaga, latencia, deviceId).
+    pub fn probe_aaudio_hardware(&mut self) -> AudioHardwareProbe {
+        self.ensure_started();
+        #[cfg(target_os = "android")]
+        {
+            match &self.stream {
+                Some(AndroidAudioOutput::AAudio(handle)) => return handle.probe.clone(),
+                Some(AndroidAudioOutput::FallbackClock(_)) => {
+                    let sr = self.mixer.sample_rate.load(Ordering::Relaxed).max(8000);
+                    return AudioHardwareProbe {
+                        aaudio_active: false,
+                        fallback_clock_active: true,
+                        sample_rate: sr,
+                        channel_count: 2,
+                        frames_per_burst: 512,
+                        buffer_capacity_frames: 2048,
+                        low_latency_active: false,
+                        device_id: 0,
+                        hardware_sample_rate: sr,
+                        hardware_channel_count: 2,
+                    };
+                }
+                None => {}
+            }
+        }
+        let sr = self.mixer.sample_rate.load(Ordering::Relaxed).max(8000);
+        AudioHardwareProbe {
+            aaudio_active: false,
+            fallback_clock_active: true,
+            sample_rate: sr,
+            channel_count: 2,
+            frames_per_burst: 256,
+            buffer_capacity_frames: 1024,
+            low_latency_active: false,
+            device_id: 0,
+            hardware_sample_rate: sr,
+            hardware_channel_count: 2,
+        }
+    }
+
     /// Abre el stream nativo AAudio en Rust puro bajo demanda (idempotente) o activa el reloj
     /// de respaldo seguro si el emulador o dispositivo rechaza el stream de baja latencia.
     pub fn ensure_started(&mut self) {
@@ -69,8 +145,10 @@ impl AudioEngineHandle {
                         self.mixer.set_sample_rate(actual_sr);
                     }
                     log::info!(
-                        "Stream AAudio (100% Rust) iniciado correctamente a {} Hz",
-                        actual_sr
+                        "Stream AAudio (100% Rust) iniciado correctamente a {} Hz (burst={} frames, deviceId={})",
+                        actual_sr,
+                        stream.probe.frames_per_burst,
+                        stream.probe.device_id
                     );
                     self.stream = Some(AndroidAudioOutput::AAudio(stream));
                 }
@@ -146,6 +224,7 @@ impl Drop for FallbackClockThread {
 /// Enlace FFI en Rust puro al C ABI de `libaaudio.so` sin C++ ni `oboe-sys`.
 #[cfg(target_os = "android")]
 mod android_aaudio {
+    use super::AudioHardwareProbe;
     use crate::mixer::AudioMixerState;
     use std::ffi::{CStr, c_void};
     use std::ptr::null_mut;
@@ -187,7 +266,7 @@ mod android_aaudio {
     type FnBuilderOpenStream =
         unsafe extern "C" fn(*mut AAudioStreamBuilder, *mut *mut AAudioStream) -> i32;
     type FnBuilderDelete = unsafe extern "C" fn(*mut AAudioStreamBuilder) -> i32;
-    type FnStreamGetSampleRate = unsafe extern "C" fn(*mut AAudioStream) -> i32;
+    type FnStreamGetI32 = unsafe extern "C" fn(*mut AAudioStream) -> i32;
     type FnStreamCmd = unsafe extern "C" fn(*mut AAudioStream) -> i32;
 
     struct AAudioApi {
@@ -203,7 +282,14 @@ mod android_aaudio {
         set_error_callback: FnBuilderSetErrorCb,
         open_stream: FnBuilderOpenStream,
         delete_builder: FnBuilderDelete,
-        get_sample_rate: FnStreamGetSampleRate,
+        get_sample_rate: FnStreamGetI32,
+        get_channel_count: Option<FnStreamGetI32>,
+        get_frames_per_burst: Option<FnStreamGetI32>,
+        get_buffer_capacity_in_frames: Option<FnStreamGetI32>,
+        get_performance_mode: Option<FnStreamGetI32>,
+        get_device_id: Option<FnStreamGetI32>,
+        get_hardware_sample_rate: Option<FnStreamGetI32>,
+        get_hardware_channel_count: Option<FnStreamGetI32>,
         request_start: FnStreamCmd,
         request_stop: FnStreamCmd,
         close_stream: FnStreamCmd,
@@ -215,6 +301,15 @@ mod android_aaudio {
             return Err(format!("Símbolo AAudio faltante: {:?}", name));
         }
         Ok(unsafe { std::mem::transmute_copy(&ptr) })
+    }
+
+    unsafe fn load_opt_sym<T>(lib: *mut c_void, name: &CStr) -> Option<T> {
+        let ptr = unsafe { libc::dlsym(lib, name.as_ptr()) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute_copy(&ptr) })
+        }
     }
 
     impl AAudioApi {
@@ -233,6 +328,14 @@ mod android_aaudio {
                     load_sym::<FnBuilderSetI32>(lib, c"AAudioStreamBuilder_setSamplesPerFrame")
                 })?;
 
+                let get_channel_count = load_opt_sym::<FnStreamGetI32>(
+                    lib,
+                    c"AAudioStream_getChannelCount",
+                )
+                .or_else(|| {
+                    load_opt_sym::<FnStreamGetI32>(lib, c"AAudioStream_getSamplesPerFrame")
+                });
+
                 Ok(Self {
                     _lib: lib,
                     create_stream_builder: load_sym(lib, c"AAudio_createStreamBuilder")?,
@@ -247,6 +350,24 @@ mod android_aaudio {
                     open_stream: load_sym(lib, c"AAudioStreamBuilder_openStream")?,
                     delete_builder: load_sym(lib, c"AAudioStreamBuilder_delete")?,
                     get_sample_rate: load_sym(lib, c"AAudioStream_getSampleRate")?,
+                    get_channel_count,
+                    get_frames_per_burst: load_opt_sym(lib, c"AAudioStream_getFramesPerBurst"),
+                    get_buffer_capacity_in_frames: load_opt_sym(
+                        lib,
+                        c"AAudioStream_getBufferCapacityInFrames",
+                    ),
+                    get_performance_mode: load_opt_sym(lib, c"AAudioStream_getPerformanceMode"),
+                    get_device_id: load_opt_sym(lib, c"AAudioStream_getDeviceId"),
+                    // Disponibles en API 31+ (Android 12+): se consultan vía dlsym opcional para
+                    // mantener compatibilidad binaria estricta con minSdk = 26 (Android 8.0+).
+                    get_hardware_sample_rate: load_opt_sym(
+                        lib,
+                        c"AAudioStream_getHardwareSampleRate",
+                    ),
+                    get_hardware_channel_count: load_opt_sym(
+                        lib,
+                        c"AAudioStream_getHardwareChannelCount",
+                    ),
                     request_start: load_sym(lib, c"AAudioStream_requestStart")?,
                     request_stop: load_sym(lib, c"AAudioStream_requestStop")?,
                     close_stream: load_sym(lib, c"AAudioStream_close")?,
@@ -265,6 +386,7 @@ mod android_aaudio {
         request_stop: FnStreamCmd,
         close_stream: FnStreamCmd,
         ctx_ptr: *mut CallbackContext,
+        pub probe: AudioHardwareProbe,
     }
 
     unsafe impl Send for AAudioStreamHandle {}
@@ -378,6 +500,35 @@ mod android_aaudio {
         };
 
         let actual_sr = unsafe { (api.get_sample_rate)(stream) }.max(0) as u32;
+        let channel_count = api
+            .get_channel_count
+            .map(|f| unsafe { f(stream) }.max(1) as u32)
+            .unwrap_or(2);
+        let frames_per_burst = api
+            .get_frames_per_burst
+            .map(|f| unsafe { f(stream) }.max(0) as u32)
+            .unwrap_or(192);
+        let buffer_capacity_frames = api
+            .get_buffer_capacity_in_frames
+            .map(|f| unsafe { f(stream) }.max(0) as u32)
+            .unwrap_or(frames_per_burst.saturating_mul(4));
+        let perf_mode = api
+            .get_performance_mode
+            .map(|f| unsafe { f(stream) })
+            .unwrap_or(AAUDIO_PERFORMANCE_MODE_NONE);
+        let device_id = api
+            .get_device_id
+            .map(|f| unsafe { f(stream) })
+            .unwrap_or(0);
+        let hardware_sample_rate = api
+            .get_hardware_sample_rate
+            .map(|f| unsafe { f(stream) }.max(0) as u32)
+            .unwrap_or(0);
+        let hardware_channel_count = api
+            .get_hardware_channel_count
+            .map(|f| unsafe { f(stream) }.max(0) as u32)
+            .unwrap_or(0);
+
         let start_res = unsafe { (api.request_start)(stream) };
         if start_res != AAUDIO_OK {
             unsafe {
@@ -387,12 +538,26 @@ mod android_aaudio {
             return Err(format!("requestStart falló (código {})", start_res));
         }
 
+        let probe = AudioHardwareProbe {
+            aaudio_active: true,
+            fallback_clock_active: false,
+            sample_rate: if actual_sr > 0 { actual_sr } else { 48_000 },
+            channel_count,
+            frames_per_burst,
+            buffer_capacity_frames,
+            low_latency_active: perf_mode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY,
+            device_id,
+            hardware_sample_rate,
+            hardware_channel_count,
+        };
+
         Ok((
             AAudioStreamHandle {
                 stream,
                 request_stop: api.request_stop,
                 close_stream: api.close_stream,
                 ctx_ptr,
+                probe,
             },
             actual_sr,
         ))

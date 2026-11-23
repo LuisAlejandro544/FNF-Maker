@@ -1,6 +1,6 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/HotCompileScreen.kt
-// Propósito: Pantalla de preparación en caliente con progreso real reportado desde Rust
-// (caché incremental por huella, conversión a WebP sin pérdida, precompilación de scripts y audio).
+// Propósito: Pantalla de preparación del escenario con progreso real reportado desde Rust
+// (caché incremental por huella, optimización de imágenes, eventos y mezcla de audio).
 
 package com.beatforge.studio.ui.screens
 
@@ -14,28 +14,29 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.RocketLaunch
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beatforge.studio.DeviceTier
 import com.beatforge.studio.HotCompileProgress
+import com.beatforge.studio.ui.components.StudioEqualizerBars
+import com.beatforge.studio.ui.components.StudioGlowingProgressBar
+import com.beatforge.studio.ui.components.StudioMilestoneStepper
+import com.beatforge.studio.ui.components.StudioOrbitProgressRing
 import com.beatforge.studio.ui.theme.StudioColors
 
 @Composable
@@ -46,10 +47,16 @@ fun HotCompileScreen(
     val targetProgress = progress.progress.coerceIn(0f, 1f)
     val animatedProgress by animateFloatAsState(
         targetValue = targetProgress,
-        animationSpec = tween(durationMillis = 120),
+        animationSpec = tween(durationMillis = 180),
         label = "hotCompileProgress"
     )
     val pctInt = (animatedProgress * 100f).toInt().coerceIn(0, 100)
+    val activeStep = when {
+        animatedProgress < 0.65f -> 0
+        animatedProgress < 0.80f -> 1
+        animatedProgress < 0.90f -> 2
+        else -> 3
+    }
 
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -57,58 +64,85 @@ fun HotCompileScreen(
     ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.58f)
+                .fillMaxWidth(0.66f)
                 .padding(16.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(18.dp),
             color = StudioColors.BgPanel,
             border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.45f))
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier.padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.RocketLaunch,
-                    contentDescription = null,
-                    tint = StudioColors.AccentCyan,
-                    modifier = Modifier.size(34.dp)
-                )
-                Text(
-                    text = "Preparando Partida...",
-                    color = StudioColors.TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-                Text(
-                    text = "Perfil: ${tier.label} · WebP sin pérdida + Caché Incremental",
-                    color = StudioColors.TextMuted,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = StudioColors.AccentCyan.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.35f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.RocketLaunch,
+                                contentDescription = null,
+                                tint = StudioColors.AccentCyan,
+                                modifier = Modifier
+                                    .padding(9.dp)
+                                    .size(24.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Preparando el Escenario...",
+                                color = StudioColors.TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Ajustando calidad para tu dispositivo (${tier.label})",
+                                color = StudioColors.TextMuted,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
 
-                Spacer(Modifier.height(4.dp))
-
-                Box(contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(
-                        progress = { animatedProgress },
-                        color = StudioColors.AccentEmerald,
-                        trackColor = StudioColors.BgDark,
-                        strokeWidth = 4.dp,
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Text(
-                        text = "$pctInt%",
-                        color = StudioColors.TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
+                    StudioOrbitProgressRing(
+                        progress = animatedProgress,
+                        primaryColor = StudioColors.AccentCyan,
+                        secondaryColor = StudioColors.AccentEmerald,
+                        size = 66.dp,
+                        strokeWidth = 4.5.dp
+                    ) {
+                        Text(
+                            text = "$pctInt%",
+                            color = StudioColors.TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
+
+                StudioMilestoneStepper(
+                    steps = listOf("Imágenes", "Eventos", "Música", "Listo"),
+                    activeIndex = activeStep,
+                    accentColor = StudioColors.AccentEmerald
+                )
 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -116,7 +150,7 @@ fun HotCompileScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = progress.phase.ifBlank { "Compilando recursos..." },
+                            text = progress.phase.ifBlank { "Optimizando recursos..." },
                             color = StudioColors.AccentCyan,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 12.sp,
@@ -124,22 +158,21 @@ fun HotCompileScreen(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
-                        Text(
-                            text = "$pctInt%",
-                            color = StudioColors.TextMuted,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                        Spacer(Modifier.width(10.dp))
+                        StudioEqualizerBars(
+                            barCount = 4,
+                            primaryColor = StudioColors.AccentCyan,
+                            secondaryColor = StudioColors.AccentEmerald,
+                            maxHeight = 16.dp,
+                            barWidth = 3.5.dp
                         )
                     }
 
-                    LinearProgressIndicator(
-                        progress = { animatedProgress },
-                        color = StudioColors.AccentCyan,
-                        trackColor = StudioColors.BgDark,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(7.dp)
-                            .clip(RoundedCornerShape(4.dp))
+                    StudioGlowingProgressBar(
+                        progress = animatedProgress,
+                        primaryColor = StudioColors.AccentCyan,
+                        secondaryColor = StudioColors.AccentEmerald,
+                        height = 8.dp
                     )
 
                     if (progress.detail.isNotBlank()) {

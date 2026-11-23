@@ -312,6 +312,7 @@ fun ChartScreen(
         ChartStepCueDialog(
             stepRow = activeCueStepRow,
             entities = snapshot.stageEntities,
+            chartEvents = chart.events,
             stageCamera = snapshot.stageCamera,
             onAddChartEvent = onAddChartEvent,
             onRemoveChartEvent = onRemoveChartEvent,

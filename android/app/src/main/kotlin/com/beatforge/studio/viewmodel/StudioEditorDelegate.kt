@@ -182,7 +182,7 @@ internal class StudioEditorDelegate(
                         if (uiState.value.audioPreviewPlaying) {
                             NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
                         }
-                        beginLoadingOverlay("Importando paquete .mod...", 0.25f, "Descomprimiendo mod Vanilla...")
+                        beginLoadingOverlay("Importando paquete .mod...", 0.25f, "Extrayendo archivos del mod...")
                         val rawJson = NativeEngineBridge.nativeImportModPackage(localPath)
                         applyProjectSwitchResult(rawJson, navigateToHub = true)
                     }
@@ -294,7 +294,7 @@ internal class StudioEditorDelegate(
             if (uiState.value.audioPreviewPlaying) {
                 NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
             }
-            beginLoadingOverlay(name, 0.22f, "Creando estructura del mod...")
+            beginLoadingOverlay(name, 0.22f, "Creando carpeta del proyecto...")
             val raw = NativeEngineBridge.nativeCreateProject(name, author)
             applyProjectSwitchResult(raw, navigateToHub = true)
             endLoadingOverlay()
@@ -309,7 +309,7 @@ internal class StudioEditorDelegate(
                 NativeEngineBridge.nativeToggleAudioPreview(false, 0.0)
             }
             val projName = uiState.value.projects.firstOrNull { it.id == projectId }?.name ?: "Mod BeatForge"
-            beginLoadingOverlay(projName, 0.18f, "Cargando proyecto y chart.json...")
+            beginLoadingOverlay(projName, 0.18f, "Abriendo las notas y la música...")
             val raw = NativeEngineBridge.nativeOpenProject(projectId)
             applyProjectSwitchResult(raw, navigateToHub = true)
             endLoadingOverlay()
@@ -560,6 +560,13 @@ internal class StudioEditorDelegate(
     fun updateAudioTrackConfig(slot: Int, gain: Float, muted: Boolean, duckOnMiss: Boolean) {
         scope.launch(engineIoDispatcher) {
             val raw = NativeEngineBridge.nativeUpdateAudioTrackConfig(slot, gain, muted, duckOnMiss)
+            applyActionJson(raw, silentOk = true)
+        }
+    }
+
+    fun setAudioAdaptEnabled(enabled: Boolean) {
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeSetAudioAdaptEnabled(enabled)
             applyActionJson(raw, silentOk = true)
         }
     }
@@ -1009,7 +1016,7 @@ internal class StudioEditorDelegate(
         val result = StudioJsonParser.parseActionResult(rawJson)
         val nextSnap = result.snapshot ?: uiState.value.snapshot
         if (uiState.value.isLoadingProject) {
-            updateLoadingOverlay(0.48f, "Cargando skins de flechas y HUD SVG...")
+            updateLoadingOverlay(0.48f, "Cargando flechas e íconos...")
         }
         bitmapLoader.evictRegionCache()
         val arrows = bitmapLoader.loadArrowBitmaps()
@@ -1017,7 +1024,7 @@ internal class StudioEditorDelegate(
         val hurtX = bitmapLoader.loadHurtArrowXBitmap()
         val hudAssets = bitmapLoader.loadHudSvgAssets()
         if (uiState.value.isLoadingProject) {
-            updateLoadingOverlay(0.72f, "Decodificando sprites e íconos del escenario...")
+            updateLoadingOverlay(0.72f, "Preparando personajes y escenario...")
         }
         val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(nextSnap.stageEntities)
         val entBmps = bitmapLoader.loadEditorEntityBitmaps(
@@ -1025,7 +1032,7 @@ internal class StudioEditorDelegate(
             uiState.value.selectedTier
         )
         if (uiState.value.isLoadingProject) {
-            updateLoadingOverlay(0.92f, "Verificando drivers OpenGL ES / Vulkan...")
+            updateLoadingOverlay(0.92f, "Ajustando gráficos para tu teléfono...")
         }
         val gfxCaps = VulkanProbeBridge.probeCombinedCapabilities(app)
         val projects = StudioJsonParser.parseProjectList(NativeEngineBridge.nativeListProjects())

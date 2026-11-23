@@ -151,6 +151,15 @@ object NativeEngineBridge {
     ): String
 
     @JvmStatic
+    external fun nativeSetAudioAdaptEnabled(enabled: Boolean): String
+
+    @JvmStatic
+    external fun nativeGetAudioAdaptProgress(): String
+
+    @JvmStatic
+    external fun nativeAdaptAudioForDevice(deviceProbeJson: String): String
+
+    @JvmStatic
     external fun nativeToggleAudioPreview(play: Boolean, startMs: Double): Boolean
 
     @JvmStatic
@@ -320,6 +329,13 @@ object NativeEngineBridge {
 
     @JvmStatic
     external fun nativeHotCompile(tierCode: Int): String
+
+    @JvmStatic
+    external fun nativeHotCompileWithViewport(
+        tierCode: Int,
+        viewportW: Int,
+        viewportH: Int
+    ): String
 
     @JvmStatic
     external fun nativeGetHotCompileProgress(): String

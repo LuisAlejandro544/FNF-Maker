@@ -164,10 +164,12 @@ fun SpriteLabScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Sprites · PNG/ASTC + XML/JSON",
+                        text = "Personajes y Sprites",
                         color = StudioColors.TextPrimary,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f)
                     )
                     OutlinedButton(
                         onClick = onOpenFilesGuide,
@@ -445,13 +447,28 @@ fun SpriteLabScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     ANIM_SLOTS.forEach { (kindKey, label) ->
+                        val chipLabel = when (kindKey) {
+                            "idle" -> "Reposo"
+                            "left" -> "Izq"
+                            "down" -> "Abajo"
+                            "up" -> "Arriba"
+                            "right" -> "Der"
+                            "miss_left" -> "Fallo Izq"
+                            "miss_down" -> "Fallo Abajo"
+                            "miss_up" -> "Fallo Arriba"
+                            "miss_right" -> "Fallo Der"
+                            "death_start" -> "Muerte 1"
+                            "death_loop" -> "Muerte 2"
+                            "death_confirm" -> "Reintento"
+                            else -> label.substringBefore(" ")
+                        }
                         FilterChip(
                             selected = activeAnimKind == kindKey,
                             onClick = {
                                 activeAnimKind = kindKey
                                 elapsedSec = 0f
                             },
-                            label = { Text(label.substringBefore(" "), fontSize = 11.sp) }
+                            label = { Text(chipLabel, fontSize = 11.sp, maxLines = 1, softWrap = false) }
                         )
                     }
                 }
@@ -468,6 +485,19 @@ fun SpriteLabScreen(
                         .weight(1f)
                         .background(StudioColors.BgDark, RoundedCornerShape(10.dp))
                 ) {
+                    val guideColor = Color.White.copy(alpha = 0.08f)
+                    drawLine(
+                        color = guideColor,
+                        start = Offset(size.width * 0.5f, 10f),
+                        end = Offset(size.width * 0.5f, size.height - 10f),
+                        strokeWidth = 1f
+                    )
+                    drawLine(
+                        color = guideColor,
+                        start = Offset(14f, size.height * 0.5f),
+                        end = Offset(size.width - 14f, size.height * 0.5f),
+                        strokeWidth = 1f
+                    )
                     if (currentFrame.found && currentFrame.width > 0 && currentFrame.height > 0 && (sharpFrame != null || loaded != null)) {
                         val visW = if (currentFrame.rotated) currentFrame.height else currentFrame.width
                         val visH = if (currentFrame.rotated) currentFrame.width else currentFrame.height
@@ -577,31 +607,60 @@ fun SpriteLabScreen(
                                 }
                             }
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("X:", color = StudioColors.AccentCyan, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                                Text(
+                                    text = "X:",
+                                    color = StudioColors.AccentCyan,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.5.sp,
+                                    modifier = Modifier.width(16.dp)
+                                )
                                 listOf(-5f, -1f, 1f, 5f).forEach { step ->
                                     OutlinedButton(
                                         onClick = { onSetAnimOffset(entity.id, activeAnimKind, offX + step, offY) },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                        modifier = Modifier.height(24.dp)
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(24.dp)
                                     ) {
-                                        Text(if (step > 0f) "+${step.toInt()}" else "${step.toInt()}", fontSize = 10.sp)
+                                        Text(
+                                            text = if (step > 0f) "+${step.toInt()}" else "${step.toInt()}",
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
                                     }
                                 }
-                                Spacer(Modifier.width(6.dp))
-                                Text("Y:", color = StudioColors.AccentAmber, fontWeight = FontWeight.Bold, fontSize = 10.5.sp)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Y:",
+                                    color = StudioColors.AccentAmber,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.5.sp,
+                                    modifier = Modifier.width(16.dp)
+                                )
                                 listOf(-5f, -1f, 1f, 5f).forEach { step ->
                                     OutlinedButton(
                                         onClick = { onSetAnimOffset(entity.id, activeAnimKind, offX, offY + step) },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                        modifier = Modifier.height(24.dp)
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(24.dp)
                                     ) {
-                                        Text(if (step > 0f) "+${step.toInt()}" else "${step.toInt()}", fontSize = 10.sp)
+                                        Text(
+                                            text = if (step > 0f) "+${step.toInt()}" else "${step.toInt()}",
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
                                     }
                                 }
                             }

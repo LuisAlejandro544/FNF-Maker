@@ -32,12 +32,14 @@ pub mod svg_skin;
 pub mod vanilla;
 
 pub use astc_loader::{
-    decode_astc_file_bytes, is_astc_path, is_webp_path, load_sprite_image, read_sprite_dimensions,
-    save_lossless_webp,
+    WebpPixelPolicy, WebpSaveInfo, decode_astc_file_bytes, dither_image_to_rgb565_grid,
+    is_astc_path, is_webp_path, load_sprite_image, quantize_rgba_with_exoquant,
+    read_sprite_dimensions, save_compiled_webp, save_lossless_webp,
 };
 pub use atlas_json::{AnimateDocument, AnimateSpritemap, DetectedSpriteJson, bake_animate_atlas, parse_sprite_json_str};
 pub use atlas_repack::{
-    AtlasRepackResult, collect_referenced_anim_prefixes, optimize_and_repack_sparrow_atlas,
+    AtlasExtraPage, AtlasRepackResult, collect_referenced_anim_prefixes,
+    optimize_and_repack_sparrow_atlas, optimize_and_repack_sparrow_atlas_for_viewport,
 };
 pub use chart::{
     ChartData, ChartEvent, ChartIntroUiConfig, ChartNote, ChartSection, ChartStats,
@@ -54,9 +56,13 @@ pub use frame_memory::{ArenaSpan, FrameBumpArena, FrameVisibleNote, LruCache, No
 pub use hot_compile::{
     AssetFileFingerprint, AudioMergeFingerprint, AudioSlotFingerprint, CachedAudioEntry,
     CachedScriptEntry, CachedTextureEntry, CompiledBundle, DeviceResourceTier,
-    HotCompileManifest, HotCompileReport, SCRIPT_OPTIMIZER_CACHE_VERSION, TextureFingerprint,
-    fnv1a_64_bytes, fnv1a_64_str, hot_compile_project, hot_compile_project_to_dir,
-    hot_compile_project_to_dir_with_manifest,
+    EntityLifecycleWindow, HotCompileManifest, HotCompileReport, SCRIPT_OPTIMIZER_CACHE_VERSION,
+    ScreenViewportMetrics, TextureFingerprint, TexturePixelFormat,
+    compute_project_max_camera_zoom, compute_smart_texture_scale,
+    compute_smart_texture_scale_for_viewport, compute_timeline_asset_lifecycle, fnv1a_64_bytes,
+    fnv1a_64_str, hot_compile_project, hot_compile_project_to_dir,
+    hot_compile_project_to_dir_with_manifest, hot_compile_project_to_dir_with_manifest_viewport,
+    hot_compile_project_to_dir_with_viewport,
 };
 pub use mod_descriptors::{
     CharacterAnimDescriptor, CharacterDescriptor, DetectedModDescriptor, StageDescriptor,

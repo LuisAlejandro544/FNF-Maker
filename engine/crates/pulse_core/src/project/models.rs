@@ -137,6 +137,10 @@ pub fn current_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn default_audio_adapt_enabled() -> bool {
+    true
+}
+
 /// Proyecto completo del usuario listo para editar o compilar en caliente.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModProject {
@@ -161,6 +165,8 @@ pub struct ModProject {
     pub scroll_speed_override: Option<f64>,
     #[serde(default)]
     pub preferred_render_backend: RenderBackendKind,
+    #[serde(default = "default_audio_adapt_enabled")]
+    pub audio_adapt_enabled: bool,
 }
 
 impl ModProject {
@@ -261,6 +267,7 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             audio_offset_ms: 0.0,
             scroll_speed_override: None,
             preferred_render_backend: RenderBackendKind::Canvas2d,
+            audio_adapt_enabled: true,
         }
     }
 

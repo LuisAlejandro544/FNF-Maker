@@ -22,10 +22,15 @@ license = "Apache-2.0"
 # Audio de baja latencia 100% en Rust puro para Android via C ABI de AAudio (dlopen, cero C++)
 libc = "0.2.172"
 
-# Decodificadores de audio puros con licencias permisivas (sin MPL/GPL)
+# Decodificadores y procesamiento DSP adaptativo con licencias permisivas (MIT / Apache-2.0, sin MPL/GPL)
 lewton = "0.10.2"   # OGG Vorbis (MIT / Apache-2.0)
 hound = "3.5.1"     # WAV (Apache-2.0)
 rmp3 = "0.3.1"      # MP3 (MIT)
+ebur128 = "0.1.11"  # Medición Loudness LUFS, LRA y True Peak EBU R128 (MIT)
+realfft = "3.5.0"   # Análisis espectral FFT real-to-complex (MIT / Apache-2.0)
+rustfft = "6.4.1"   # Backend FFT de alto rendimiento en Rust puro (MIT / Apache-2.0)
+biquad = "0.5.0"    # Filtros IIR paramétricos (HPF, Low/High Shelf, Peaking EQ) (MIT / Apache-2.0)
+rubato = "0.15.0"   # Remuestreo FFT de alta fidelidad (MIT)
 
 # Motores de scripting: Lua 5.4 + TypeScript/JavaScript (MIT)
 mlua = { version = "0.12.2", features = ["lua54", "vendored", "send", "serialize"] }
@@ -40,6 +45,7 @@ oxc_semantic = "0.158.0"
 # Procesamiento de XML Sparrow, imagenes, texturas .astc y skins SVG (MIT / Apache-2.0)
 roxmltree = "0.21.2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+exoquant = "0.2.0"          # Cuantización perceptual + dithering Floyd-Steinberg (MIT)
 texture2ddecoder = "0.1.2" # Decodificador ASTC 100% Rust puro (MIT OR Apache-2.0)
 resvg = "0.50.0"
 crunch = "0.5.3"          # Empaquetado compacto de atlas 2D (MIT OR Apache-2.0)

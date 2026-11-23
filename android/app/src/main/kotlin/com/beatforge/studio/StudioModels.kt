@@ -19,6 +19,7 @@ enum class StudioScreen(val label: String) {
     StageEditor("Escena"),
     ScriptStudio("Scripts"),
     HotCompile("Compilar"),
+    AudioAdapt("Acústica"),
     Gameplay("Juego")
 }
 
@@ -188,8 +189,98 @@ data class ScriptSnapshot(
 data class HotCompileProgress(
     val active: Boolean = false,
     val progress: Float = 0f,
-    val phase: String = "Preparando compilador...",
+    val phase: String = "Preparando el escenario...",
     val detail: String = ""
+)
+
+data class AudioAdaptProgress(
+    val active: Boolean = false,
+    val progress: Float = 0f,
+    val phase: String = "Calibrando el sonido...",
+    val detail: String = ""
+)
+
+data class SpectralBandProfileSnapshot(
+    val subBass2090Hz: Float = 0f,
+    val bass90220Hz: Float = 0f,
+    val lowMid220600Hz: Float = 0f,
+    val presence2k4kHz: Float = 0f,
+    val air6k14kHz: Float = 0f,
+    val spectralTiltDb: Float = 0f
+)
+
+data class SongAcousticAnalysisSnapshot(
+    val sampleRate: Int = 44_100,
+    val durationSec: Float = 0f,
+    val integratedLufs: Float = -14f,
+    val loudnessRangeLu: Float = 0f,
+    val truePeakDbtp: Float = -1f,
+    val crestFactorDb: Float = 0f,
+    val stereoCorrelation: Float = 1f,
+    val bands: SpectralBandProfileSnapshot = SpectralBandProfileSnapshot()
+)
+
+data class EqBandAdjustmentSnapshot(
+    val kind: String = "",
+    val freqHz: Float = 0f,
+    val gainDb: Float = 0f,
+    val q: Float = 0.707f,
+    val reason: String = ""
+)
+
+data class EffectiveDeviceAcousticsSnapshot(
+    val route: String = "builtin_speaker",
+    val routeLabel: String = "Altavoz del Teléfono",
+    val deviceName: String = "Altavoz Integrado",
+    val manufacturer: String = "Android",
+    val model: String = "Device",
+    val androidApiLevel: Int = 26,
+    val effectiveSampleRate: Int = 48_000,
+    val hardwareNativeSampleRate: Int = 48_000,
+    val effectiveChannelCount: Int = 2,
+    val isMonoSpeaker: Boolean = false,
+    val framesPerBurst: Int = 192,
+    val bufferCapacityFrames: Int = 0,
+    val lowLatencyActive: Boolean = false,
+    val aaudioActive: Boolean = false,
+    val aaudioDeviceId: Int = 0
+)
+
+data class AdaptiveDspPlanSnapshot(
+    val profileName: String = "",
+    val adaptationSummary: String = "",
+    val targetLufs: Float = -14f,
+    val appliedMakeupGainDb: Float = 0f,
+    val ceilingDbtp: Float = -1f,
+    val highpassHz: Float = 30f,
+    val monoFoldEnabled: Boolean = false,
+    val resampleNeeded: Boolean = false,
+    val sourceSampleRate: Int = 44_100,
+    val targetSampleRate: Int = 48_000,
+    val eqBands: List<EqBandAdjustmentSnapshot> = emptyList()
+)
+
+data class AudioAdaptationReportSnapshot(
+    val enabled: Boolean = true,
+    val bypassed: Boolean = false,
+    val cacheReused: Boolean = false,
+    val elapsedMs: Long = 0L,
+    val outputWavPath: String? = null,
+    val device: EffectiveDeviceAcousticsSnapshot = EffectiveDeviceAcousticsSnapshot(),
+    val songAnalysis: SongAcousticAnalysisSnapshot? = null,
+    val dspPlan: AdaptiveDspPlanSnapshot? = null,
+    val outputTruePeakDbtp: Float = -1f
+)
+
+data class EntityLifecycleWindowSnapshot(
+    val entityId: String = "",
+    val initiallyVisible: Boolean = true,
+    val preloadAtMs: Double? = null,
+    val firstVisibleMs: Double? = null,
+    val lastUsedMs: Double? = null,
+    val retireAfterMs: Double? = null,
+    val reusedLater: Boolean = false,
+    val triggerReason: String = ""
 )
 
 data class CompileReportSnapshot(
@@ -209,6 +300,11 @@ data class CompileReportSnapshot(
     val prunedUnusedAnims: Int = 0,
     val repackedAtlases: Int = 0,
     val repackedEntityIds: List<String> = emptyList(),
+    val rgb565Textures: Int = 0,
+    val quantizedTextures: Int = 0,
+    val splitAtlasPagesTotal: Int = 0,
+    val scheduledPreloadEntities: Int = 0,
+    val scheduledRetireEntities: Int = 0,
     val mergedAudioTracks: Int = 0,
     val compiledAudioPath: String? = null,
     val estimatedAudioRamSavedKb: Int = 0,
@@ -216,7 +312,10 @@ data class CompileReportSnapshot(
     val precompiledScripts: Int = 0,
     val cachedScriptsReused: Int = 0,
     val scriptPrecompileErrors: List<String> = emptyList(),
-    val compiledTexturePaths: Map<String, String> = emptyMap()
+    val compiledTexturePaths: Map<String, String> = emptyMap(),
+    val compiledTexturePages: Map<String, List<String>> = emptyMap(),
+    val texturePixelFormats: Map<String, String> = emptyMap(),
+    val timelineWindows: List<EntityLifecycleWindowSnapshot> = emptyList()
 )
 
 data class ProjectSummary(
@@ -298,7 +397,9 @@ data class ProjectSnapshot(
     val hasCustomPngArrowSkin: Boolean = false,
     val healthBarSvgPath: String? = null,
     val preferredRenderBackend: String = "canvas2d",
-    val lastCompileReport: CompileReportSnapshot? = null
+    val audioAdaptEnabled: Boolean = true,
+    val lastCompileReport: CompileReportSnapshot? = null,
+    val lastAudioAdaptReport: AudioAdaptationReportSnapshot? = null
 )
 
 data class ActionResult(
@@ -323,7 +424,8 @@ data class SparrowFrameInfo(
     val frameY: Int = 0,
     val frameWidth: Int = 0,
     val frameHeight: Int = 0,
-    val rotated: Boolean = false
+    val rotated: Boolean = false,
+    val pageIndex: Int = 0
 )
 
 data class GameplayEntityFrame(
@@ -468,11 +570,25 @@ object StudioJsonParser {
             HotCompileProgress(
                 active = obj.optBoolean("active", false),
                 progress = obj.optDouble("progress", 0.0).toFloat().coerceIn(0f, 1f),
-                phase = obj.optString("phase", "Preparando compilador..."),
+                phase = obj.optString("phase", "Preparando el escenario..."),
                 detail = obj.optString("detail", "")
             )
         } catch (_: Exception) {
             HotCompileProgress()
+        }
+    }
+
+    fun parseAudioAdaptProgress(rawJson: String): AudioAdaptProgress {
+        return try {
+            val obj = JSONObject(rawJson)
+            AudioAdaptProgress(
+                active = obj.optBoolean("active", false),
+                progress = obj.optDouble("progress", 0.0).toFloat().coerceIn(0f, 1f),
+                phase = obj.optString("phase", "Calibrando el sonido..."),
+                detail = obj.optString("detail", "")
+            )
+        } catch (_: Exception) {
+            AudioAdaptProgress()
         }
     }
 
@@ -692,6 +808,11 @@ object StudioJsonParser {
                 prunedUnusedAnims = r.optInt("prunedUnusedAnims", 0),
                 repackedAtlases = r.optInt("repackedAtlases", 0),
                 repackedEntityIds = stringList(r.optJSONArray("repackedEntityIds")),
+                rgb565Textures = r.optInt("rgb565Textures", 0),
+                quantizedTextures = r.optInt("quantizedTextures", 0),
+                splitAtlasPagesTotal = r.optInt("splitAtlasPagesTotal", 0),
+                scheduledPreloadEntities = r.optInt("scheduledPreloadEntities", 0),
+                scheduledRetireEntities = r.optInt("scheduledRetireEntities", 0),
                 mergedAudioTracks = r.optInt("mergedAudioTracks", 0),
                 compiledAudioPath = optNullableString(r, "compiledAudioPath"),
                 estimatedAudioRamSavedKb = r.optInt("estimatedAudioRamSavedKb", 0),
@@ -699,7 +820,10 @@ object StudioJsonParser {
                 precompiledScripts = r.optInt("precompiledScripts", 0),
                 cachedScriptsReused = r.optInt("cachedScriptsReused", 0),
                 scriptPrecompileErrors = stringList(r.optJSONArray("scriptPrecompileErrors")),
-                compiledTexturePaths = stringMap(r.optJSONObject("compiledTexturePaths"))
+                compiledTexturePaths = stringMap(r.optJSONObject("compiledTexturePaths")),
+                compiledTexturePages = stringListMap(r.optJSONObject("compiledTexturePages")),
+                texturePixelFormats = stringMap(r.optJSONObject("texturePixelFormats")),
+                timelineWindows = parseTimelineWindows(r.optJSONArray("timelineWindows"))
             )
         }
 
@@ -751,6 +875,9 @@ object StudioJsonParser {
             StageCameraSnapshot()
         }
 
+        val audioAdaptReportObj = obj.optJSONObject("lastAudioAdaptReport")
+        val audioAdaptReport = audioAdaptReportObj?.let { parseAudioAdaptationReportObject(it) }
+
         return ProjectSnapshot(
             id = obj.optString("id", ""),
             name = obj.optString("name", "Nuevo Mod"),
@@ -768,7 +895,96 @@ object StudioJsonParser {
             hasCustomPngArrowSkin = obj.optBoolean("hasCustomPngArrowSkin", false),
             healthBarSvgPath = optNullableString(obj, "healthBarSvgPath"),
             preferredRenderBackend = obj.optString("preferredRenderBackend", "canvas2d"),
-            lastCompileReport = compileReport
+            audioAdaptEnabled = obj.optBoolean("audioAdaptEnabled", true),
+            lastCompileReport = compileReport,
+            lastAudioAdaptReport = audioAdaptReport
+        )
+    }
+
+    private fun parseAudioAdaptationReportObject(obj: JSONObject): AudioAdaptationReportSnapshot {
+        val devObj = obj.optJSONObject("device") ?: JSONObject()
+        val device = EffectiveDeviceAcousticsSnapshot(
+            route = devObj.optString("route", "builtin_speaker"),
+            routeLabel = devObj.optString("routeLabel", "Altavoz del Teléfono"),
+            deviceName = devObj.optString("deviceName", "Altavoz Integrado"),
+            manufacturer = devObj.optString("manufacturer", "Android"),
+            model = devObj.optString("model", "Device"),
+            androidApiLevel = devObj.optInt("androidApiLevel", 26),
+            effectiveSampleRate = devObj.optInt("effectiveSampleRate", 48_000),
+            hardwareNativeSampleRate = devObj.optInt("hardwareNativeSampleRate", 48_000),
+            effectiveChannelCount = devObj.optInt("effectiveChannelCount", 2),
+            isMonoSpeaker = devObj.optBoolean("isMonoSpeaker", false),
+            framesPerBurst = devObj.optInt("framesPerBurst", 192),
+            bufferCapacityFrames = devObj.optInt("bufferCapacityFrames", 0),
+            lowLatencyActive = devObj.optBoolean("lowLatencyActive", false),
+            aaudioActive = devObj.optBoolean("aaudioActive", false),
+            aaudioDeviceId = devObj.optInt("aaudioDeviceId", 0)
+        )
+
+        val songObj = obj.optJSONObject("songAnalysis")
+        val songAnalysis = songObj?.let { s ->
+            val bandsObj = s.optJSONObject("bands") ?: JSONObject()
+            SongAcousticAnalysisSnapshot(
+                sampleRate = s.optInt("sampleRate", 44_100),
+                durationSec = s.optDouble("durationSec", 0.0).toFloat(),
+                integratedLufs = s.optDouble("integratedLufs", -14.0).toFloat(),
+                loudnessRangeLu = s.optDouble("loudnessRangeLu", 0.0).toFloat(),
+                truePeakDbtp = s.optDouble("truePeakDbtp", -1.0).toFloat(),
+                crestFactorDb = s.optDouble("crestFactorDb", 0.0).toFloat(),
+                stereoCorrelation = s.optDouble("stereoCorrelation", 1.0).toFloat(),
+                bands = SpectralBandProfileSnapshot(
+                    subBass2090Hz = bandsObj.optDouble("subBass2090Hz", 0.0).toFloat(),
+                    bass90220Hz = bandsObj.optDouble("bass90220Hz", 0.0).toFloat(),
+                    lowMid220600Hz = bandsObj.optDouble("lowMid220600Hz", 0.0).toFloat(),
+                    presence2k4kHz = bandsObj.optDouble("presence2k4kHz", 0.0).toFloat(),
+                    air6k14kHz = bandsObj.optDouble("air6k14kHz", 0.0).toFloat(),
+                    spectralTiltDb = bandsObj.optDouble("spectralTiltDb", 0.0).toFloat()
+                )
+            )
+        }
+
+        val planObj = obj.optJSONObject("dspPlan")
+        val dspPlan = planObj?.let { p ->
+            val eqArr = p.optJSONArray("eqBands") ?: JSONArray()
+            val eqBands = buildList(eqArr.length()) {
+                for (i in 0 until eqArr.length()) {
+                    val b = eqArr.optJSONObject(i) ?: continue
+                    add(
+                        EqBandAdjustmentSnapshot(
+                            kind = b.optString("kind", ""),
+                            freqHz = b.optDouble("freqHz", 0.0).toFloat(),
+                            gainDb = b.optDouble("gainDb", 0.0).toFloat(),
+                            q = b.optDouble("q", 0.707).toFloat(),
+                            reason = b.optString("reason", "")
+                        )
+                    )
+                }
+            }
+            AdaptiveDspPlanSnapshot(
+                profileName = p.optString("profileName", ""),
+                adaptationSummary = p.optString("adaptationSummary", ""),
+                targetLufs = p.optDouble("targetLufs", -14.0).toFloat(),
+                appliedMakeupGainDb = p.optDouble("appliedMakeupGainDb", 0.0).toFloat(),
+                ceilingDbtp = p.optDouble("ceilingDbtp", -1.0).toFloat(),
+                highpassHz = p.optDouble("highpassHz", 30.0).toFloat(),
+                monoFoldEnabled = p.optBoolean("monoFoldEnabled", false),
+                resampleNeeded = p.optBoolean("resampleNeeded", false),
+                sourceSampleRate = p.optInt("sourceSampleRate", 44_100),
+                targetSampleRate = p.optInt("targetSampleRate", 48_000),
+                eqBands = eqBands
+            )
+        }
+
+        return AudioAdaptationReportSnapshot(
+            enabled = obj.optBoolean("enabled", true),
+            bypassed = obj.optBoolean("bypassed", false),
+            cacheReused = obj.optBoolean("cacheReused", false),
+            elapsedMs = obj.optLong("elapsedMs", 0L),
+            outputWavPath = optNullableString(obj, "outputWavPath"),
+            device = device,
+            songAnalysis = songAnalysis,
+            dspPlan = dspPlan,
+            outputTruePeakDbtp = obj.optDouble("outputTruePeakDbtp", -1.0).toFloat()
         )
     }
 
@@ -792,7 +1008,8 @@ object StudioJsonParser {
             frameY = obj.optInt("frameY", 0),
             frameWidth = obj.optInt("frameWidth", 0),
             frameHeight = obj.optInt("frameHeight", 0),
-            rotated = obj.optBoolean("rotated", false)
+            rotated = obj.optBoolean("rotated", false),
+            pageIndex = obj.optInt("pageIndex", 0)
         )
     }
 
@@ -982,6 +1199,38 @@ object StudioJsonParser {
             out[k] = obj.optString(k, "")
         }
         return out
+    }
+
+    private fun stringListMap(obj: JSONObject?): Map<String, List<String>> {
+        if (obj == null) return emptyMap()
+        val out = linkedMapOf<String, List<String>>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            out[k] = stringList(obj.optJSONArray(k))
+        }
+        return out
+    }
+
+    private fun parseTimelineWindows(arr: JSONArray?): List<EntityLifecycleWindowSnapshot> {
+        if (arr == null) return emptyList()
+        return buildList(arr.length()) {
+            for (i in 0 until arr.length()) {
+                val w = arr.optJSONObject(i) ?: continue
+                add(
+                    EntityLifecycleWindowSnapshot(
+                        entityId = w.optString("entityId", ""),
+                        initiallyVisible = w.optBoolean("initiallyVisible", true),
+                        preloadAtMs = if (w.has("preloadAtMs") && !w.isNull("preloadAtMs")) w.optDouble("preloadAtMs") else null,
+                        firstVisibleMs = if (w.has("firstVisibleMs") && !w.isNull("firstVisibleMs")) w.optDouble("firstVisibleMs") else null,
+                        lastUsedMs = if (w.has("lastUsedMs") && !w.isNull("lastUsedMs")) w.optDouble("lastUsedMs") else null,
+                        retireAfterMs = if (w.has("retireAfterMs") && !w.isNull("retireAfterMs")) w.optDouble("retireAfterMs") else null,
+                        reusedLater = w.optBoolean("reusedLater", false),
+                        triggerReason = w.optString("triggerReason", "")
+                    )
+                )
+            }
+        }
     }
 
     private fun offsetMap(obj: JSONObject?): Map<String, Pair<Float, Float>> {

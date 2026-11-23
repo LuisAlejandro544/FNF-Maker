@@ -17,7 +17,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 ├── package.json                         # Dependencias web + tsx para tests del SDK
 │
 ├── engine/                              # Motor nativo modular en Rust (Workspace Cargo, sin UI)
-│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, crunch, texture2ddecoder, zstd)
+│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, crunch, exoquant, texture2ddecoder, zstd, ebur128, realfft, rustfft, biquad, rubato)
 │   ├── .cargo/
 │   │   └── config.toml                  # Flags de enlazador Android (alineación 16KB para Android 15+)
 │   └── crates/
@@ -33,8 +33,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   ├── serializer.rs    # Exportación universal limpia a `chart.json`
 │       │       │   ├── camera_events.rs # Parser de eventos de cámara (`parse_chart_camera_event` V-Slice/Psych/Codename)
 │       │       │   └── tests.rs         # Pruebas unitarias de parsing, serialización y eventos de cámara
-│       │       ├── sparrow.rs           # Lector XML Sparrow, centrado universal (`normalize_and_center_animations`) y auto-armado de Idle/Direcciones + Miss + Death
-│       │       ├── astc_loader.rs       # Decodificador puro Rust `.astc` (`texture2ddecoder`) y codificador WebP lossless (`save_lossless_webp`)
+│       │       ├── sparrow.rs           # Lector XML Sparrow (`page_index`), centrado universal (`normalize_and_center_animations`) y auto-armado de Idle/Direcciones + Miss + Death
+│       │       ├── astc_loader.rs       # Decodificador puro Rust `.astc` (`texture2ddecoder`), dithering `RGB_565` Floyd-Steinberg, cuantización `exoquant` y codificador WebP (`save_compiled_webp`)
 │       │       ├── atlas_json/          # Lectores `.json` y baker `Animation.json` divididos modularmente (con centrado unificado por defecto)
 │       │       │   ├── mod.rs           # Punto de entrada del módulo, detección de formato y reexportaciones públicas
 │       │       │   ├── transform.rs     # Álgebra afín 2D (`Affine2D`) y matrices/color (`ColorTransform2D`)
@@ -54,26 +54,27 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   └── ui_blackout_lua.rs  # Generador `ui_blackout.lua` para apagones e intro HUD (`3-2-1-GO`)
 │       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
 │       │       ├── script_optimizer.rs  # Poda segura preservando API completa (flashes, swap, preload/retire, personaje)
-│       │       ├── atlas_repack.rs      # Optimizador y reempaquetador (`crunch`): alpha-trim, frames muertos `(0,0) 1x1`, deduplicación exacta y poda segura
-│       │       ├── hot_compile/         # Compilación incremental modularizada (`HotCompileManifest` v4)
+│       │       ├── atlas_repack.rs      # Optimizador y reempaquetador (`crunch`): alpha-trim, frames muertos `(0,0) 1x1`, deduplicación exacta, poda segura y paginación multi-página (`_p1.._p5`)
+│       │       ├── hot_compile/         # Compilación incremental modularizada (`HotCompileManifest` v6)
 │       │       │   ├── mod.rs           # Orquestación pública y reexportaciones de compilación en caliente
-│       │       │   ├── fingerprints.rs  # Huellas FNV-1a de texturas, audio, scripts y configuración
-│       │       │   ├── manifest.rs      # Lectura/escritura atómica de `HotCompileManifest` v4 en disco
-│       │       │   ├── analysis.rs      # Planificación de cambios incrementales y detección de reuso (`repacked_atlas`)
-│       │       │   ├── pipeline.rs      # Conversión WebP lossless, preservación Full HD de fondos, caché `.bfaud`/`.luac` y reporte
-│       │       │   └── tests.rs         # Pruebas unitarias de huellas, invalidación y pipeline incremental
+│       │       │   ├── fingerprints.rs  # Huellas FNV-1a de texturas, pantalla física, zoom máx., audio y scripts
+│       │       │   ├── manifest.rs      # Lectura/escritura atómica de `HotCompileManifest` v6 en disco (`TexturePixelFormat`, `timeline_windows`)
+│       │       │   ├── analysis.rs      # Planificación incremental, `compute_timeline_asset_lifecycle` (4s/1.5s), zoom máx. y escala `Lanczos3` por pantalla
+│       │       │   ├── pipeline.rs      # Pre-escalado `Lanczos3`, `RGB_565` + `exoquant`, mega-atlas multi-página WebP VP8L, caché `.bfaud`/`.luac` y reporte
+│       │       │   └── tests.rs         # Pruebas unitarias de huellas, invalidación, timeline lifecycle, dithering/cuantización y pre-escalado por viewport
 │       │       ├── disk_cache.rs        # Presupuestos 65%/35% por cuota del sistema, limpieza plana heredada y desalojo LRU en disco
 │       │       └── vanilla.rs           # Contenedor portátil Vanilla (`.mod`) con Zstandard, PNG->WebP lossless, dedup y FNV-1a
 │       │
-│       ├── pulse_audio/                 # Subsistema de audio de baja latencia 100% Rust puro
+│       ├── pulse_audio/                 # Subsistema de audio de baja latencia y DSP 100% Rust puro
 │       │   ├── Cargo.toml
 │       │   └── src/
-│       │       ├── lib.rs               # AudioEngineHandle, merge_tracks_to_wav y control del stream
+│       │       ├── lib.rs               # AudioEngineHandle, AudioHardwareProbe, adaptive_master y streaming
 │       │       ├── decoder.rs           # Decodificación OGG/WAV/MP3 a PCM i16 compacto (50% menos RAM) y resampleo
 │       │       ├── audio_cache.rs       # Caché binario `.bfaud` (picos de onda + PCM i16) en `cacheDir/audio_cache/` con escritura atómica y LRU
 │       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`) + streaming SPSC 512 KB desde disco
+│       │       ├── adaptive_master.rs   # Adaptador Acústico (`ebur128` LUFS + `realfft` 5 bandas + `biquad` IIR + `rubato` FftFixedIn + caché)
 │       │       ├── mixer.rs             # Mezclador lock-free + reloj maestro + countdown BPM + síntesis SFX Game Over
-│       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI, cero C++) + fallback
+│       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI + probe hardware, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados sin ataduras
 │       │   ├── Cargo.toml
@@ -108,17 +109,18 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   └── gameplay_gfx_ops.rs # JNI de compilación incremental, simulación gameplay `BFGP` v2, debug y probe GPU (`gfx`)
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
-│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `StageCameraSlotSnapshotJson`, `cameraSlot`, `clamp_to_background`, `repacked_entity_ids`, `render_backend`, `anim_offsets`)
+│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
 │                   ├── editor_ops.rs    # Operaciones de editor (`select_stage_camera`, `update_camera_slot`, `add/remove_custom_camera`, `set_section_camera_slot`, `import_stage_config`, `stage_events.lua`)
 │                   ├── gfx_probe.rs     # Sondeo dinámico `dlopen` en Android 32/64b de `libEGL.so`, `libGLESv2.so`, `libGLESv3.so` y `libvulkan.so`
 │                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP, Sparrow XML, Animate, auto-dimensionado en escenario, `import_character_config` y `set_entity_anim_offset`
-│                   ├── persistence_ops.rs # Guardado/carga (normalización de atlas y ranuras `Cam 0..2`), adopción `assets/`, GC, `.bfaud` y Vanilla `.mod`
+│                   ├── persistence_ops.rs # Guardado/carga (normalización de atlas, ranuras `Cam 0..2` y limpieza de cachés v6), adopción `assets/`, GC, `.bfaud` y Vanilla `.mod`
 │                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
-│                       ├── mod.rs         # Coordinador `start/pause/stop/retry_game_over/trigger_test_game_over`, cámara inicial `Cam 0` y BFGP v2 (`152B`)
-│                       ├── hot_compile_ops.rs # `hot_compile_with_progress` en `compiled_cache/<projectId>/` con cuota y desalojo LRU multi-proyecto
+│                       ├── mod.rs         # Coordinador `start/pause/stop/retry_game_over/trigger_test_game_over`, colas ordenadas de timeline y BFGP v2 (`152B`)
+│                       ├── hot_compile_ops.rs # `hot_compile_with_progress_and_viewport` en `compiled_cache/<projectId>/` con cuota y desalojo LRU multi-proyecto
+│                       ├── audio_adapt_ops.rs # Fase independiente post-compilación: sondeo hardware + EBU R128/FFT + plan DSP Biquad/Rubato
 │                       ├── script_sync.rs # `tweens`, timers, `SwitchCameraSlot`/`SetCameraFollowLock`, `flash`, `GameOver`, swaps y drenaje `ScriptCommand`
-│                       ├── simulation.rs  # Simulación por frame (seguimiento multicámara + eventos `chart.json`, notas `Hurt`/`Instakill`/`Dodge`, Game Over, Botplay/Práctica)
-│                       └── packet_encoder.rs # Serialización JSON y binaria `BFGP` v2 (`152B` cabecera + bits 9..13 GameOver/Debug + `noteKindCode`)
+│                       ├── simulation.rs  # Simulación por frame (drenaje de colas timeline preload/retire, multicámara + `chart.json`, notas X, Game Over, Botplay/Práctica)
+│                       └── packet_encoder.rs # Serialización JSON y binaria `BFGP` v2 (`152B` + bits 8..15 `page_index` en `e_flags`, bits 9..13 GameOver/Debug + `noteKindCode`)
 │
 ├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
@@ -139,20 +141,22 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           └── kotlin/com/beatforge/studio/
 │               ├── MainActivity.kt      # ComponentActivity + Lobby inicial/Pantalla de carga + OpenDocument/CreateDocument (.json, .mod, NOTE_assets)
 │               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
-│               ├── GameplayFrameState.kt# Decoder binario BFGP v2 (`152B` cabecera: GameOver, Botplay, Práctica, `noteKindCode`, flash, preload/retired)
+│               ├── GameplayFrameState.kt# Decoder binario BFGP v2 (`152B` cabecera: GameOver, Botplay, Práctica, `noteKindCode`, `pageIndex` bits 8..15, flash, preload/retired)
 │               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so` (incl. Game Over, Debug, Arrow Atlas y Backend GPU)
 │               ├── SafFileBridge.kt     # Staging temporal de URIs SAF en `cacheDir/import_staging/` y barrido al arranque
-│               ├── StudioModels.kt      # Data classes Kotlin (`NoteSpecialKind`, `HotCompileProgress`, `CompileReportSnapshot` con métricas de deduplicación/reempaque, `ArrowSkinCatalog`)
-│               ├── StudioUiState.kt     # Estado reactivo (`hasSelectedProject`, `isLoadingProject`, `debug*`, `stagedArrowAtlas*`) y `LoadedEntityBitmap`
+│               ├── StudioModels.kt      # Data classes Kotlin (`NoteSpecialKind`, `EntityLifecycleWindowSnapshot`, `CompileReportSnapshot` con `compiledTexturePages`/`texturePixelFormats`, `ArrowSkinCatalog`)
+│               ├── StudioUiState.kt     # Estado reactivo (`hasSelectedProject`, `isLoadingProject`, `debug*`, `stagedArrowAtlas*`) y `LoadedEntityBitmap` (`extraPages` + `pageAt()`)
 │               ├── StudioViewModel.kt   # Coordinador principal (`StateFlow`) que delega en `viewmodel/*` sobre `Dispatchers.IO`
+│               ├── audio/               # Sondeo físico del audio de Android (sin bloqueos en UI)
+│               │   └── AndroidAudioDeviceProbe.kt # Consulta `AudioManager` + `AudioDeviceInfo` en `Dispatchers.IO` (ruta, canales, mono, burst)
 │               ├── gfx/                 # Capa modular de preparación GPU (OpenGL ES 2.0/3.x y Vulkan)
 │               │   ├── RenderBackendModels.kt # Modelos Kotlin de backend seleccionado y capacidades de drivers detectados
 │               │   ├── VulkanProbeBridge.kt   # Sondeo ligero Android PackageManager (GLES / Vulkan) enlazado con el reporte Rust
 │               │   └── GlesSurfaceHost.kt     # Contenedor base GLSurfaceView (ES 2.0 / 3.x) listo para futuro renderizado GPU
 │               ├── viewmodel/           # Submódulos especializados del ViewModel
-│               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow, alineación de `repackedEntityIds` y decodificación bitmaps/SVG
+│               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow, `Bitmap.Config.RGB_565`, decodificación multi-página y alineación `repackedEntityIds`
 │               │   ├── StudioEditorDelegate.kt    # Lobby/Carga de proyectos, cuota `StorageManager`, staging SAF, `NOTE_assets.png+.xml`, `.mod` y backend GPU
-│               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (skip ocultos, `repackedEntityIds`, precarga 4s IO, recycle diferido 3 frames) y BFGP v2
+│               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (`nativeHotCompileWithViewport`), fase `AudioAdaptScreen`, colas timeline/precarga 4s y reciclaje `extraPages` a 3 frames
 │               └── ui/
 │                   ├── theme/
 │                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
@@ -174,7 +178,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   ├── ChartPlayheadState.kt  # Estado `@Stable` a 60 Hz del hilo reproductor + toggle Seguir/Libre sin recomponer filas
 │                       │   ├── ChartToolsPanel.kt     # Panel izquierdo: selector tipo de nota, transporte, salto de sección con insignia `Cam N` y `stage_events.lua`
 │                       │   └── ChartTimelineGrid.kt   # Rejilla DAW continua, dropdown `Auto / Cam N` por sección, cues `#`, scrubber y hilo 60 FPS
-│                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda en vivo
+│                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda + toggle del Adaptador Acústico
 │                       ├── SpriteLabScreen.kt     # PNG/ASTC + XML/JSON, slots `Miss` + `Death Start/Loop/Confirm`, `Posición (.json/.xml)`, `Offset Pose X/Y` y visor 1:1
 │                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas (60 FPS) + `Escena .json/.xml` + multicámara
 │                       ├── stage/                 # Subcomponentes modulares del editor de escenario
@@ -185,6 +189,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders y flipX
 │                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS (`camera_system.lua` y `stage_events.lua`) con referencia API
 │                       ├── HotCompileScreen.kt    # Pantalla de carga con barra y círculo determinados (`0%–100%`) + fase en vivo
+│                       ├── AudioAdaptScreen.kt    # Pantalla independiente pre-gameplay: hardware/AAudio, EBU R128 + FFT 5 bandas y plan DSP
 │                       ├── GameplayScreen.kt      # Coordinador jugable 60 FPS (`withFrameNanos`), medición FPS, flash HUD y ocultamiento HUD limpio
 │                       └── gameplay/              # Submódulos especializados de `GameplayScreen`
 │                           ├── GameplayRenderPrimitives.kt # Pools sin GC, `GameplayTouchMaskState` y geometría de carriles
@@ -197,8 +202,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, multicámara (`resolveCameraSlotTarget`, `clampCameraToBackground`), `optimizeSparrowAtlasPlan`, sustain, hilo, ciclo RAM, `.mod`, `BFGP` v2
-│       └── engine-tools.test.ts         # 52 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, multicámara, `Lanczos3` viewport scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP, `optimizeSparrowAtlasPlan`, `.mod`, `BFGP` v2
+│       └── engine-tools.test.ts         # 60 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

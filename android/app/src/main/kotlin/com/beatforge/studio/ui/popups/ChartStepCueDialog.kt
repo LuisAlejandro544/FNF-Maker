@@ -55,16 +55,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.beatforge.studio.ChartEventSnapshot
 import com.beatforge.studio.StageCameraSnapshot
 import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.ui.screens.chart.ChartTimelineRow
 import com.beatforge.studio.ui.screens.chart.parseHexColorOrWhite
+import com.beatforge.studio.ui.screens.chart.resolveChartStageStateAtStep
 import com.beatforge.studio.ui.screens.chart.summarizeChartEvent
 import com.beatforge.studio.ui.theme.StudioColors
 import java.util.Locale
@@ -85,10 +89,12 @@ private val FLASH_PRESET_COLORS = listOf(
     "#000000" to "Negro"
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChartStepCueDialog(
     stepRow: ChartTimelineRow.StepRow,
     entities: List<StageEntitySnapshot>,
+    chartEvents: List<ChartEventSnapshot>,
     stageCamera: StageCameraSnapshot,
     onAddChartEvent: (timeMs: Double, name: String, value1: String, value2: String) -> Unit,
     onRemoveChartEvent: (globalIndex: Int) -> Unit,
@@ -98,6 +104,26 @@ fun ChartStepCueDialog(
     onDismiss: () -> Unit
 ) {
     var activeTab by remember { mutableIntStateOf(0) } // 0=Escena/Visibilidad, 1=Flash, 2=Personajes/Precarga, 3=UI/Negro, 4=Cámara
+
+    val stageStateAtStep = remember(
+        entities,
+        chartEvents,
+        stepRow.globalStepIndex,
+        stepRow.stepTimeMs,
+        stepRow.stepMs
+    ) {
+        resolveChartStageStateAtStep(
+            entities = entities,
+            events = chartEvents,
+            stepTimeMs = stepRow.stepTimeMs,
+            stepMs = stepRow.stepMs
+        )
+    }
+    val activePlayerName = entities.firstOrNull { it.id == stageStateAtStep.activePlayerId }?.displayName
+        ?: stageStateAtStep.activePlayerId.ifBlank { "Sin asignar" }
+    val activeOpponentName = entities.firstOrNull { it.id == stageStateAtStep.activeOpponentId }?.displayName
+        ?: stageStateAtStep.activeOpponentId.ifBlank { "Sin asignar" }
+    val visibleCountAtStep = entities.count { stageStateAtStep.visibleIds.contains(it.id) }
 
     // Tab 0: Visibilidad & Swap
     val visibilityChoices = remember(stepRow.globalStepIndex) {
@@ -250,34 +276,101 @@ fun ChartStepCueDialog(
 
                 when (activeTab) {
                     0 -> {
+                        StageStateSummaryBanner(
+                            stepInSec = stepRow.stepInSec,
+                            activePlayerName = activePlayerName,
+                            activeOpponentName = activeOpponentName,
+                            visibleCount = visibleCountAtStep,
+                            totalCount = entities.size
+                        )
                         Text(
-                            text = "Muestra sprites ocultos al instante u oculta los actuales (escenario, fondos o decoración). Los ocultos al inicio NO cargan en RAM hasta precargarse 4s antes.",
+                            text = "Muestra sprites ocultos al instante u oculta los actuales (escenario, fondos o decoración). Los indicadores muestran qué elementos están en uso en este paso.",
                             color = StudioColors.TextMuted,
                             fontSize = 10.sp,
                             lineHeight = 13.sp
                         )
                         entities.forEach { ent ->
                             val choice = visibilityChoices[ent.id] ?: VisibilityAction.Keep
+                            val isVisibleNow = stageStateAtStep.visibleIds.contains(ent.id)
+                            val isActivePlayer = ent.id == stageStateAtStep.activePlayerId
+                            val isActiveOpponent = ent.id == stageStateAtStep.activeOpponentId
+                            val changedHere = stageStateAtStep.changedAtThisStepIds.contains(ent.id)
+                            val changedEarlier = stageStateAtStep.changedEarlierIds.contains(ent.id)
+                            val cardBorderColor = when {
+                                isActivePlayer -> StudioColors.AccentEmerald.copy(alpha = 0.72f)
+                                isActiveOpponent -> StudioColors.AccentCoral.copy(alpha = 0.72f)
+                                isVisibleNow -> StudioColors.AccentCyan.copy(alpha = 0.48f)
+                                else -> StudioColors.BorderSubtle.copy(alpha = 0.55f)
+                            }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(StudioColors.BgCard, RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isVisibleNow || isActivePlayer || isActiveOpponent) {
+                                            StudioColors.BgCard
+                                        } else {
+                                            StudioColors.BgCard.copy(alpha = 0.62f)
+                                        }
+                                    )
+                                    .border(1.dp, cardBorderColor, RoundedCornerShape(8.dp))
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
                                     Text(
                                         text = ent.displayName,
-                                        color = StudioColors.TextPrimary,
+                                        color = if (isVisibleNow || isActivePlayer || isActiveOpponent) {
+                                            StudioColors.TextPrimary
+                                        } else {
+                                            StudioColors.TextMuted
+                                        },
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1
                                     )
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        if (isActivePlayer) {
+                                            StageStatusBadge(
+                                                label = "EN USO · JUGADOR",
+                                                color = StudioColors.AccentEmerald
+                                            )
+                                        }
+                                        if (isActiveOpponent) {
+                                            StageStatusBadge(
+                                                label = "EN USO · ENEMIGO",
+                                                color = StudioColors.AccentCoral
+                                            )
+                                        }
+                                        StageStatusBadge(
+                                            label = if (isVisibleNow) "VISIBLE" else "OCULTO",
+                                            color = if (isVisibleNow) StudioColors.AccentCyan else StudioColors.TextMuted
+                                        )
+                                        if (changedHere) {
+                                            StageStatusBadge(
+                                                label = "en este paso",
+                                                color = StudioColors.AccentAmber
+                                            )
+                                        } else if (changedEarlier) {
+                                            StageStatusBadge(
+                                                label = "evento previo",
+                                                color = StudioColors.AccentPurple
+                                            )
+                                        }
+                                    }
                                     Text(
-                                        text = "${ent.roleLabel} · inicio: ${if (ent.visible) "Visible" else "Oculto (en WebP)"}",
+                                        text = "${ent.roleLabel} · ${if (isVisibleNow) "En escena ahora" else "Oculto (en WebP / RAM libre)"}",
                                         color = StudioColors.TextMuted,
-                                        fontSize = 10.sp
+                                        fontSize = 9.sp
                                     )
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -448,6 +541,13 @@ fun ChartStepCueDialog(
                     }
 
                     2 -> {
+                        StageStateSummaryBanner(
+                            stepInSec = stepRow.stepInSec,
+                            activePlayerName = activePlayerName,
+                            activeOpponentName = activeOpponentName,
+                            visibleCount = visibleCountAtStep,
+                            totalCount = entities.size
+                        )
                         Text(
                             text = "Promueve cualquier personaje o sprite de escenario a Jugador u Oponente activo en este paso (cambia animaciones, cámara e íconos):",
                             color = StudioColors.TextMuted,
@@ -459,19 +559,71 @@ fun ChartStepCueDialog(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             entities.forEach { ent ->
                                 val isSel = selectedPlayerId == ent.id
+                                val isCurrentPlayer = ent.id == stageStateAtStep.activePlayerId
+                                val isCurrentOpponent = ent.id == stageStateAtStep.activeOpponentId
+                                val isVisibleNow = stageStateAtStep.visibleIds.contains(ent.id)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(7.dp))
-                                        .background(if (isSel) StudioColors.AccentEmerald.copy(alpha = 0.16f) else StudioColors.BgCard)
-                                        .border(1.dp, if (isSel) StudioColors.AccentEmerald else StudioColors.BorderSubtle, RoundedCornerShape(7.dp))
+                                        .background(
+                                            when {
+                                                isSel -> StudioColors.AccentEmerald.copy(alpha = 0.22f)
+                                                isCurrentPlayer -> StudioColors.AccentEmerald.copy(alpha = 0.10f)
+                                                else -> StudioColors.BgCard
+                                            }
+                                        )
+                                        .border(
+                                            1.dp,
+                                            when {
+                                                isSel -> StudioColors.AccentEmerald
+                                                isCurrentPlayer -> StudioColors.AccentEmerald.copy(alpha = 0.65f)
+                                                isCurrentOpponent -> StudioColors.AccentCoral.copy(alpha = 0.45f)
+                                                else -> StudioColors.BorderSubtle
+                                            },
+                                            RoundedCornerShape(7.dp)
+                                        )
                                         .clickable { selectedPlayerId = if (isSel) "" else ent.id }
                                         .padding(horizontal = 8.dp, vertical = 5.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("${ent.displayName} (${ent.roleLabel})", color = StudioColors.TextPrimary, fontSize = 11.sp)
-                                    Text(if (isSel) "Activo" else "Elegir", color = if (isSel) StudioColors.AccentEmerald else StudioColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(end = 6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text("${ent.displayName} (${ent.roleLabel})", color = StudioColors.TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            if (isCurrentPlayer) {
+                                                StageStatusBadge("JUGADOR EN USO", StudioColors.AccentEmerald)
+                                            }
+                                            if (isCurrentOpponent) {
+                                                StageStatusBadge("ENEMIGO EN USO", StudioColors.AccentCoral)
+                                            }
+                                            StageStatusBadge(
+                                                if (isVisibleNow) "VISIBLE" else "OCULTO",
+                                                if (isVisibleNow) StudioColors.AccentCyan else StudioColors.TextMuted
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = when {
+                                            isSel -> "Elegido"
+                                            isCurrentPlayer -> "En uso"
+                                            else -> "Elegir"
+                                        },
+                                        color = when {
+                                            isSel || isCurrentPlayer -> StudioColors.AccentEmerald
+                                            else -> StudioColors.TextMuted
+                                        },
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
@@ -480,19 +632,71 @@ fun ChartStepCueDialog(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             entities.forEach { ent ->
                                 val isSel = selectedOpponentId == ent.id
+                                val isCurrentOpponent = ent.id == stageStateAtStep.activeOpponentId
+                                val isCurrentPlayer = ent.id == stageStateAtStep.activePlayerId
+                                val isVisibleNow = stageStateAtStep.visibleIds.contains(ent.id)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(7.dp))
-                                        .background(if (isSel) StudioColors.AccentCoral.copy(alpha = 0.16f) else StudioColors.BgCard)
-                                        .border(1.dp, if (isSel) StudioColors.AccentCoral else StudioColors.BorderSubtle, RoundedCornerShape(7.dp))
+                                        .background(
+                                            when {
+                                                isSel -> StudioColors.AccentCoral.copy(alpha = 0.22f)
+                                                isCurrentOpponent -> StudioColors.AccentCoral.copy(alpha = 0.10f)
+                                                else -> StudioColors.BgCard
+                                            }
+                                        )
+                                        .border(
+                                            1.dp,
+                                            when {
+                                                isSel -> StudioColors.AccentCoral
+                                                isCurrentOpponent -> StudioColors.AccentCoral.copy(alpha = 0.65f)
+                                                isCurrentPlayer -> StudioColors.AccentEmerald.copy(alpha = 0.45f)
+                                                else -> StudioColors.BorderSubtle
+                                            },
+                                            RoundedCornerShape(7.dp)
+                                        )
                                         .clickable { selectedOpponentId = if (isSel) "" else ent.id }
                                         .padding(horizontal = 8.dp, vertical = 5.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("${ent.displayName} (${ent.roleLabel})", color = StudioColors.TextPrimary, fontSize = 11.sp)
-                                    Text(if (isSel) "Activo" else "Elegir", color = if (isSel) StudioColors.AccentCoral else StudioColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(end = 6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text("${ent.displayName} (${ent.roleLabel})", color = StudioColors.TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            if (isCurrentOpponent) {
+                                                StageStatusBadge("ENEMIGO EN USO", StudioColors.AccentCoral)
+                                            }
+                                            if (isCurrentPlayer) {
+                                                StageStatusBadge("JUGADOR EN USO", StudioColors.AccentEmerald)
+                                            }
+                                            StageStatusBadge(
+                                                if (isVisibleNow) "VISIBLE" else "OCULTO",
+                                                if (isVisibleNow) StudioColors.AccentCyan else StudioColors.TextMuted
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = when {
+                                            isSel -> "Elegido"
+                                            isCurrentOpponent -> "En uso"
+                                            else -> "Elegir"
+                                        },
+                                        color = when {
+                                            isSel || isCurrentOpponent -> StudioColors.AccentCoral
+                                            else -> StudioColors.TextMuted
+                                        },
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
@@ -531,7 +735,7 @@ fun ChartStepCueDialog(
                         HorizontalDivider(color = StudioColors.BorderSubtle)
                         Text("Precarga Manual Extra (opcional, el motor ya precarga 4s antes):", color = StudioColors.TextMuted, fontSize = 10.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                            entities.filter { !it.visible }.take(4).forEach { ent ->
+                            entities.filter { !stageStateAtStep.visibleIds.contains(it.id) }.take(4).forEach { ent ->
                                 val checked = manualPreloadIds[ent.id] == true
                                 ActionChip(
                                     label = ent.displayName.take(10),
@@ -920,7 +1124,8 @@ fun ChartStepCueDialog(
                                 selected = false,
                                 color = StudioColors.AccentCoral,
                                 onClick = {
-                                    val opp = entities.firstOrNull { it.role == "opponent" }
+                                    val opp = entities.firstOrNull { it.id == stageStateAtStep.activeOpponentId }
+                                        ?: entities.firstOrNull { it.role == "opponent" }
                                     camFollowPosX = (opp?.x ?: 300f).roundToInt().toString()
                                     camFollowPosY = ((opp?.y ?: 415f) - 24f).roundToInt().toString()
                                 },
@@ -931,7 +1136,8 @@ fun ChartStepCueDialog(
                                 selected = false,
                                 color = StudioColors.AccentEmerald,
                                 onClick = {
-                                    val pl = entities.firstOrNull { it.role == "player" }
+                                    val pl = entities.firstOrNull { it.id == stageStateAtStep.activePlayerId }
+                                        ?: entities.firstOrNull { it.role == "player" }
                                     camFollowPosX = (pl?.x ?: 980f).roundToInt().toString()
                                     camFollowPosY = ((pl?.y ?: 420f) - 24f).roundToInt().toString()
                                 },
@@ -1129,3 +1335,61 @@ private fun ActionChip(
         )
     }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StageStateSummaryBanner(
+    stepInSec: Int,
+    activePlayerName: String,
+    activeOpponentName: String,
+    visibleCount: Int,
+    totalCount: Int
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(StudioColors.BgDark.copy(alpha = 0.72f))
+            .border(1.dp, StudioColors.BorderSubtle, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "Estado de escena en Paso #$stepInSec:",
+            color = StudioColors.TextPrimary,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            StageStatusBadge(label = "Jugador: $activePlayerName", color = StudioColors.AccentEmerald)
+            StageStatusBadge(label = "Enemigo: $activeOpponentName", color = StudioColors.AccentCoral)
+            StageStatusBadge(label = "Visibles: $visibleCount/$totalCount", color = StudioColors.AccentCyan)
+        }
+    }
+}
+
+@Composable
+private fun StageStatusBadge(
+    label: String,
+    color: Color
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(color.copy(alpha = 0.16f))
+            .border(1.dp, color.copy(alpha = 0.55f), RoundedCornerShape(5.dp))
+            .padding(horizontal = 5.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = label,
+            color = color,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+

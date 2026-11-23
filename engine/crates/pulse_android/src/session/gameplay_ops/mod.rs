@@ -2,10 +2,12 @@
 //! Propósito: Coordinador modular del ciclo de compilación en caliente y gameplay en tiempo real.
 //! Divide la lógica en submódulos especializados:
 //! - `hot_compile_ops`: Compilación incremental en caché (`manifest.json`), WebP lossless y WAV mix.
+//! - `audio_adapt_ops`: Sondeo hardware + EBU R128 + FFT + Biquad/Rubato hacia WAV adaptado.
 //! - `script_sync`: Sincronización Lua/QuickJS, tweens, timers y comandos `ScriptCommand`.
 //! - `simulation`: Simulación por frame (`step_gameplay_internal`) y evaluación de notas/sustain.
 //! - `packet_encoder`: Serialización JSON y binaria `BFGP` v2 sin asignaciones por frame.
 
+mod audio_adapt_ops;
 mod hot_compile_ops;
 mod packet_encoder;
 mod script_sync;
@@ -25,7 +27,7 @@ use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::EntityRole;
 use pulse_scripting::ModScriptRuntime;
 use script_sync::sync_script_host_state;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
 pub const BINARY_FRAME_MAGIC: u32 = 0x4246_4750; // "BFGP"
@@ -106,7 +108,63 @@ impl EngineSession {
             .map(|e| e.id.clone())
             .unwrap_or_default();
 
-        let reused_later_entities = analyze_reused_entity_ids(&self.project);
+        let mut reused_later_entities = analyze_reused_entity_ids(&self.project);
+        for w in &bundle.timeline_windows {
+            if w.reused_later {
+                reused_later_entities.insert(w.entity_id.clone());
+            }
+        }
+
+        let mut timeline_preload_queue: Vec<(f64, String)> = bundle
+            .timeline_windows
+            .iter()
+            .filter_map(|w| w.preload_at_ms.map(|t| (t, w.entity_id.clone())))
+            .collect();
+        timeline_preload_queue.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut timeline_retire_queue: Vec<(f64, String)> = bundle
+            .timeline_windows
+            .iter()
+            .filter_map(|w| w.retire_after_ms.map(|t| (t, w.entity_id.clone())))
+            .collect();
+        timeline_retire_queue.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        if self.compiled_texture_paths.is_empty() && !bundle.compiled_texture_paths.is_empty() {
+            for (entity_id, path) in &bundle.compiled_texture_paths {
+                self.compiled_texture_paths
+                    .insert(entity_id.clone(), path.to_string_lossy().into_owned());
+            }
+        }
+        let runtime_texture_pages: HashMap<String, Vec<String>> =
+            if !self.compiled_texture_pages.is_empty() {
+                self.compiled_texture_pages.clone()
+            } else {
+                bundle
+                    .compiled_texture_pages
+                    .iter()
+                    .map(|(id, pages)| {
+                        (
+                            id.clone(),
+                            pages
+                                .iter()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            };
+        if self.compiled_texture_pages.is_empty() && !runtime_texture_pages.is_empty() {
+            self.compiled_texture_pages = runtime_texture_pages.clone();
+        }
+        if self.texture_pixel_formats.is_empty() && !bundle.texture_pixel_formats.is_empty() {
+            for (id, fmt) in &bundle.texture_pixel_formats {
+                self.texture_pixel_formats
+                    .insert(id.clone(), fmt.as_key().to_string());
+            }
+        }
+        if self.last_timeline_windows.is_empty() && !bundle.timeline_windows.is_empty() {
+            self.last_timeline_windows = bundle.timeline_windows.clone();
+        }
 
         let (cam0_x, cam0_y, cam0_zoom, _) = self.project.stage.resolve_camera_slot_target(
             0,
@@ -134,8 +192,9 @@ impl EngineSession {
         self.audio_engine.ensure_started();
 
         let compiled_audio = self
-            .compiled_audio_path
+            .adapted_audio_path
             .clone()
+            .or_else(|| self.compiled_audio_path.clone())
             .or_else(|| bundle.report.compiled_audio_path.clone());
         let mut using_stream = false;
         if let Some(wav_path) = compiled_audio {
@@ -209,6 +268,7 @@ impl EngineSession {
         let mut gp = GameplayRuntimeState {
             bundle,
             compiled_texture_paths: self.compiled_texture_paths.clone(),
+            compiled_texture_pages: runtime_texture_pages,
             runtime,
             script_errors,
             note_window: NoteSlidingWindow::new(note_len),
@@ -263,6 +323,10 @@ impl EngineSession {
             last_step: -40,
             next_event_idx: 0,
             next_preload_event_idx: 0,
+            timeline_preload_queue,
+            next_timeline_preload_idx: 0,
+            timeline_retire_queue,
+            next_timeline_retire_idx: 0,
             paused: false,
             finished: false,
             game_over: false,

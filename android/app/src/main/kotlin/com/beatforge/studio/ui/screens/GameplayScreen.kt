@@ -37,11 +37,12 @@ import com.beatforge.studio.ui.screens.gameplay.GameplayResultsDialog
 import com.beatforge.studio.ui.screens.gameplay.GameplayScriptBanner
 import com.beatforge.studio.ui.screens.gameplay.GameplayTouchMaskState
 import com.beatforge.studio.ui.screens.gameplay.GameplayTouchOverlay
-import com.beatforge.studio.ui.screens.gameplay.RatingPopupHolder
+import com.beatforge.studio.ui.screens.gameplay.RatingPopupPoolHolder
 import com.beatforge.studio.ui.screens.gameplay.SplashPoolHolder
 import com.beatforge.studio.ui.screens.gameplay.drawClassicHitboxColumns
 import com.beatforge.studio.ui.screens.gameplay.drawGameplaySceneLayer
 import com.beatforge.studio.ui.screens.gameplay.drawStrumsNotesAndSplashes
+import com.beatforge.studio.ui.screens.gameplay.extractAllArrowLanePalettes
 import com.beatforge.studio.ui.theme.StudioColors
 
 @Composable
@@ -82,8 +83,9 @@ fun GameplayScreen(
     var liveFps by remember { mutableIntStateOf(60) }
     var liveFrameMs by remember { mutableFloatStateOf(16.6f) }
 
-    val ratingPopup = remember { RatingPopupHolder() }
+    val ratingPool = remember { RatingPopupPoolHolder() }
     val splashPool = remember { SplashPoolHolder() }
+    val lanePalettes = remember(arrowBitmaps) { extractAllArrowLanePalettes(arrowBitmaps) }
     val dynamicTextPaint = remember {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -133,37 +135,19 @@ fun GameplayScreen(
             if (frameState.drawTick < 0L) return@Canvas
             val nowNs = System.nanoTime()
 
-            if (frameState.ratingEventId != ratingPopup.lastEventId) {
-                ratingPopup.lastEventId = frameState.ratingEventId
+            if (frameState.ratingEventId == 0 && ratingPool.lastEventId != 0) {
+                ratingPool.lastEventId = 0
+                ratingPool.clear()
+            } else if (frameState.ratingEventId != ratingPool.lastEventId) {
+                ratingPool.lastEventId = frameState.ratingEventId
                 if (frameState.lastRatingCode in 1..4) {
-                    var plrX = 880f
-                    var plrY = 430f
-                    var plrW = 240f
-                    var plrH = 300f
-                    val activeIdx = frameState.activePlayerIdx
-                    if (activeIdx in 0 until frameState.entityCount) {
-                        val ent = frameState.entitiesPool[activeIdx]
-                        plrX = ent.x
-                        plrY = ent.y
-                        plrW = ent.width * ent.scale
-                        plrH = ent.height * ent.scale
-                    } else {
-                        for (i in 0 until frameState.entityCount) {
-                            val ent = frameState.entitiesPool[i]
-                            if (ent.roleCode == 2) {
-                                plrX = ent.x
-                                plrY = ent.y
-                                plrW = ent.width * ent.scale
-                                plrH = ent.height * ent.scale
-                                break
-                            }
-                        }
-                    }
-                    ratingPopup.active = true
-                    ratingPopup.ratingCode = frameState.lastRatingCode
-                    ratingPopup.startNano = nowNs
-                    ratingPopup.worldX = plrX - plrW * 0.56f
-                    ratingPopup.worldY = plrY - plrH * 0.28f
+                    val slot = ratingPool.slots[ratingPool.cursor % ratingPool.slots.size]
+                    ratingPool.cursor += 1
+                    slot.active = true
+                    slot.ratingCode = frameState.lastRatingCode
+                    slot.startNano = nowNs
+                    slot.jitterX = (((ratingPool.cursor * 19) % 28) - 14).toFloat()
+                    slot.jitterY = (((ratingPool.cursor * 23) % 24) - 12).toFloat()
                 }
             }
 
@@ -189,13 +173,14 @@ fun GameplayScreen(
                 sy = sy,
                 compiledBitmapsByIndex = compiledBitmapsByIndex,
                 ratingBitmaps = ratingBitmaps,
-                ratingPopup = ratingPopup,
+                ratingPool = ratingPool,
                 dynamicTextPaint = dynamicTextPaint
             )
 
             drawClassicHitboxColumns(
                 frameState = frameState,
-                pressedMask = touchMaskState.pressedMask
+                pressedMask = touchMaskState.pressedMask,
+                lanePalettes = lanePalettes
             )
 
             drawStrumsNotesAndSplashes(
@@ -209,6 +194,7 @@ fun GameplayScreen(
                 hurtArrowXBitmap = hurtArrowXBitmap,
                 noteSplashBitmap = noteSplashBitmap,
                 splashPool = splashPool,
+                lanePalettes = lanePalettes,
                 dynamicTextPaint = dynamicTextPaint
             )
         }

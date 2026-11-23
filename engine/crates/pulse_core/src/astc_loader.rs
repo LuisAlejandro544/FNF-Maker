@@ -6,9 +6,31 @@
 //! sin depender de hardware GPU específico ni librerías C++.
 
 use image::codecs::webp::WebPEncoder;
-use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbaImage};
+use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
+use std::collections::HashSet;
 use std::io::BufWriter;
 use std::path::Path;
+
+/// Política de formato y cuantización elegida por el compilador en caliente al guardar WebP VP8L.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebpPixelPolicy {
+    /// Conserva RGBA8 íntegro sin pérdida.
+    LosslessRgba,
+    /// Si la imagen es 100 % opaca, aplica dithering Floyd-Steinberg hacia rejilla RGB565 y guarda RGB8
+    /// para que Android decodifique en `Bitmap.Config.RGB_565` (50 % menos RAM/VRAM y sin banding).
+    Rgb565DitheredIfOpaque,
+    /// Cuantiza perceptualmente con `exoquant` hasta `max_colors` usando dithering Floyd-Steinberg
+    /// (útil en gama baja / sprites grandes para acelerar decodificación y reducir peso en disco).
+    QuantizedRgba { max_colors: usize },
+}
+
+/// Resultado real aplicado al codificar una textura compilada en WebP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WebpSaveInfo {
+    pub stored_opaque_rgb: bool,
+    pub dithered_rgb565: bool,
+    pub palette_quantized: bool,
+}
 
 /// Firma mágica de los primeros 4 bytes de cualquier archivo estándar `.astc`.
 pub const ASTC_MAGIC: [u8; 4] = [0x13, 0xAB, 0xA1, 0x5C];
@@ -130,9 +152,173 @@ pub fn is_image_opaque(img: &DynamicImage) -> bool {
     }
 }
 
+#[inline]
+fn quantize_5bit(v: i32) -> u8 {
+    let clamped = v.clamp(0, 255);
+    let q = (clamped * 31 + 127) / 255;
+    ((q << 3) | (q >> 2)) as u8
+}
+
+#[inline]
+fn quantize_6bit(v: i32) -> u8 {
+    let clamped = v.clamp(0, 255);
+    let q = (clamped * 63 + 127) / 255;
+    ((q << 2) | (q >> 4)) as u8
+}
+
+/// Aplica dithering Floyd-Steinberg hacia la rejilla exacta de 16 bits `RGB_565`
+/// evitando bandas visibles (*color banding*) en degradados, cielos y luces antes de
+/// almacenar el `.webp` que Android decodificará en `Bitmap.Config.RGB_565`.
+pub fn dither_image_to_rgb565_grid(img: &DynamicImage) -> RgbImage {
+    let rgb = img.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let w_usize = w as usize;
+    let h_usize = h as usize;
+    if w_usize == 0 || h_usize == 0 {
+        return rgb;
+    }
+
+    let raw = rgb.into_raw();
+    // Acumuladores en punto fijo x16 para evitar asignaciones/flotantes dentro del bucle por píxel.
+    let mut err_curr = vec![[0_i32; 3]; w_usize + 2];
+    let mut err_next = vec![[0_i32; 3]; w_usize + 2];
+    let mut out = vec![0_u8; w_usize * h_usize * 3];
+
+    for y in 0..h_usize {
+        err_next.fill([0, 0, 0]);
+        for x in 0..w_usize {
+            let idx = (y * w_usize + x) * 3;
+            let ec = err_curr[x + 1];
+            let r_in = (raw[idx] as i32) + (ec[0] / 16);
+            let g_in = (raw[idx + 1] as i32) + (ec[1] / 16);
+            let b_in = (raw[idx + 2] as i32) + (ec[2] / 16);
+
+            let r_q = quantize_5bit(r_in);
+            let g_q = quantize_6bit(g_in);
+            let b_q = quantize_5bit(b_in);
+
+            out[idx] = r_q;
+            out[idx + 1] = g_q;
+            out[idx + 2] = b_q;
+
+            let er = r_in.clamp(0, 255) - (r_q as i32);
+            let eg = g_in.clamp(0, 255) - (g_q as i32);
+            let eb = b_in.clamp(0, 255) - (b_q as i32);
+
+            // Difusión clásica Floyd-Steinberg: derecha 7/16, abajo-izq 3/16, abajo 5/16, abajo-der 1/16
+            err_curr[x + 2][0] += er * 7;
+            err_curr[x + 2][1] += eg * 7;
+            err_curr[x + 2][2] += eb * 7;
+
+            err_next[x][0] += er * 3;
+            err_next[x][1] += eg * 3;
+            err_next[x][2] += eb * 3;
+
+            err_next[x + 1][0] += er * 5;
+            err_next[x + 1][1] += eg * 5;
+            err_next[x + 1][2] += eb * 5;
+
+            err_next[x + 2][0] += er;
+            err_next[x + 2][1] += eg;
+            err_next[x + 2][2] += eb;
+        }
+        std::mem::swap(&mut err_curr, &mut err_next);
+    }
+
+    RgbImage::from_raw(w, h, out).unwrap_or_else(|| img.to_rgb8())
+}
+
+/// Cuantiza perceptualmente una imagen `RgbaImage` a `<= max_colors` usando `exoquant` (MIT)
+/// con optimización K-Means y dithering Floyd-Steinberg. Devuelve `None` si la imagen ya tiene
+/// menos colores únicos que `max_colors` (por ejemplo pixel-art), conservándola intacta 1:1.
+pub fn quantize_rgba_with_exoquant(rgba: &RgbaImage, max_colors: usize) -> Option<RgbaImage> {
+    use exoquant::optimizer::Optimizer;
+    use exoquant::{Color, Histogram, Quantizer, Remapper, SimpleColorSpace, ditherer, optimizer};
+
+    let (w, h) = rgba.dimensions();
+    if w == 0 || h == 0 || max_colors < 16 {
+        return None;
+    }
+
+    let raw = rgba.as_raw();
+    let pixel_count = (w as usize) * (h as usize);
+    let target_colors = max_colors.clamp(16, 256);
+
+    // Muestreo rápido de colores únicos para no degradar sprites/pixel-art que ya tienen pocos colores
+    let stride = (pixel_count / 32_768).max(1);
+    let mut seen: HashSet<u32> = HashSet::with_capacity(target_colors + 32);
+    for chunk in raw.chunks_exact(4).step_by(stride) {
+        let packed = if chunk[3] == 0 {
+            0
+        } else {
+            u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+        };
+        seen.insert(packed);
+        if seen.len() > target_colors {
+            break;
+        }
+    }
+    if seen.len() <= target_colors {
+        return None;
+    }
+
+    let mut pixels: Vec<Color> = Vec::with_capacity(pixel_count);
+    for px in raw.chunks_exact(4) {
+        if px[3] == 0 {
+            pixels.push(Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            });
+        } else {
+            pixels.push(Color {
+                r: px[0],
+                g: px[1],
+                b: px[2],
+                a: px[3],
+            });
+        }
+    }
+
+    // Si la textura es muy grande (>1.2M px), muestreamos el histograma 2x2 para rapidez en móvil
+    let hist_stride = if pixel_count > 1_200_000 { 2 } else { 1 };
+    let histogram: Histogram = pixels.iter().step_by(hist_stride).cloned().collect();
+    let colorspace = SimpleColorSpace::default();
+    let mut quantizer = Quantizer::new(&histogram, &colorspace);
+    while quantizer.num_colors() < target_colors {
+        let prev = quantizer.num_colors();
+        quantizer.step();
+        if quantizer.num_colors() == prev {
+            break;
+        }
+    }
+    let palette = quantizer.colors(&colorspace);
+    let palette = optimizer::KMeans.optimize_palette(&colorspace, &palette, &histogram, 4);
+    let dither = ditherer::FloydSteinberg::new();
+    let remapper = Remapper::new(&palette, &colorspace, &dither);
+    let indexed = remapper.remap(&pixels, w as usize);
+
+    let mut out = Vec::with_capacity(pixel_count * 4);
+    for idx in indexed {
+        let c = palette.get(idx as usize).copied().unwrap_or(Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        });
+        if c.a == 0 {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            out.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+        }
+    }
+
+    RgbaImage::from_raw(w, h, out)
+}
+
 /// Codifica cualquier `DynamicImage` a `.webp` sin pérdida (VP8L con predictores, transformaciones
 /// de color y compresión máxima sin pérdida de calidad ni alpha) de forma atómica en disco.
-/// Cuando `optimize_opaque` es `true` y la imagen es 100% opaca, guarda en formato `Rgb8` sin canal alfa.
 pub fn save_lossless_webp(img: &DynamicImage, path: &Path) -> Result<(), String> {
     save_optimized_webp(img, path, false).map(|_| ())
 }
@@ -145,11 +331,26 @@ pub fn save_optimized_webp(
     path: &Path,
     strip_unused_alpha: bool,
 ) -> Result<bool, String> {
+    let policy = if strip_unused_alpha {
+        WebpPixelPolicy::Rgb565DitheredIfOpaque
+    } else {
+        WebpPixelPolicy::LosslessRgba
+    };
+    save_compiled_webp(img, path, policy).map(|info| info.stored_opaque_rgb)
+}
+
+/// Guarda un sprite compilado a `.webp` VP8L aplicando de manera atómica la política óptima
+/// (`RGB_565` con dithering Floyd-Steinberg en fondos opacos o cuantización `exoquant` inteligente).
+pub fn save_compiled_webp(
+    img: &DynamicImage,
+    path: &Path,
+    policy: WebpPixelPolicy,
+) -> Result<WebpSaveInfo, String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let tmp_path = path.with_extension("webp.tmp");
-    let use_rgb = strip_unused_alpha && is_image_opaque(img);
+    let mut info = WebpSaveInfo::default();
 
     {
         let file = std::fs::File::create(&tmp_path).map_err(|e| {
@@ -161,17 +362,33 @@ pub fn save_optimized_webp(
         })?;
         let writer = BufWriter::new(file);
         let encoder = WebPEncoder::new_lossless(writer);
-        let encode_res = if use_rgb {
-            let rgb = img.to_rgb8();
-            let w = rgb.width();
-            let h = rgb.height();
-            encoder.write_image(rgb.as_raw(), w, h, ExtendedColorType::Rgb8)
-        } else {
-            let rgba = img.to_rgba8();
-            let w = rgba.width();
-            let h = rgba.height();
-            encoder.write_image(rgba.as_raw(), w, h, ExtendedColorType::Rgba8)
+
+        let encode_res = match policy {
+            WebpPixelPolicy::Rgb565DitheredIfOpaque if is_image_opaque(img) => {
+                let dithered = dither_image_to_rgb565_grid(img);
+                let (w, h) = dithered.dimensions();
+                info.stored_opaque_rgb = true;
+                info.dithered_rgb565 = true;
+                encoder.write_image(dithered.as_raw(), w, h, ExtendedColorType::Rgb8)
+            }
+            WebpPixelPolicy::QuantizedRgba { max_colors } => {
+                let rgba = img.to_rgba8();
+                if let Some(quantized) = quantize_rgba_with_exoquant(&rgba, max_colors) {
+                    let (w, h) = quantized.dimensions();
+                    info.palette_quantized = true;
+                    encoder.write_image(quantized.as_raw(), w, h, ExtendedColorType::Rgba8)
+                } else {
+                    let (w, h) = rgba.dimensions();
+                    encoder.write_image(rgba.as_raw(), w, h, ExtendedColorType::Rgba8)
+                }
+            }
+            _ => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                encoder.write_image(rgba.as_raw(), w, h, ExtendedColorType::Rgba8)
+            }
         };
+
         if let Err(e) = encode_res {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(format!("Error codificando WebP sin pérdida: {}", e));
@@ -186,7 +403,7 @@ pub fn save_optimized_webp(
             e
         ));
     }
-    Ok(use_rgb)
+    Ok(info)
 }
 
 /// Decodifica bytes completos de un archivo `.astc` (cabecera 16 bytes + bloques) a `DynamicImage` RGBA8.

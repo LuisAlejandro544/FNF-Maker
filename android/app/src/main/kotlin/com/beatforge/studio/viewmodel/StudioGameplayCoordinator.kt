@@ -1,12 +1,15 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/viewmodel/StudioGameplayCoordinator.kt
 // Propósito: Coordinador modular de `StudioViewModel` para el ciclo Compilar y Jugar:
-// lanza `nativeHotCompile` en `engineIoDispatcher`, sondea el progreso en tiempo real sobre
-// `Dispatchers.IO`, aplica exclusión mutua de bitmaps en RAM (editor vs gameplay), ejecuta
-// pasos binarios `BFGP` v2 y restaura previews al volver al estudio.
+// lanza `nativeHotCompileWithViewport` en `engineIoDispatcher` con el tamaño físico de
+// pantalla para pre-escalado Lanczos3, ejecuta la fase independiente de Adaptador Acústico
+// (`AndroidAudioDeviceProbe` + EBU R128/FFT/Biquad/Rubato en Rust), aplica exclusión mutua
+// de bitmaps en RAM (editor vs gameplay), ejecuta pasos binarios `BFGP` v2 y restaura previews.
 
 package com.beatforge.studio.viewmodel
 
+import android.app.Application
 import androidx.compose.ui.graphics.asAndroidBitmap
+import com.beatforge.studio.AudioAdaptProgress
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.HotCompileProgress
 import com.beatforge.studio.LoadedEntityBitmap
@@ -14,6 +17,7 @@ import com.beatforge.studio.NativeEngineBridge
 import com.beatforge.studio.StudioJsonParser
 import com.beatforge.studio.StudioScreen
 import com.beatforge.studio.StudioUiState
+import com.beatforge.studio.audio.AndroidAudioDeviceProbe
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +30,7 @@ import kotlinx.coroutines.withContext
 import java.util.Collections
 
 internal class StudioGameplayCoordinator(
+    private val app: Application,
     private val scope: CoroutineScope,
     private val engineIoDispatcher: CoroutineDispatcher,
     private val uiState: MutableStateFlow<StudioUiState>,
@@ -51,8 +56,8 @@ internal class StudioGameplayCoordinator(
                     hotCompileProgress = HotCompileProgress(
                         active = true,
                         progress = 0.02f,
-                        phase = "Iniciando compilador en caliente...",
-                        detail = "Verificando caché incremental y sprites WebP"
+                        phase = "Preparando el escenario...",
+                        detail = "Revisando personajes y archivos guardados"
                     ),
                     statusBanner = null,
                     // Liberar bitmaps del editor antes de cargar los bitmaps compilados de partida
@@ -64,6 +69,9 @@ internal class StudioGameplayCoordinator(
 
             bitmapLoader.evictRegionCache()
             val tier = uiState.value.selectedTier
+            val dm = app.resources.displayMetrics
+            val viewportW = maxOf(dm.widthPixels, dm.heightPixels).coerceAtLeast(1280)
+            val viewportH = minOf(dm.widthPixels, dm.heightPixels).coerceAtLeast(720)
 
             // Sondeo real no bloqueante sobre `Dispatchers.IO` (nunca usa `engineIoDispatcher` ni `SESSION`)
             val progressPoller = scope.launch(Dispatchers.IO) {
@@ -84,32 +92,106 @@ internal class StudioGameplayCoordinator(
             }
 
             val compileRaw = try {
-                NativeEngineBridge.nativeHotCompile(tier.code)
+                NativeEngineBridge.nativeHotCompileWithViewport(tier.code, viewportW, viewportH)
             } finally {
                 progressPoller.cancel()
             }
 
             val compileRes = StudioJsonParser.parseActionResult(compileRaw)
-            val snap = compileRes.snapshot ?: uiState.value.snapshot
+            var snap = compileRes.snapshot ?: uiState.value.snapshot
 
-            uiState.update {
-                it.copy(
-                    hotCompileProgress = HotCompileProgress(
-                        active = true,
-                        progress = 0.92f,
-                        phase = "Cargando sprites visibles en RAM",
-                        detail = "Omitiendo sprites ocultos (se precargan al vuelo desde .webp)"
+            // Fase independiente: Adaptador Acústico Adaptativo (después de Compilar en Caliente y antes de Gameplay)
+            if (snap.audioAdaptEnabled) {
+                uiState.update {
+                    it.copy(
+                        currentScreen = StudioScreen.AudioAdapt,
+                        snapshot = snap,
+                        hotCompileProgress = HotCompileProgress(
+                            active = false,
+                            progress = 1.0f,
+                            phase = "Escenario listo",
+                            detail = "Pasando a calibrar el sonido"
+                        ),
+                        audioAdaptProgress = AudioAdaptProgress(
+                            active = true,
+                            progress = 0.04f,
+                            phase = "Detectando salida de audio...",
+                            detail = "Comprobando altavoces o audífonos conectados"
+                        )
                     )
-                )
+                }
+
+                val deviceProbeJson = AndroidAudioDeviceProbe.probeDeviceJson(app)
+                val adaptPoller = scope.launch(Dispatchers.IO) {
+                    while (isActive) {
+                        val live = StudioJsonParser.parseAudioAdaptProgress(
+                            NativeEngineBridge.nativeGetAudioAdaptProgress()
+                        )
+                        if (live.active || live.progress > 0f) {
+                            uiState.update { st ->
+                                val clampedPct = maxOf(st.audioAdaptProgress.progress, live.progress)
+                                st.copy(
+                                    audioAdaptProgress = live.copy(progress = clampedPct)
+                                )
+                            }
+                        }
+                        delay(55L)
+                    }
+                }
+
+                val adaptRaw = try {
+                    NativeEngineBridge.nativeAdaptAudioForDevice(deviceProbeJson)
+                } finally {
+                    adaptPoller.cancel()
+                }
+
+                val adaptRes = StudioJsonParser.parseActionResult(adaptRaw)
+                snap = adaptRes.snapshot ?: snap
+                val report = snap.lastAudioAdaptReport
+                uiState.update {
+                    it.copy(
+                        snapshot = snap,
+                        audioAdaptProgress = AudioAdaptProgress(
+                            active = false,
+                            progress = 1.0f,
+                            phase = if (report?.cacheReused == true) {
+                                "Sonido listo al instante"
+                            } else {
+                                "Audio calibrado para ${report?.device?.routeLabel ?: "tu teléfono"}"
+                            },
+                            detail = report?.dspPlan?.adaptationSummary
+                                ?: "Cargando personajes y escenario..."
+                        )
+                    )
+                }
+                if (report != null && !report.bypassed) {
+                    delay(420L)
+                }
+            } else {
+                // Limpiar cualquier WAV adaptado previo cuando el usuario desactiva la opción
+                val bypassRaw = NativeEngineBridge.nativeAdaptAudioForDevice("")
+                snap = StudioJsonParser.parseActionResult(bypassRaw).snapshot ?: snap
+                uiState.update {
+                    it.copy(
+                        hotCompileProgress = HotCompileProgress(
+                            active = true,
+                            progress = 0.92f,
+                            phase = "Cargando personajes en pantalla...",
+                            detail = "Preparando elementos visibles de la escena"
+                        )
+                    )
+                }
             }
 
             val repackedIds = snap.lastCompileReport?.repackedEntityIds?.toSet() ?: emptySet()
             val compiledMap = bitmapLoader.loadCompiledEntityBitmaps(
-                snap.lastCompileReport?.compiledTexturePaths ?: emptyMap(),
-                snap.stageEntities,
-                tier,
+                compiledPaths = snap.lastCompileReport?.compiledTexturePaths ?: emptyMap(),
+                entities = snap.stageEntities,
+                tier = tier,
                 onlyInitiallyVisible = true,
-                repackedEntityIds = repackedIds
+                repackedEntityIds = repackedIds,
+                compiledPages = snap.lastCompileReport?.compiledTexturePages ?: emptyMap(),
+                texturePixelFormats = snap.lastCompileReport?.texturePixelFormats ?: emptyMap()
             )
             val arrows = bitmapLoader.loadArrowBitmaps()
             val receptors = bitmapLoader.loadReceptorBitmaps()
@@ -122,8 +204,8 @@ internal class StudioGameplayCoordinator(
                     hotCompileProgress = HotCompileProgress(
                         active = true,
                         progress = 0.97f,
-                        phase = "Arrancando máquinas virtuales y audio",
-                        detail = "Cargando Lua bytecode, QuickJS y streaming WAV"
+                        phase = "Sincronizando música y eventos...",
+                        detail = "Todo casi listo para empezar a jugar"
                     )
                 )
             }
@@ -147,8 +229,8 @@ internal class StudioGameplayCoordinator(
                     hotCompileProgress = HotCompileProgress(
                         active = false,
                         progress = 1.0f,
-                        phase = "Compilación completada",
-                        detail = "Iniciando gameplay..."
+                        phase = "¡Todo listo!",
+                        detail = "Entrando al escenario..."
                     ),
                     snapshot = snap,
                     compiledBitmaps = compiledMap,
@@ -223,6 +305,8 @@ internal class StudioGameplayCoordinator(
                 }
             } else if (ent.preloadRequested && !ent.retired && existing == null && loadingEntityIds.add(entId)) {
                 val compiledPaths = st.snapshot.lastCompileReport?.compiledTexturePaths ?: emptyMap()
+                val compiledPages = st.snapshot.lastCompileReport?.compiledTexturePages ?: emptyMap()
+                val pixelFormats = st.snapshot.lastCompileReport?.texturePixelFormats ?: emptyMap()
                 val repackedIds = st.snapshot.lastCompileReport?.repackedEntityIds?.toSet() ?: emptySet()
                 val stageEntities = st.snapshot.stageEntities
                 val tier = st.selectedTier
@@ -233,7 +317,9 @@ internal class StudioGameplayCoordinator(
                             compiledPaths = compiledPaths,
                             entities = stageEntities,
                             tier = tier,
-                            repackedEntityIds = repackedIds
+                            repackedEntityIds = repackedIds,
+                            compiledPages = compiledPages,
+                            texturePixelFormats = pixelFormats
                         )
                         if (decoded != null && gameplayFrameState.active) {
                             var droppedEarly = false
@@ -257,12 +343,10 @@ internal class StudioGameplayCoordinator(
                                 }
                             }
                             if (droppedEarly) {
-                                val ab = decoded.bitmap.asAndroidBitmap()
-                                if (!ab.isRecycled) ab.recycle()
+                                recycleLoadedEntityBitmap(decoded)
                             }
                         } else if (decoded != null) {
-                            val ab = decoded.bitmap.asAndroidBitmap()
-                            if (!ab.isRecycled) ab.recycle()
+                            recycleLoadedEntityBitmap(decoded)
                         }
                     } finally {
                         loadingEntityIds.remove(entId)
@@ -293,10 +377,7 @@ internal class StudioGameplayCoordinator(
                     break
                 }
                 pendingRecycleQueue.removeFirst()
-                val ab = bmp.bitmap.asAndroidBitmap()
-                if (!ab.isRecycled) {
-                    ab.recycle()
-                }
+                recycleLoadedEntityBitmap(bmp)
             }
         }
     }
@@ -307,12 +388,19 @@ internal class StudioGameplayCoordinator(
             while (pendingRecycleQueue.isNotEmpty()) {
                 val (_, bmp) = pendingRecycleQueue.removeFirst()
                 if (recycleImmediately) {
-                    val ab = bmp.bitmap.asAndroidBitmap()
-                    if (!ab.isRecycled) {
-                        ab.recycle()
-                    }
+                    recycleLoadedEntityBitmap(bmp)
                 }
             }
+        }
+    }
+
+    private fun recycleLoadedEntityBitmap(loaded: LoadedEntityBitmap) {
+        val ab = loaded.bitmap.asAndroidBitmap()
+        if (!ab.isRecycled) {
+            ab.recycle()
+        }
+        for (extra in loaded.extraPages) {
+            recycleLoadedEntityBitmap(extra)
         }
     }
 
@@ -331,6 +419,8 @@ internal class StudioGameplayCoordinator(
             clearRecycleState(recycleImmediately = true)
             val st = uiState.value
             val compiledPaths = st.snapshot.lastCompileReport?.compiledTexturePaths ?: emptyMap()
+            val compiledPages = st.snapshot.lastCompileReport?.compiledTexturePages ?: emptyMap()
+            val pixelFormats = st.snapshot.lastCompileReport?.texturePixelFormats ?: emptyMap()
             val repackedIds = st.snapshot.lastCompileReport?.repackedEntityIds?.toSet() ?: emptySet()
             val tier = st.selectedTier
 
@@ -344,7 +434,9 @@ internal class StudioGameplayCoordinator(
                             compiledPaths = compiledPaths,
                             entities = st.snapshot.stageEntities,
                             tier = tier,
-                            repackedEntityIds = repackedIds
+                            repackedEntityIds = repackedIds,
+                            compiledPages = compiledPages,
+                            texturePixelFormats = pixelFormats
                         )?.let { decoded ->
                             restoredMap[ent.id] = decoded
                         }
@@ -438,10 +530,7 @@ internal class StudioGameplayCoordinator(
             }
             clearRecycleState(recycleImmediately = true)
             for (bmp in bitmapsToFree) {
-                val ab = bmp.bitmap.asAndroidBitmap()
-                if (!ab.isRecycled) {
-                    ab.recycle()
-                }
+                recycleLoadedEntityBitmap(bmp)
             }
             val restoredEditorBitmaps = bitmapLoader.loadEditorEntityBitmaps(
                 nextSnap.stageEntities,

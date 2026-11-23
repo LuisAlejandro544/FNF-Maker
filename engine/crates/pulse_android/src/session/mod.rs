@@ -24,12 +24,12 @@ pub use dto::{
     StrumOverrideJson, StrumOverrideState, TweenTarget, VisibleNoteJson,
 };
 
-use pulse_audio::{AudioEngineHandle, AudioMixerState, DecodedTrack};
+use pulse_audio::{AudioAdaptationReport, AudioEngineHandle, AudioMixerState, DecodedTrack};
 use pulse_core::disk_cache::{
     CacheBudgetSplit, DEFAULT_TOTAL_CACHE_QUOTA_BYTES, compute_cache_budget_split,
     evict_lru_files, evict_lru_subdirs,
 };
-use pulse_core::hot_compile::{CompiledBundle, HotCompileReport};
+use pulse_core::hot_compile::{CompiledBundle, EntityLifecycleWindow, HotCompileReport};
 use pulse_core::project::{MAX_AUDIO_TRACKS, MobileControlMode, ModProject};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
@@ -51,8 +51,13 @@ pub struct EngineSession {
     pub decoded_tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
     pub compiled_bundle: Option<CompiledBundle>,
     pub compiled_texture_paths: HashMap<String, String>,
+    pub compiled_texture_pages: HashMap<String, Vec<String>>,
+    pub texture_pixel_formats: HashMap<String, String>,
     pub compiled_audio_path: Option<PathBuf>,
+    pub adapted_audio_path: Option<PathBuf>,
     pub last_compile_report: Option<HotCompileReport>,
+    pub last_timeline_windows: Vec<EntityLifecycleWindow>,
+    pub last_audio_adapt_report: Option<AudioAdaptationReport>,
     pub gameplay: Option<GameplayRuntimeState>,
     pub dirty: bool,
     pub last_save_at: Instant,
@@ -86,8 +91,13 @@ impl EngineSession {
             decoded_tracks: [None, None, None],
             compiled_bundle: None,
             compiled_texture_paths: HashMap::new(),
+            compiled_texture_pages: HashMap::new(),
+            texture_pixel_formats: HashMap::new(),
             compiled_audio_path: None,
+            adapted_audio_path: None,
             last_compile_report: None,
+            last_timeline_windows: Vec::new(),
+            last_audio_adapt_report: None,
             gameplay: None,
             dirty: false,
             last_save_at: Instant::now(),
@@ -108,6 +118,12 @@ impl EngineSession {
     /// Invalida el bundle precompilado en memoria cuando cambian chart, scripts o entidades.
     pub(crate) fn invalidate_compiled_bundle(&mut self) {
         self.compiled_bundle = None;
+    }
+
+    /// Invalida la ruta WAV adaptada acústicamente cuando cambian pistas, ganancias o configuración.
+    pub(crate) fn invalidate_adapted_audio(&mut self) {
+        self.adapted_audio_path = None;
+        self.last_audio_adapt_report = None;
     }
 
     pub fn cache_budget(&self) -> CacheBudgetSplit {

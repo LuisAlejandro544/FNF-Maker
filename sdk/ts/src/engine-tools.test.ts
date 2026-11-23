@@ -19,6 +19,7 @@ import {
   advanceNoteSlidingWindow,
   analyzeStageEventRamLifecycle,
   autoBindSparrowPrefixes,
+  buildAdaptiveDspPlan,
   buildBfaudCacheKey,
   buildFlashEffectEventParams,
   buildStageSwapEventParams,
@@ -32,8 +33,10 @@ import {
   computeChartSustainGridCells,
   computeCountdownState,
   computeDiskCacheBudgetSplit,
+  computeProjectMaxCameraZoom,
   computeReceptorLayout,
   computeSmartTextureScale,
+  computeSmartTextureScaleForViewport,
   computeSustainTailSpan,
   computeTrimmedFramePlacement,
   computeUniformCharacterDrawBox,
@@ -44,7 +47,9 @@ import {
   evaluateFnfHealthBar,
   evaluateHitJudgement,
   evaluateWatchdogExecution,
+  extractArrowSkinTailColor,
   fnv1a64Hex,
+  fuseDeviceAndAAudioProbe,
   mapRotatedSpriteSample,
   optimizeScriptLoops,
   packPosesIntoBoundedAtlas,
@@ -55,8 +60,10 @@ import {
   planMultiProjectLruEviction,
   renderCameraLuaConfigBlock,
   resolveChartPlayheadStep,
+  resolveChartStageStateAtTime,
   resolveCompiledSpriteTarget,
   resolveMobileTouchLanes,
+  resolveRatingPopupPlayerAnchor,
   serializeChartJson,
   shouldDiscardInvisibleEntity,
   shouldReuseCachedAudio,
@@ -98,6 +105,11 @@ import {
   computeBackgroundBounds,
   clampCameraToBackground,
   optimizeSparrowAtlasPlan,
+  computeTimelineAssetLifecycle,
+  selectWebpPixelPolicy,
+  shouldQuantizePaletteWithExoquant,
+  ditherPixelGridToRgb565,
+  planMultiPageSparrowSplit,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -2235,12 +2247,429 @@ test('parseChartJson & serializeChartJson preserve uiBlackout / introUi declarat
   assert.equal(fadeArrows.durationSec, 0.75);
 });
 
+test('resolveChartStageStateAtTime tracks active player, active opponent, and object visibility across swaps', () => {
+  const entities = [
+    { id: 'bg_day', role: 'background' as const, visible: true, opacity: 1 },
+    { id: 'bg_night', role: 'background' as const, visible: false, opacity: 1 },
+    { id: 'bf_main', role: 'player' as const, visible: true, opacity: 1 },
+    { id: 'bf_alt', role: 'player' as const, visible: false, opacity: 1 },
+    { id: 'opp_main', role: 'opponent' as const, visible: true, opacity: 1 },
+    { id: 'opp_boss', role: 'opponent' as const, visible: false, opacity: 1 },
+  ];
+  const events = [
+    {
+      timeMs: 4000,
+      name: 'Stage Swap',
+      value1: 'show=bg_night;hide=bg_day;dispose=1',
+      value2: '',
+    },
+    {
+      timeMs: 8000,
+      name: 'Change Character',
+      value1: 'player=bf_alt;opp=opp_boss;dispose=1',
+      value2: '',
+    },
+  ];
 
+  // Antes de eventos: estado inicial
+  const step0 = resolveChartStageStateAtTime(entities, events, 0, 125);
+  assert.equal(step0.activePlayerId, 'bf_main');
+  assert.equal(step0.activeOpponentId, 'opp_main');
+  assert.equal(step0.visibleIds.has('bg_day'), true);
+  assert.equal(step0.visibleIds.has('bg_night'), false);
 
+  // En el paso exacto del Stage Swap (4000ms)
+  const stepSwap = resolveChartStageStateAtTime(entities, events, 4000, 125);
+  assert.equal(stepSwap.visibleIds.has('bg_night'), true);
+  assert.equal(stepSwap.visibleIds.has('bg_day'), false);
+  assert.equal(stepSwap.changedAtThisStepIds.has('bg_night'), true);
+  assert.equal(stepSwap.changedAtThisStepIds.has('bg_day'), true);
+  assert.equal(stepSwap.activePlayerId, 'bf_main');
 
+  // En el paso del Change Character (8000ms)
+  const stepChar = resolveChartStageStateAtTime(entities, events, 8000, 125);
+  assert.equal(stepChar.activePlayerId, 'bf_alt');
+  assert.equal(stepChar.activeOpponentId, 'opp_boss');
+  assert.equal(stepChar.visibleIds.has('bf_alt'), true);
+  assert.equal(stepChar.visibleIds.has('bf_main'), false);
+  assert.equal(stepChar.visibleIds.has('opp_boss'), true);
+  assert.equal(stepChar.visibleIds.has('opp_main'), false);
+  assert.equal(stepChar.changedEarlierIds.has('bg_night'), true);
+  assert.equal(stepChar.changedAtThisStepIds.has('bf_alt'), true);
 
+  // Pasos posteriores (12000ms) siguen reflejando qué jugador/enemigo/fondo está en uso
+  const stepLater = resolveChartStageStateAtTime(entities, events, 12000, 125);
+  assert.equal(stepLater.activePlayerId, 'bf_alt');
+  assert.equal(stepLater.activeOpponentId, 'opp_boss');
+  assert.equal(stepLater.visibleIds.has('bg_night'), true);
+  assert.equal(stepLater.visibleIds.has('bg_day'), false);
+  assert.equal(stepLater.changedEarlierIds.has('bf_alt'), true);
+});
 
+test('resolveRatingPopupPlayerAnchor follows moving player, wide sprites, left/right flip, and character swap', () => {
+  const opp = { x: 280, y: 420, width: 240, height: 320, scale: 1, visible: true, retired: false, roleCode: 1 };
+  const playerAtStart = { x: 920, y: 430, width: 220, height: 280, scale: 1, visible: true, retired: false, roleCode: 2 };
+  const startPos = resolveRatingPopupPlayerAnchor([opp, playerAtStart], 1, 0, 0.2);
 
+  // El jugador se desplaza +220px en X y -60px en Y durante el popup (ageSec = 0.2s)
+  const playerMoved = { ...playerAtStart, x: 1140, y: 370 };
+  const movedPos = resolveRatingPopupPlayerAnchor([opp, playerMoved], 1, 0, 0.2);
+  assert.ok(Math.abs((movedPos.worldX - startPos.worldX) - 220) < 0.01);
+  assert.ok(Math.abs((movedPos.worldY - startPos.worldY) - (-60)) < 0.01);
 
+  // Sprite ultra ancho (640px * 1.4 = 896px): el desplazamiento se mantiene acotado (<=155px) junto al jugador
+  const widePlayer = { ...playerAtStart, x: 950, width: 640, scale: 1.4 };
+  const widePos = resolveRatingPopupPlayerAnchor([opp, widePlayer], 1, 0, 0);
+  assert.equal(widePos.sideSign, -1);
+  assert.equal(widePos.anchorX, 950 - 155);
 
+  // Jugador en el lado izquierdo del oponente: orienta el popup hacia el centro (+1) y sigue al jugador tras swap
+  const swappedEntities = [
+    { ...opp, x: 960 },
+    { ...playerAtStart, visible: false },
+    { x: 240, y: 440, width: 200, height: 260, scale: 1, visible: true, retired: false, roleCode: 2 },
+  ];
+  const swappedPos = resolveRatingPopupPlayerAnchor(swappedEntities, 2, 0, 0);
+  assert.equal(swappedPos.sideSign, 1);
+  assert.ok(swappedPos.anchorX > 240 && swappedPos.anchorX <= 240 + 155);
+});
 
+test('computeProjectMaxCameraZoom & computeSmartTextureScaleForViewport tailor Lanczos3 downscaling to phone resolution and max zoom', () => {
+  const maxZoom = computeProjectMaxCameraZoom({
+    baseZoom: 1.0,
+    cameras: [{ zoom: 1.0 }, { zoom: 1.35 }],
+    events: [
+      { name: 'ZoomCamera', value1: JSON.stringify({ zoom: 1.5, duration: 4, mode: 'stage' }), value2: '' },
+      { name: 'Add Camera Zoom', value1: '0.08', value2: '0.02' },
+    ],
+    bpm: 128,
+  });
+  assert.ok(Math.abs(maxZoom - 1.58) < 0.001);
+
+  // En pantalla pequeña 720p con zoom 1.0, un sprite con frames gigantes de 1400px se reduce mucho más que en FHD+ con zoom 1.58
+  const smallPhoneScale = computeSmartTextureScaleForViewport({
+    origWidth: 4096,
+    origHeight: 4096,
+    entityWidth: 280,
+    entityHeight: 380,
+    entityScale: 1.0,
+    hasAtlas: true,
+    maxFrameSide: 1400,
+    tier: 'balanced',
+    viewport: { pixelWidth: 1280, pixelHeight: 720 },
+    maxCameraZoom: 1.0,
+  });
+  const largePhoneZoomedScale = computeSmartTextureScaleForViewport({
+    origWidth: 4096,
+    origHeight: 4096,
+    entityWidth: 280,
+    entityHeight: 380,
+    entityScale: 1.0,
+    hasAtlas: true,
+    maxFrameSide: 1400,
+    tier: 'balanced',
+    viewport: { pixelWidth: 2400, pixelHeight: 1080 },
+    maxCameraZoom: maxZoom,
+  });
+  assert.ok(smallPhoneScale < 0.6);
+  assert.ok(largePhoneZoomedScale > smallPhoneScale);
+
+  // Respeta orientación apaisada aunque la pantalla se pase invertida (portrait raw dimensions)
+  const invertedPortraitScale = computeSmartTextureScaleForViewport({
+    origWidth: 3840,
+    origHeight: 2160,
+    entityWidth: 1280,
+    entityHeight: 720,
+    entityScale: 1.0,
+    hasAtlas: false,
+    isBackground: true,
+    tier: 'high',
+    viewport: { pixelWidth: 1080, pixelHeight: 2400 },
+    maxCameraZoom: 1.0,
+  });
+  const normalLandscapeScale = computeSmartTextureScaleForViewport({
+    origWidth: 3840,
+    origHeight: 2160,
+    entityWidth: 1280,
+    entityHeight: 720,
+    entityScale: 1.0,
+    hasAtlas: false,
+    isBackground: true,
+    tier: 'high',
+    viewport: { pixelWidth: 2400, pixelHeight: 1080 },
+    maxCameraZoom: 1.0,
+  });
+  assert.equal(invertedPortraitScale, normalLandscapeScale);
+});
+
+test('fuseDeviceAndAAudioProbe & buildAdaptiveDspPlan adapt DSP settings differently across phone hardware, routes, and song acoustics', () => {
+  const darkHeavySong = {
+    sampleRate: 44100,
+    durationSec: 120,
+    integratedLufs: -18.5,
+    loudnessRangeLu: 6.2,
+    truePeakDbtp: -1.4,
+    crestFactorDb: 9.0,
+    stereoCorrelation: 0.45,
+    bands: {
+      subBass2090Hz: 0.38,
+      bass90220Hz: 0.25,
+      lowMid220600Hz: 0.29,
+      presence2k4kHz: 0.14,
+      air6k14kHz: 0.04,
+      spectralTiltDb: -7.5,
+    },
+  };
+
+  // Caso 1: Teléfono económico con altavoz único mono + AAudio 48 kHz
+  const monoSpeaker = fuseDeviceAndAAudioProbe(
+    {
+      route: 'builtin_speaker',
+      manufacturer: 'Moto',
+      model: 'G24',
+      osSampleRate: 48000,
+      reportedChannelCount: 1,
+      isMonoSpeaker: true,
+      supportsLowLatencyFeature: false,
+    },
+    {
+      aaudioActive: true,
+      sampleRate: 48000,
+      channelCount: 2,
+      framesPerBurst: 256,
+      lowLatencyActive: false,
+      hardwareSampleRate: 48000,
+      hardwareChannelCount: 1,
+    },
+  );
+  assert.equal(monoSpeaker.isMonoSpeaker, true);
+  assert.equal(monoSpeaker.effectiveSampleRate, 48000);
+
+  const monoPlan = buildAdaptiveDspPlan(monoSpeaker, darkHeavySong);
+  assert.equal(monoPlan.profileName, 'Altavoz Mono Adaptativo');
+  assert.equal(monoPlan.monoFoldEnabled, true);
+  assert.equal(monoPlan.resampleNeeded, true);
+  assert.ok(monoPlan.highpassHz >= 145);
+  assert.ok(monoPlan.appliedMakeupGainDb > 4.0);
+
+  // Caso 2: Audífonos por cable en teléfono gama alta 96 kHz
+  const wiredPhone = fuseDeviceAndAAudioProbe(
+    {
+      route: 'wired_headphones',
+      manufacturer: 'Sony',
+      model: 'Xperia',
+      osSampleRate: 48000,
+      reportedChannelCount: 2,
+      isMonoSpeaker: false,
+      supportsLowLatencyFeature: true,
+    },
+    {
+      aaudioActive: true,
+      sampleRate: 48000,
+      channelCount: 2,
+      framesPerBurst: 96,
+      lowLatencyActive: true,
+      hardwareSampleRate: 96000,
+      hardwareChannelCount: 2,
+    },
+  );
+  const wiredPlan = buildAdaptiveDspPlan(wiredPhone, darkHeavySong);
+  assert.equal(wiredPlan.profileName, 'Audífonos Cable Alta Fidelidad');
+  assert.equal(wiredPlan.monoFoldEnabled, false);
+  assert.ok(wiredPlan.highpassHz <= 30);
+  assert.ok(wiredPlan.eqBands.some((b) => b.kind === 'low_shelf' && b.gainDb < 0));
+  assert.ok(wiredPlan.eqBands.some((b) => b.kind === 'high_shelf' && b.gainDb > 0));
+
+  // Caso 3: Bluetooth A2DP aplica techo estricto anti-clipping -1.6 dBTP
+  const btDevice = fuseDeviceAndAAudioProbe(
+    { route: 'bluetooth_a2dp', model: 'Earbuds', osSampleRate: 44100, reportedChannelCount: 2 },
+    { aaudioActive: true, sampleRate: 44100, channelCount: 2, framesPerBurst: 512 },
+  );
+  const btPlan = buildAdaptiveDspPlan(btDevice, darkHeavySong);
+  assert.equal(btPlan.profileName, 'Bluetooth Anti-Clipping');
+  assert.equal(btPlan.ceilingDbtp, -1.6);
+  assert.equal(btPlan.resampleNeeded, false);
+});
+
+test('computeTimelineAssetLifecycle precomputes 4s preload lead, 1.5s retire grace, reusedLater and script-touch protection', () => {
+  const windows = computeTimelineAssetLifecycle({
+    entities: [
+      { id: 'bg_city_day', visible: true, opacity: 1, scale: 1 },
+      { id: 'bg_city_night', visible: false, opacity: 1, scale: 1 },
+      { id: 'prop_boombox', visible: false, opacity: 1, scale: 1 },
+      { id: 'script_fx_layer', visible: false, opacity: 1, scale: 1 },
+    ],
+    events: [
+      { timeMs: 12000, name: 'Stage Swap', value1: 'show=bg_city_night;hide=bg_city_day', value2: '' },
+      { timeMs: 24000, name: 'Stage Swap', value1: 'show=prop_boombox;hide=script_fx_layer', value2: '' },
+      { timeMs: 36000, name: 'Stage Swap', value1: 'show=bg_city_day', value2: '' },
+    ],
+    enabledScriptSources: ['function onBeatHit() setEntityProp("script_fx_layer", "visible", true) end'],
+  });
+
+  const byId = Object.fromEntries(windows.map((w) => [w.entityId, w]));
+
+  // bg_city_day se oculta en 12s pero vuelve a aparecer en 36s -> reusedLater = true, sin preload inicial
+  assert.equal(byId.bg_city_day.initiallyVisible, true);
+  assert.equal(byId.bg_city_day.preloadAtMs, null);
+  assert.equal(byId.bg_city_day.reusedLater, true);
+  assert.equal(byId.bg_city_day.retireAfterMs, null);
+
+  // bg_city_night inicia oculto y entra en 12000ms -> preloadAtMs = 8000ms (4s antes) y nunca se retira
+  assert.equal(byId.bg_city_night.initiallyVisible, false);
+  assert.equal(byId.bg_city_night.preloadAtMs, 8000);
+  assert.equal(byId.bg_city_night.firstVisibleMs, 12000);
+  assert.equal(byId.bg_city_night.retireAfterMs, null);
+
+  // script_fx_layer fue tocado por script activo -> nunca se programa retiro automático
+  assert.equal(byId.script_fx_layer.retireAfterMs, null);
+  assert.ok(byId.script_fx_layer.triggerReason.includes('script_activo'));
+
+  // Entidad que sí se oculta sin scripts ni reaparición -> retireAfterMs = t_hide + 1500
+  const oneShot = computeTimelineAssetLifecycle({
+    entities: [{ id: 'bg_intro', visible: true, opacity: 1, scale: 1 }],
+    events: [{ timeMs: 6000, name: 'Stage Swap', value1: 'hide=bg_intro', value2: '' }],
+  })[0];
+  assert.equal(oneShot.retireAfterMs, 7500);
+  assert.equal(oneShot.reusedLater, false);
+});
+
+test('RGB_565 Floyd-Steinberg dithering and exoquant palette policy protect pixel art and compress gradients cleanly', () => {
+  assert.deepEqual(
+    selectWebpPixelPolicy({ hasAtlas: false, tier: 'high', width: 1920, height: 1080 }),
+    { kind: 'rgb565_dithered_if_opaque' },
+  );
+  assert.deepEqual(
+    selectWebpPixelPolicy({ hasAtlas: true, tier: 'low_32bit', width: 512, height: 512 }),
+    { kind: 'quantized_rgba', maxColors: 256 },
+  );
+  assert.deepEqual(
+    selectWebpPixelPolicy({ hasAtlas: true, tier: 'high', width: 2048, height: 2048 }),
+    { kind: 'lossless_rgba' },
+  );
+
+  // Degradado RGB suave 8x4 -> dithering produce valores exactos en la rejilla 5-6-5 sin perder rango
+  const gradRgb = new Uint8Array(8 * 4 * 3);
+  for (let i = 0; i < 8 * 4; i += 1) {
+    gradRgb[i * 3] = (i * 8) % 256;
+    gradRgb[i * 3 + 1] = (i * 7) % 256;
+    gradRgb[i * 3 + 2] = (255 - i * 6) & 0xff;
+  }
+  const dithered = ditherPixelGridToRgb565(gradRgb, 8, 4);
+  assert.equal(dithered.length, gradRgb.length);
+  // Cada valor R/B debe ser múltiplo de rejilla 5 bits y G de 6 bits
+  for (let i = 0; i < 8 * 4; i += 1) {
+    const r = dithered[i * 3];
+    const g = dithered[i * 3 + 1];
+    const b = dithered[i * 3 + 2];
+    const q5R = Math.trunc((r * 31 + 127) / 255);
+    const q6G = Math.trunc((g * 63 + 127) / 255);
+    const q5B = Math.trunc((b * 31 + 127) / 255);
+    assert.equal(r, ((q5R << 3) | (q5R >> 2)) & 0xff);
+    assert.equal(g, ((q6G << 2) | (q6G >> 4)) & 0xff);
+    assert.equal(b, ((q5B << 3) | (q5B >> 2)) & 0xff);
+  }
+
+  // Pixel-art con 4 colores únicos -> NO activa cuantización exoquant (conserva 1:1)
+  const pixelArtRgba = new Uint8Array(16 * 16 * 4);
+  for (let p = 0; p < 16 * 16; p += 1) {
+    const c = p % 4;
+    pixelArtRgba[p * 4] = c * 60;
+    pixelArtRgba[p * 4 + 1] = 200;
+    pixelArtRgba[p * 4 + 2] = 40;
+    pixelArtRgba[p * 4 + 3] = c === 0 ? 0 : 255;
+  }
+  assert.equal(shouldQuantizePaletteWithExoquant(pixelArtRgba, 16, 16, 256), false);
+
+  // Ilustración rica con >300 colores únicos -> SÍ activa cuantización exoquant <= 256 colores
+  const richRgba = new Uint8Array(32 * 16 * 4);
+  for (let p = 0; p < 32 * 16; p += 1) {
+    richRgba[p * 4] = p & 0xff;
+    richRgba[p * 4 + 1] = (p >> 1) & 0xff;
+    richRgba[p * 4 + 2] = (p * 3) & 0xff;
+    richRgba[p * 4 + 3] = 255;
+  }
+  assert.equal(shouldQuantizePaletteWithExoquant(richRgba, 32, 16, 256), true);
+});
+
+test('planMultiPageSparrowSplit paginates mega-atlases across up to 6 <=tierCap pages preserving sharpness and BFGP pageIndex', () => {
+  const sprites = Array.from({ length: 10 }, () => ({ w: 390, h: 390 }));
+  const plan = planMultiPageSparrowSplit({
+    sprites,
+    initialScale: 1.0,
+    tierCap: 1024,
+    maxPages: 6,
+  });
+
+  assert.ok(plan !== null);
+  assert.ok(plan.pageCount >= 3 && plan.pageCount <= 6);
+  assert.equal(plan.appliedScale, 1.0);
+  assert.equal(plan.placements.length, 10);
+  for (const dim of plan.pageDims) {
+    assert.ok(dim.width <= 1024 && dim.height <= 1024);
+  }
+  const uniquePages = new Set(plan.placements.map((p) => p.pageIndex));
+  assert.equal(uniquePages.size, plan.pageCount);
+
+  // Verificar además que BFGP v2 transmite `pageIndex` en bits 8..=15 de `e_flags`
+  const buf = new Uint8Array(BINARY_GAMEPLAY_HEADER_BYTES + BINARY_GAMEPLAY_ENTITY_BYTES);
+  const view = new DataView(buf.buffer);
+  view.setUint32(0, BINARY_GAMEPLAY_MAGIC, true);
+  view.setUint32(4, 1, true); // active
+  view.setUint16(144, 1, true); // entityCount = 1
+  const eOff = BINARY_GAMEPLAY_HEADER_BYTES;
+  // pageIndex = 3 en bits 8..15 + visible + hasFrame
+  const eFlags = (1 << 0) | (1 << 2) | (3 << 8);
+  view.setUint32(eOff + 28, eFlags >>> 0, true);
+  view.setUint32(eOff + 32, 120, true);
+  view.setUint32(eOff + 36, 240, true);
+  view.setUint32(eOff + 40, 390, true);
+  view.setUint32(eOff + 44, 390, true);
+
+  const decoded = decodeBinaryGameplayFrame(buf);
+  assert.equal(decoded.entities.length, 1);
+  assert.equal(decoded.entities[0].pageIndex, 3);
+  assert.equal(decoded.entities[0].hasFrame, true);
+});
+
+test('extractArrowSkinTailColor derives monochrome gray tails for B&W arrows and colored tails for chromatic skins', () => {
+  const defaultPurple: [number, number, number] = [194, 75, 153];
+
+  // 1. Flecha monocromática tipo boceto (grises + contorno negro + relleno blanco): no debe filtrar morado/cian/verde/rojo
+  const monoRgba = new Uint8Array(16 * 16 * 4);
+  for (let y = 0; y < 16; y += 1) {
+    for (let x = 0; x < 16; x += 1) {
+      const i = (y * 16 + x) * 4;
+      const gray = (x + y) % 3 === 0 ? 155 : (x + y) % 2 === 0 ? 90 : 210;
+      monoRgba[i] = gray;
+      monoRgba[i + 1] = gray;
+      monoRgba[i + 2] = gray;
+      monoRgba[i + 3] = 255;
+    }
+  }
+  const monoPal = extractArrowSkinTailColor(monoRgba, 16, 16, defaultPurple);
+  assert.equal(monoPal.isMonochrome, true);
+  assert.equal(monoPal.bodyRgb[0], monoPal.bodyRgb[1]);
+  assert.equal(monoPal.bodyRgb[1], monoPal.bodyRgb[2]);
+  assert.ok(monoPal.bodyRgb[0] >= 108 && monoPal.bodyRgb[0] <= 172);
+  assert.ok(monoPal.coreRgb[0] >= 220 && monoPal.coreRgb[0] <= 245);
+
+  // 2. Flecha personalizada dorada (cromática): la cola larga hereda el tono dorado real
+  const goldRgba = new Uint8Array(16 * 16 * 4);
+  for (let p = 0; p < 16 * 16; p += 1) {
+    goldRgba[p * 4] = 245;
+    goldRgba[p * 4 + 1] = 190;
+    goldRgba[p * 4 + 2] = 30;
+    goldRgba[p * 4 + 3] = 255;
+  }
+  const goldPal = extractArrowSkinTailColor(goldRgba, 16, 16, defaultPurple);
+  assert.equal(goldPal.isMonochrome, false);
+  assert.deepEqual(goldPal.bodyRgb, [245, 190, 30]);
+  assert.ok(goldPal.coreRgb[0] >= 250 && goldPal.coreRgb[2] > 150);
+
+  // 3. Bitmap completamente transparente: vuelve al color por defecto del carril
+  const emptyRgba = new Uint8Array(8 * 8 * 4);
+  const emptyPal = extractArrowSkinTailColor(emptyRgba, 8, 8, defaultPurple);
+  assert.equal(emptyPal.isMonochrome, false);
+  assert.deepEqual(emptyPal.bodyRgb, defaultPurple);
+});

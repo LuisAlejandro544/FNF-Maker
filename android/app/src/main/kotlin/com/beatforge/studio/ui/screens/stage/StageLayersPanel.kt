@@ -270,13 +270,13 @@ private fun StageCameraLayerRow(
                 tint = if (stageCamera.enabled) StudioColors.AccentCyan else StudioColors.TextMuted,
                 modifier = Modifier.size(15.dp)
             )
-            Spacer(Modifier.width(5.dp))
+            Spacer(Modifier.width(4.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Cámaras ($camCount) · C${activeSlot.index}",
                     color = StudioColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
+                    fontSize = 10.5.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -363,8 +363,15 @@ private fun StageLayerRow(
                         )
                     }
                 }
+                val shortRole = when (entity.role) {
+                    "background" -> "Fondo"
+                    "opponent" -> "Oponente"
+                    "player" -> "Jugador"
+                    "gf" -> "Acompañante"
+                    else -> "Decoración"
+                }
                 Text(
-                    text = "Z:${entity.zIndex} · ${entity.roleLabel}",
+                    text = "Z:${entity.zIndex} · $shortRole",
                     color = StudioColors.TextMuted,
                     fontSize = 9.5.sp,
                     maxLines = 1,

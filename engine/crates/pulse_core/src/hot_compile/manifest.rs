@@ -3,6 +3,7 @@
 //! de resultado (`HotCompileManifest`, `HotCompileReport`, `CompiledBundle`, entradas cacheadas)
 //! para reutilizar artefactos WebP, WAV y scripts precompilados entre sesiones.
 
+use super::analysis::EntityLifecycleWindow;
 use super::fingerprints::{AudioMergeFingerprint, TextureFingerprint};
 use crate::chart::NoteDirection;
 use crate::project::{ScriptAsset, ScriptLanguage};
@@ -14,9 +15,28 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Versión del esquema de manifiesto incremental en `compiled_cache/manifest.json`.
-pub const MANIFEST_SCHEMA_VERSION: u32 = 4;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 6;
 /// Versión del analizador de bucles en scripts; incrementarla invalida caché previa de scripts.
 pub const SCRIPT_OPTIMIZER_CACHE_VERSION: u32 = 3;
+
+/// Formato de píxeles recomendado para decodificar la textura compilada en Android.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TexturePixelFormat {
+    /// RGBA de 32 bits estándar (`Bitmap.Config.ARGB_8888`) para sprites con transparencia.
+    #[default]
+    Argb8888,
+    /// RGB de 16 bits con dithering Floyd-Steinberg (`Bitmap.Config.RGB_565`) para fondos opacos (50 % menos RAM).
+    Rgb565,
+}
+
+impl TexturePixelFormat {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            TexturePixelFormat::Argb8888 => "argb8888",
+            TexturePixelFormat::Rgb565 => "rgb565",
+        }
+    }
+}
 
 /// Entrada cacheada de textura WebP compilada en disco.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +44,12 @@ pub struct CachedTextureEntry {
     pub entity_id: String,
     pub fingerprint: TextureFingerprint,
     pub compiled_webp_path: PathBuf,
+    #[serde(default)]
+    pub extra_page_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub pixel_format: TexturePixelFormat,
+    #[serde(default)]
+    pub palette_quantized: bool,
     pub downscaled: bool,
     pub vram_saved_bytes: usize,
     #[serde(default)]
@@ -160,6 +186,11 @@ pub struct HotCompileReport {
     pub pruned_unused_anims: usize,
     pub repacked_atlases: usize,
     pub repacked_entity_ids: Vec<String>,
+    pub rgb565_textures: usize,
+    pub quantized_textures: usize,
+    pub split_atlas_pages_total: usize,
+    pub scheduled_preload_entities: usize,
+    pub scheduled_retire_entities: usize,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<PathBuf>,
     pub estimated_audio_ram_saved_kb: usize,
@@ -177,7 +208,10 @@ pub struct CompiledBundle {
     pub active_entities: Vec<StageEntity>,
     pub textures: HashMap<String, OptimizedTexture>,
     pub compiled_texture_paths: HashMap<String, PathBuf>,
+    pub compiled_texture_pages: HashMap<String, Vec<PathBuf>>,
+    pub texture_pixel_formats: HashMap<String, TexturePixelFormat>,
     pub passthrough_paths: HashMap<String, PathBuf>,
+    pub timeline_windows: Vec<EntityLifecycleWindow>,
     pub optimized_scripts: Vec<ScriptAsset>,
     pub arrow_textures: HashMap<NoteDirection, RasterizedArrow>,
     pub report: HotCompileReport,

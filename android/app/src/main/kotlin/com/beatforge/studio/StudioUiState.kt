@@ -11,8 +11,14 @@ import com.beatforge.studio.gfx.GfxCapabilities
 data class LoadedEntityBitmap(
     val bitmap: ImageBitmap,
     val origWidth: Int,
-    val origHeight: Int
-)
+    val origHeight: Int,
+    val extraPages: List<LoadedEntityBitmap> = emptyList()
+) {
+    fun pageAt(pageIndex: Int): LoadedEntityBitmap {
+        if (pageIndex <= 0) return this
+        return extraPages.getOrNull(pageIndex - 1) ?: this
+    }
+}
 
 data class AudioPreviewTransportState(
     val posMs: Double = 0.0,
@@ -41,6 +47,7 @@ data class StudioUiState(
     val selectedTier: DeviceTier = DeviceTier.Balanced,
     val gfxCapabilities: GfxCapabilities = GfxCapabilities(),
     val hotCompileProgress: HotCompileProgress = HotCompileProgress(),
+    val audioAdaptProgress: AudioAdaptProgress = AudioAdaptProgress(),
     val debugShowRam: Boolean = false,
     val debugShowTelemetry: Boolean = false,
     val debugBotplay: Boolean = false,

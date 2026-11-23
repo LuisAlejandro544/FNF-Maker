@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,16 +36,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -51,10 +52,14 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.beatforge.studio.gfx.RenderBackendKind
+import com.beatforge.studio.ui.components.StudioEqualizerBars
+import com.beatforge.studio.ui.components.StudioGlowingProgressBar
 import com.beatforge.studio.ui.components.StudioNavRail
+import com.beatforge.studio.ui.components.StudioOrbitProgressRing
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
 import com.beatforge.studio.ui.popups.CharacterIconsDialog
 import com.beatforge.studio.ui.popups.ModFilesGuideDialog
+import com.beatforge.studio.ui.screens.AudioAdaptScreen
 import com.beatforge.studio.ui.screens.AudioScreen
 import com.beatforge.studio.ui.screens.ChartScreen
 import com.beatforge.studio.ui.screens.GameplayScreen
@@ -190,14 +195,47 @@ private fun BeatForgeRootContent(
     ) {
         if (!state.initialized) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = StudioColors.AccentCyan)
-                    Text(
-                        text = "Inicializando motor Rust...",
-                        color = StudioColors.TextMuted,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(top = 12.dp)
-                    )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth(0.52f)
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = StudioColors.BgPanel,
+                    border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.45f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 26.dp, vertical = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        StudioOrbitProgressRing(
+                            progress = 0.5f,
+                            indeterminate = true,
+                            size = 68.dp,
+                            strokeWidth = 4.5.dp
+                        ) {
+                            StudioEqualizerBars(barCount = 4, maxHeight = 20.dp, barWidth = 4.dp)
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "BeatForge Studio",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = "Preparando tu estudio musical...",
+                                color = StudioColors.TextMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                        StudioGlowingProgressBar(
+                            progress = 0.5f,
+                            indeterminate = true,
+                            height = 6.dp
+                        )
+                    }
                 }
             }
             return@Row
@@ -270,7 +308,10 @@ private fun BeatForgeRootContent(
             return@Row
         }
 
-        if (state.currentScreen != StudioScreen.Gameplay && state.currentScreen != StudioScreen.HotCompile) {
+        if (state.currentScreen != StudioScreen.Gameplay &&
+            state.currentScreen != StudioScreen.HotCompile &&
+            state.currentScreen != StudioScreen.AudioAdapt
+        ) {
             StudioNavRail(
                 currentScreen = state.currentScreen,
                 onNavigate = { viewModel.navigateTo(it) },
@@ -284,11 +325,14 @@ private fun BeatForgeRootContent(
                 .weight(1f)
                 .fillMaxHeight()
         ) {
-            if (state.isBusy && state.currentScreen != StudioScreen.HotCompile) {
-                LinearProgressIndicator(
-                    color = StudioColors.AccentCyan,
-                    trackColor = StudioColors.BgPanel,
-                    modifier = Modifier.fillMaxWidth()
+            if (state.isBusy &&
+                state.currentScreen != StudioScreen.HotCompile &&
+                state.currentScreen != StudioScreen.AudioAdapt
+            ) {
+                StudioGlowingProgressBar(
+                    progress = 0.5f,
+                    indeterminate = true,
+                    height = 4.dp
                 )
             }
 
@@ -369,7 +413,8 @@ private fun BeatForgeRootContent(
                         onUpdateTrackConfig = { slot, gain, muted, duck ->
                             viewModel.updateAudioTrackConfig(slot, gain, muted, duck)
                         },
-                        onRemoveTrack = { viewModel.removeAudioTrack(it) }
+                        onRemoveTrack = { viewModel.removeAudioTrack(it) },
+                        onSetAudioAdaptEnabled = { viewModel.setAudioAdaptEnabled(it) }
                     )
 
                     StudioScreen.SpriteLab -> SpriteLabScreen(
@@ -444,6 +489,11 @@ private fun BeatForgeRootContent(
                     StudioScreen.HotCompile -> HotCompileScreen(
                         tier = state.selectedTier,
                         progress = state.hotCompileProgress
+                    )
+
+                    StudioScreen.AudioAdapt -> AudioAdaptScreen(
+                        progress = state.audioAdaptProgress,
+                        report = state.snapshot.lastAudioAdaptReport
                     )
 
                     StudioScreen.Gameplay -> {

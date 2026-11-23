@@ -158,7 +158,44 @@ impl AssetFileFingerprint {
     }
 }
 
-/// Huella completa de una textura en el escenario + configuración del dispositivo.
+/// Dimensiones reales en píxeles de la pantalla horizontal del dispositivo para ajustar mip-downscale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenViewportMetrics {
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+}
+
+impl Default for ScreenViewportMetrics {
+    fn default() -> Self {
+        Self {
+            pixel_width: 1280,
+            pixel_height: 720,
+        }
+    }
+}
+
+impl ScreenViewportMetrics {
+    pub fn normalized(self) -> Self {
+        let a = self.pixel_width.clamp(320, 4096);
+        let b = self.pixel_height.clamp(180, 4096);
+        Self {
+            pixel_width: a.max(b),
+            pixel_height: a.min(b),
+        }
+    }
+
+    /// Relación de escala entre el mundo lógico (`1280x720`) y los píxeles reales del teléfono.
+    pub fn virtual_to_pixel_scale(self, virtual_w: f32, virtual_h: f32) -> f32 {
+        let norm = self.normalized();
+        let vw = virtual_w.max(320.0);
+        let vh = virtual_h.max(180.0);
+        let sx = (norm.pixel_width as f32) / vw;
+        let sy = (norm.pixel_height as f32) / vh;
+        sx.max(sy).clamp(0.45, 3.2)
+    }
+}
+
+/// Huella completa de una textura en el escenario + configuración del dispositivo y viewport real.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextureFingerprint {
     pub file: AssetFileFingerprint,
@@ -170,6 +207,12 @@ pub struct TextureFingerprint {
     pub atlas_frame_hash: u64,
     #[serde(default)]
     pub referenced_anim_hash: u64,
+    #[serde(default)]
+    pub viewport_w: u32,
+    #[serde(default)]
+    pub viewport_h: u32,
+    #[serde(default)]
+    pub max_zoom_bits: u32,
 }
 
 impl TextureFingerprint {
@@ -183,7 +226,31 @@ impl TextureFingerprint {
         tier: DeviceResourceTier,
         referenced_anim_prefixes: Option<&HashSet<String>>,
     ) -> Option<Self> {
+        Self::compute_with_context(
+            entity,
+            path,
+            tier,
+            referenced_anim_prefixes,
+            ScreenViewportMetrics::default(),
+            1.0,
+        )
+    }
+
+    pub fn compute_with_context(
+        entity: &StageEntity,
+        path: &Path,
+        tier: DeviceResourceTier,
+        referenced_anim_prefixes: Option<&HashSet<String>>,
+        viewport: ScreenViewportMetrics,
+        max_camera_zoom: f32,
+    ) -> Option<Self> {
         let file = AssetFileFingerprint::from_path(path)?;
+        let norm_vp = viewport.normalized();
+        let norm_zoom = if max_camera_zoom.is_finite() {
+            max_camera_zoom.clamp(0.55, 2.5)
+        } else {
+            1.0
+        };
         let mut atlas_hash: u64 = 0xcbf2_9ce4_8422_2325;
         let mut ref_anim_hash: u64 = 0xcbf2_9ce4_8422_2325;
         if let Some(atlas) = &entity.atlas {
@@ -226,6 +293,9 @@ impl TextureFingerprint {
             scale_bits: entity.scale.to_bits(),
             atlas_frame_hash: atlas_hash,
             referenced_anim_hash: ref_anim_hash,
+            viewport_w: norm_vp.pixel_width,
+            viewport_h: norm_vp.pixel_height,
+            max_zoom_bits: norm_zoom.to_bits(),
         })
     }
 }

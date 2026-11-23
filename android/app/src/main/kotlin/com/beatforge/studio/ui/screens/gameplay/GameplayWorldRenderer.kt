@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -38,7 +39,7 @@ internal fun DrawScope.drawGameplaySceneLayer(
     sy: Float,
     compiledBitmapsByIndex: List<LoadedEntityBitmap?>,
     ratingBitmaps: Map<Int, ImageBitmap>,
-    ratingPopup: RatingPopupHolder,
+    ratingPool: RatingPopupPoolHolder,
     dynamicTextPaint: Paint
 ) {
     val shakePhase = (frameState.songPosMs * 0.08).toFloat()
@@ -83,7 +84,7 @@ internal fun DrawScope.drawGameplaySceneLayer(
                 val h = ent.height * ent.scale * sy
                 val left = cx - w / 2f
                 val top = cy - h / 2f
-                val rawLoaded = compiledBitmapsByIndex.getOrNull(i)
+                val rawLoaded = compiledBitmapsByIndex.getOrNull(i)?.pageAt(ent.pageIndex)
                 val loaded = if (rawLoaded != null && !rawLoaded.bitmap.asAndroidBitmap().isRecycled) {
                     rawLoaded
                 } else {
@@ -218,26 +219,45 @@ internal fun DrawScope.drawGameplaySceneLayer(
             }
         }
 
-        // 1.6 Popup SVG de calificación (`SICK!`, `GOOD!`, `BAD`, `MISS`) junto al jugador
-        if (ratingPopup.active) {
-            val ageSec = ((nowNs - ratingPopup.startNano) / 1_000_000_000.0).toFloat()
-            if (ageSec >= 0.68f) {
-                ratingPopup.active = false
-            } else {
-                val ratingBmp = ratingBitmaps[ratingPopup.ratingCode]
+        // 1.6 Popups SVG de calificación (`SICK!`, `GOOD!`, `BAD`, `MISS`) siguiendo al jugador en vivo cada frame
+        var hasActiveRating = false
+        for (rIdx in ratingPool.slots.indices) {
+            if (ratingPool.slots[rIdx].active) {
+                hasActiveRating = true
+                break
+            }
+        }
+        if (hasActiveRating && !inGameOver) {
+            val anchor = ratingPool.livePlayerAnchor
+            resolveLivePlayerAnchor(frameState, anchor)
+            val baseOffsetX = anchor.sideSign * (anchor.width * 0.32f).coerceIn(68f, 155f)
+            val baseOffsetY = -(anchor.height * 0.22f).coerceIn(48f, 118f)
+
+            for (rIdx in ratingPool.slots.indices) {
+                val slot = ratingPool.slots[rIdx]
+                if (!slot.active) continue
+                val ageSec = ((nowNs - slot.startNano) / 1_000_000_000.0).toFloat()
+                if (ageSec >= 0.68f) {
+                    slot.active = false
+                    continue
+                }
+                val popScale = if (ageSec < 0.08f) {
+                    1.28f - (ageSec / 0.08f) * 0.28f
+                } else {
+                    1f
+                }
+                val alpha = if (ageSec > 0.38f) {
+                    (1f - (ageSec - 0.38f) / 0.30f).coerceIn(0f, 1f)
+                } else {
+                    1f
+                }
+                val worldX = anchor.x + baseOffsetX + slot.jitterX + anchor.sideSign * 18f * ageSec
+                val worldY = anchor.y + baseOffsetY + slot.jitterY - 115f * ageSec + 260f * ageSec * ageSec
+                val curX = worldX * sx
+                val curY = worldY * sy
+
+                val ratingBmp = ratingBitmaps[slot.ratingCode]
                 if (ratingBmp != null) {
-                    val popScale = if (ageSec < 0.08f) {
-                        1.28f - (ageSec / 0.08f) * 0.28f
-                    } else {
-                        1f
-                    }
-                    val alpha = if (ageSec > 0.38f) {
-                        (1f - (ageSec - 0.38f) / 0.30f).coerceIn(0f, 1f)
-                    } else {
-                        1f
-                    }
-                    val curX = (ratingPopup.worldX - 18f * ageSec) * sx
-                    val curY = (ratingPopup.worldY - 125f * ageSec + 280f * ageSec * ageSec) * sy
                     val drawW = 190f * minOf(sx, sy) * popScale
                     val drawH = 72f * minOf(sx, sy) * popScale
                     drawImage(
@@ -250,6 +270,26 @@ internal fun DrawScope.drawGameplaySceneLayer(
                         alpha = alpha,
                         filterQuality = FilterQuality.High
                     )
+                } else {
+                    val label = when (slot.ratingCode) {
+                        1 -> "SICK!"
+                        2 -> "GOOD!"
+                        3 -> "BAD"
+                        else -> "MISS"
+                    }
+                    val colorRgb = when (slot.ratingCode) {
+                        1 -> 0x22D3EE
+                        2 -> 0x34D399
+                        3 -> 0xF59E0B
+                        else -> 0xFB7185
+                    }
+                    val alphaInt = (alpha * 255f).roundToInt().coerceIn(0, 255)
+                    val prevAlign = dynamicTextPaint.textAlign
+                    dynamicTextPaint.textAlign = Paint.Align.CENTER
+                    dynamicTextPaint.color = (alphaInt shl 24) or colorRgb
+                    dynamicTextPaint.textSize = (36f * minOf(sx, sy) * popScale).coerceAtLeast(14f)
+                    drawContext.canvas.nativeCanvas.drawText(label, curX, curY, dynamicTextPaint)
+                    dynamicTextPaint.textAlign = prevAlign
                 }
             }
         }
@@ -267,7 +307,8 @@ internal fun DrawScope.drawGameplaySceneLayer(
 
 internal fun DrawScope.drawClassicHitboxColumns(
     frameState: GameplayFrameState,
-    pressedMask: Int
+    pressedMask: Int,
+    lanePalettes: List<ArrowLanePalette>
 ) {
     if (frameState.controlMode != MobileControlMode.ClassicHitbox.key) return
     val arrowsAlpha = if (frameState.arrowsVisible) frameState.arrowsOpacity.coerceIn(0f, 1f) else 0f
@@ -276,7 +317,7 @@ internal fun DrawScope.drawClassicHitboxColumns(
     for (lane in 0..3) {
         val active = (pressedMask and (1 shl lane)) != 0 ||
             (frameState.holdingLanesMask and (1 shl lane)) != 0
-        val col = StudioColors.LaneColors[lane]
+        val col = lanePalettes.getOrNull(lane)?.bodyColor ?: StudioColors.LaneColors[lane]
         drawRect(
             color = col.copy(alpha = (if (active) 0.22f else 0.03f) * arrowsAlpha),
             topLeft = Offset(lane * colW, 0f),
@@ -305,6 +346,7 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
     hurtArrowXBitmap: ImageBitmap?,
     noteSplashBitmap: ImageBitmap?,
     splashPool: SplashPoolHolder,
+    lanePalettes: List<ArrowLanePalette>,
     dynamicTextPaint: Paint
 ) {
     if (frameState.gameOver) return
@@ -333,7 +375,7 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
 
             val coloredBmp = arrowBitmaps[dir]
             val neutralBmp = receptorBitmaps[dir] ?: coloredBmp
-            val laneColor = StudioColors.LaneColors[dir]
+            val laneColor = lanePalettes.getOrNull(dir)?.bodyColor ?: StudioColors.LaneColors[dir]
 
             val oppHolding = (frameState.opponentHoldingLanesMask and (1 shl dir)) != 0
             val oppAlpha = ((if (oppHolding) 0.98f else 0.72f) * oppOverride.alpha * globalArrowsAlpha).coerceIn(0f, 1f)
@@ -413,22 +455,25 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
             val maxY = maxOf(anchorY, tailEndY)
             if (maxY < -notePxSize || minY > size.height + notePxSize) continue
 
+            val palette = lanePalettes.getOrNull(dir)
+            val bodyColor = palette?.bodyColor ?: StudioColors.LaneColors[dir]
+            val coreColor = palette?.coreColor ?: Color.White
+
             if (note.sustainMs > 45.0) {
                 val tailTop = if (laneDownscroll) tailEndY else anchorY
                 val tailBottom = if (laneDownscroll) anchorY else tailEndY
                 val tailHeight = tailBottom - tailTop
                 if (tailHeight > 2f) {
-                    val laneColor = StudioColors.LaneColors[dir]
                     val bodyWidth = notePxSize * 0.30f
                     val coreWidth = notePxSize * 0.11f
                     drawRoundRect(
-                        color = laneColor.copy(alpha = (if (note.headHit) 0.84f else 0.64f) * noteAlpha),
+                        color = bodyColor.copy(alpha = (if (note.headHit) 0.84f else 0.64f) * noteAlpha),
                         topLeft = Offset(noteX - bodyWidth / 2f, tailTop),
                         size = Size(bodyWidth, tailHeight),
                         cornerRadius = CornerRadius(bodyWidth * 0.45f, bodyWidth * 0.45f)
                     )
                     drawRoundRect(
-                        color = Color.White.copy(alpha = (if (note.headHit) 0.55f else 0.32f) * noteAlpha),
+                        color = coreColor.copy(alpha = (if (note.headHit) 0.58f else 0.36f) * noteAlpha),
                         topLeft = Offset(noteX - coreWidth / 2f, tailTop),
                         size = Size(coreWidth, tailHeight),
                         cornerRadius = CornerRadius(coreWidth * 0.5f, coreWidth * 0.5f)
@@ -497,7 +542,7 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
                         )
                     } else {
                         drawCircle(
-                            color = StudioColors.LaneColors[dir].copy(alpha = noteAlpha),
+                            color = bodyColor.copy(alpha = noteAlpha),
                             radius = notePxSize * 0.4f,
                             center = Offset(noteX, headY)
                         )
@@ -522,7 +567,7 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
             val progress = (ageSec / 0.28f).coerceIn(0f, 1f)
             val splashAlpha = ((1f - progress * progress) * globalArrowsAlpha).coerceIn(0f, 1f)
             val splashSize = plrNoteSize * (1.25f + progress * 0.85f) * plrOv.scale
-            val laneColor = StudioColors.LaneColors[lane]
+            val laneColor = lanePalettes.getOrNull(lane)?.splashColor ?: StudioColors.LaneColors[lane]
 
             if (noteSplashBitmap != null) {
                 val halfSplash = splashSize / 2f

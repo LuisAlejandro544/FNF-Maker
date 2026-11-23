@@ -737,10 +737,30 @@ impl StageScene {
             .copied()
             .filter(|e| (e.width * e.scale).abs() >= 320.0 && (e.height * e.scale).abs() >= 180.0)
             .collect();
-        let chosen = if large_only.is_empty() {
+        let sized = if large_only.is_empty() {
             &candidates
         } else {
             &large_only
+        };
+
+        // Si existen capas de fondo con imagen/atlas real, ignoramos placeholders vacíos
+        // (como el `stage_bg` sin textura) para que no amplíen los límites con huecos oscuros.
+        let with_media: Vec<&StageEntity> = sized
+            .iter()
+            .copied()
+            .filter(|e| {
+                e.image_path.is_some()
+                    || e.raw_image_path.is_some()
+                    || e.xml_path.is_some()
+                    || e.animate_json_path.is_some()
+                    || e.atlas.is_some()
+                    || e.animate_spritemap.is_some()
+            })
+            .collect();
+        let chosen = if with_media.is_empty() {
+            sized
+        } else {
+            &with_media
         };
 
         let mut min_x = f32::INFINITY;
@@ -813,9 +833,27 @@ impl StageScene {
         Self::compute_background_bounds(&self.entities)
     }
 
+    /// Devuelve el rectángulo delimitador del fondo a partir de una lista viva de entidades
+    /// (por ejemplo `active_entities` durante `Stage Swap` en gameplay).
+    pub fn background_bounds_for_entities(entities: &[StageEntity]) -> Option<[f32; 4]> {
+        Self::compute_background_bounds(entities)
+    }
+
     /// Restringe unas coordenadas `(x, y)` al área cubierta por el fondo del escenario según el `zoom`
     /// activo cuando `clamp_to_background` está habilitado.
     pub fn clamp_camera_to_background(&self, x: f32, y: f32, zoom: f32) -> (f32, f32) {
+        self.clamp_camera_to_entities_background(x, y, zoom, &self.entities)
+    }
+
+    /// Restringe unas coordenadas `(x, y)` al área cubierta por el fondo vivo de `entities`
+    /// (evitando franjas negras cuando scripts/eventos ocultan, reemplazan o mueven fondos).
+    pub fn clamp_camera_to_entities_background(
+        &self,
+        x: f32,
+        y: f32,
+        zoom: f32,
+        entities: &[StageEntity],
+    ) -> (f32, f32) {
         if !self.camera.clamp_to_background {
             return (
                 if x.is_finite() { x.clamp(-1000.0, 2600.0) } else { 640.0 },
@@ -828,7 +866,7 @@ impl StageScene {
             zoom,
             self.virtual_width,
             self.virtual_height,
-            self.background_bounds(),
+            Self::compute_background_bounds(entities),
         )
     }
 
@@ -905,9 +943,26 @@ impl StageScene {
         active_player_id: &str,
         active_opponent_id: &str,
     ) -> (f32, f32, f32, f32) {
+        self.resolve_camera_slot_target_with_entities(
+            slot_idx,
+            &self.entities,
+            active_player_id,
+            active_opponent_id,
+        )
+    }
+
+    /// Resuelve coordenadas `(x, y, zoom, smooth_speed)` usando el snapshot vivo `entities`
+    /// (imprescindible durante gameplay tras eventos `Stage Swap` / `Change Character` / tweens).
+    pub fn resolve_camera_slot_target_with_entities(
+        &self,
+        slot_idx: usize,
+        entities: &[StageEntity],
+        active_player_id: &str,
+        active_opponent_id: &str,
+    ) -> (f32, f32, f32, f32) {
         Self::resolve_slot_against_entities(
             &self.camera,
-            &self.entities,
+            entities,
             slot_idx,
             active_player_id,
             active_opponent_id,
@@ -1137,6 +1192,31 @@ mod tests {
         assert!(!stage.remove_custom_camera(2));
         assert!(stage.remove_custom_camera(3));
         assert_eq!(stage.camera.cameras.len(), 3);
+    }
+
+    #[test]
+    fn swapped_active_entities_clamp_camera_without_exposing_black_bars() {
+        let mut stage = StageScene::default();
+        let mut bg_alt = StageEntity::new("bg_red", "Fondo Alterno", EntityRole::Background);
+        bg_alt.x = 980.0;
+        bg_alt.y = 360.0;
+        bg_alt.width = 1600.0;
+        bg_alt.height = 720.0;
+        bg_alt.visible = false;
+        bg_alt.image_path = Some(PathBuf::from("sprites/bg_red.png"));
+        stage.entities.push(bg_alt);
+
+        // Simula `active_entities` durante gameplay tras `Stage Swap`:
+        // se oculta `stage_bg` ([0..1280]) y se muestra `bg_red` ([180..1780]).
+        let mut active_entities = stage.entities.clone();
+        active_entities[0].visible = false;
+        active_entities.last_mut().unwrap().visible = true;
+
+        let (clamped_x, clamped_y) =
+            stage.clamp_camera_to_entities_background(240.0, 360.0, 1.0, &active_entities);
+        // Con zoom 1.0 (half_vw = 640), el límite izquierdo de bg_red (180) exige camera_x >= 820.
+        assert!((clamped_x - 820.0).abs() < 0.01);
+        assert!((clamped_y - 360.0).abs() < 0.01);
     }
 }
 

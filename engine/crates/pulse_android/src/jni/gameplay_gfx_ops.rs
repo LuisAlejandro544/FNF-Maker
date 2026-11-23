@@ -46,6 +46,37 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeHotCom
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeHotCompileWithViewport<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    tier_code: jint,
+    viewport_w: jint,
+    viewport_h: jint,
+) -> JString<'local> {
+    set_hot_compile_progress(
+        true,
+        0.02,
+        "Iniciando compilador en caliente...",
+        "Calculando zoom máximo de cámara y escala física en pantalla",
+    );
+    let json = session().lock().hot_compile_with_progress_and_viewport(
+        tier_code,
+        viewport_w,
+        viewport_h,
+        |pct, phase, detail| {
+            set_hot_compile_progress(true, pct, phase, detail);
+        },
+    );
+    set_hot_compile_progress(
+        false,
+        0.90,
+        "Motor Rust completado",
+        "Texturas pre-escaladas con Lanczos3 y scripts listos",
+    );
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeStartGameplay<'local>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,

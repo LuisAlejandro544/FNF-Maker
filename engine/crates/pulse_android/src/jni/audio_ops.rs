@@ -3,7 +3,7 @@
 //! y controlar el transporte de preescucha en tiempo real (incluida lectura lock-free de estado).
 
 use super::{read_str, to_jstr};
-use crate::session;
+use crate::{get_audio_adapt_progress_json, session, set_audio_adapt_progress};
 use jni::JNIEnv;
 use jni::objects::{JClass, JDoubleArray, JString};
 use jni::sys::{jboolean, jdouble, jfloat, jint};
@@ -45,6 +45,53 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdate
         gain,
         muted != 0,
         duck_on_miss != 0,
+    );
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeSetAudioAdaptEnabled<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    enabled: jboolean,
+) -> JString<'local> {
+    let json = session().lock().set_audio_adapt_enabled(enabled != 0);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetAudioAdaptProgress<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+) -> JString<'local> {
+    let json = get_audio_adapt_progress_json();
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAdaptAudioForDevice<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    device_probe_json: JString<'local>,
+) -> JString<'local> {
+    let probe = read_str(&mut env, &device_probe_json);
+    set_audio_adapt_progress(
+        true,
+        0.04,
+        "Iniciando adaptador acústico...",
+        "Leyendo hardware de audio del teléfono y perfil AAudio",
+    );
+    let json = session().lock().adapt_audio_for_device_with_progress(
+        &probe,
+        |pct, phase, detail| {
+            set_audio_adapt_progress(true, pct, phase, detail);
+        },
+    );
+    set_audio_adapt_progress(
+        false,
+        1.0,
+        "Adaptación acústica finalizada",
+        "Stream de audio listo para gameplay",
     );
     to_jstr(&mut env, &json)
 }

@@ -45,6 +45,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         bitmapLoader = bitmapLoader
     )
     private val gameplayCoordinator = StudioGameplayCoordinator(
+        app = application,
         scope = viewModelScope,
         engineIoDispatcher = engineIoDispatcher,
         uiState = _uiState,
@@ -262,6 +263,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateAudioTrackConfig(slot: Int, gain: Float, muted: Boolean, duckOnMiss: Boolean) =
         editorDelegate.updateAudioTrackConfig(slot, gain, muted, duckOnMiss)
+
+    fun setAudioAdaptEnabled(enabled: Boolean) = editorDelegate.setAudioAdaptEnabled(enabled)
 
     fun toggleAudioPreview(startMs: Double = 0.0) = editorDelegate.toggleAudioPreview(startMs)
 

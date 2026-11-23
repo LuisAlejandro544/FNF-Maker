@@ -215,3 +215,178 @@ fn hot_compile_repacks_atlas_and_reuses_repacked_atlas_on_cache_hit() {
 
     let _ = std::fs::remove_dir_all(&base_dir);
 }
+
+#[test]
+fn viewport_and_max_camera_zoom_guide_lanczos3_mip_downscale_and_invalidate_cache() {
+    let mut project = ModProject::new_demo();
+    project.stage.camera.base_zoom = 0.85;
+    project.chart.events.push(crate::chart::ChartEvent {
+        time_ms: 4000.0,
+        name: "ZoomCamera".to_string(),
+        value1: "1.55".to_string(),
+        value2: "0.5".to_string(),
+    });
+    let max_zoom = compute_project_max_camera_zoom(&project);
+    assert!((max_zoom - 1.55).abs() < 0.01);
+
+    let mut prop = StageEntity::new("bg_hq", "Fondo HQ", EntityRole::Background);
+    prop.width = 1280.0;
+    prop.height = 720.0;
+    prop.scale = 1.0;
+
+    // En pantalla pequeña 854x480 sin zoom (1.0), un fondo 2560x1440 se reduce más con Lanczos3
+    // que en una pantalla 2400x1080 con evento ZoomCamera 1.55x.
+    let small_scale = compute_smart_texture_scale_for_viewport(
+        &prop,
+        2560,
+        1440,
+        DeviceResourceTier::HighQuality,
+        ScreenViewportMetrics {
+            pixel_width: 854,
+            pixel_height: 480,
+        },
+        1.0,
+        1280.0,
+        720.0,
+    );
+    let large_zoom_scale = compute_smart_texture_scale_for_viewport(
+        &prop,
+        2560,
+        1440,
+        DeviceResourceTier::HighQuality,
+        ScreenViewportMetrics {
+            pixel_width: 2400,
+            pixel_height: 1080,
+        },
+        max_zoom,
+        1280.0,
+        720.0,
+    );
+    assert!(small_scale < 0.75);
+    assert!(large_zoom_scale > small_scale);
+}
+
+#[test]
+fn timeline_asset_lifecycle_schedules_preload_and_safe_retire_windows() {
+    let mut project = ModProject::new_demo();
+    project.scripts.clear();
+    project.stage.entities.clear();
+
+    let mut bg_day = StageEntity::new("bg_day", "Día", EntityRole::Background);
+    bg_day.visible = true;
+    let mut bg_night = StageEntity::new("bg_night", "Noche", EntityRole::Background);
+    bg_night.visible = false;
+    let mut secret = StageEntity::new("secret_boss", "Secreto", EntityRole::Opponent);
+    secret.visible = false;
+
+    project.stage.entities.push(bg_day);
+    project.stage.entities.push(bg_night);
+    project.stage.entities.push(secret);
+
+    project.chart.events.push(crate::chart::ChartEvent {
+        time_ms: 14000.0,
+        name: "Stage Swap".to_string(),
+        value1: "show=bg_night;hide=bg_day".to_string(),
+        value2: String::new(),
+    });
+    project.scripts.push(crate::project::ScriptAsset {
+        id: "scr_secret".to_string(),
+        name: "secret.lua".to_string(),
+        language: crate::project::ScriptLanguage::Lua,
+        source_code: "if curBeat == 32 then showEntity('secret_boss') end".to_string(),
+        enabled: true,
+    });
+
+    let windows = compute_timeline_asset_lifecycle(&project);
+    assert_eq!(windows.len(), 3);
+
+    let w_day = windows.iter().find(|w| w.entity_id == "bg_day").unwrap();
+    assert!(w_day.initially_visible);
+    assert_eq!(w_day.preload_at_ms, None);
+    assert_eq!(w_day.retire_after_ms, Some(15500.0));
+
+    let w_night = windows.iter().find(|w| w.entity_id == "bg_night").unwrap();
+    assert!(!w_night.initially_visible);
+    assert_eq!(w_night.first_visible_ms, Some(14000.0));
+    assert_eq!(w_night.preload_at_ms, Some(10000.0));
+    assert_eq!(w_night.retire_after_ms, None);
+
+    let w_secret = windows.iter().find(|w| w.entity_id == "secret_boss").unwrap();
+    assert_eq!(w_secret.retire_after_ms, None);
+    assert!(w_secret.trigger_reason.contains("script_activo"));
+}
+
+#[test]
+fn hot_compile_applies_rgb565_dithering_for_opaque_bg_and_exoquant_only_when_colors_exceed_256() {
+    use crate::astc_loader::{dither_image_to_rgb565_grid, quantize_rgba_with_exoquant};
+
+    let base_dir = std::env::temp_dir().join("beatforge_rgb565_exoquant_test");
+    let _ = std::fs::remove_dir_all(&base_dir);
+    let cache_dir = base_dir.join("compiled_cache");
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    // 1) Fondo opaco con degradado suave -> debe codificarse en RGB_565 + dithering
+    let bg_png = base_dir.join("sky.png");
+    let mut bg = RgbaImage::new(64, 64);
+    for y in 0..64 {
+        for x in 0..64 {
+            bg.put_pixel(x, y, Rgba([(x * 4) as u8, (y * 4) as u8, 128, 255]));
+        }
+    }
+    let dyn_bg = DynamicImage::ImageRgba8(bg);
+    dyn_bg
+        .save_with_format(&bg_png, image::ImageFormat::Png)
+        .unwrap();
+    let dithered = dither_image_to_rgb565_grid(&dyn_bg);
+    assert_eq!(dithered.dimensions(), (64, 64));
+
+    // 2) Pixel-art con <= 8 colores únicos -> exoquant NO debe tocarlo (devuelve None)
+    let mut pixel_art = RgbaImage::new(32, 32);
+    for y in 0..32 {
+        for x in 0..32 {
+            pixel_art.put_pixel(
+                x,
+                y,
+                if (x + y) % 2 == 0 {
+                    Rgba([255, 0, 80, 255])
+                } else {
+                    Rgba([0, 0, 0, 0])
+                },
+            );
+        }
+    }
+    assert!(quantize_rgba_with_exoquant(&pixel_art, 256).is_none());
+
+    // 3) Sprite con > 400 colores reales -> exoquant sí cuantiza a <= 256 colores con dithering
+    let mut rich_sprite = RgbaImage::new(32, 32);
+    for y in 0..32 {
+        for x in 0..32 {
+            rich_sprite.put_pixel(x, y, Rgba([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8, 220]));
+        }
+    }
+    let q_res = quantize_rgba_with_exoquant(&rich_sprite, 256);
+    assert!(q_res.is_some());
+
+    let mut project = ModProject::new_demo();
+    project.stage.entities.clear();
+    let mut sky = StageEntity::new("sky_bg", "Cielo", EntityRole::Background);
+    sky.image_path = Some(bg_png);
+    sky.width = 1280.0;
+    sky.height = 720.0;
+    project.stage.entities.push(sky);
+
+    let bundle = hot_compile_project_to_dir(
+        &project,
+        DeviceResourceTier::LowRam32Bit,
+        Some(&cache_dir),
+        |_, _| {},
+    );
+    assert_eq!(bundle.report.rgb565_textures, 1);
+    assert_eq!(
+        bundle.texture_pixel_formats.get("sky_bg"),
+        Some(&TexturePixelFormat::Rgb565)
+    );
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}
+

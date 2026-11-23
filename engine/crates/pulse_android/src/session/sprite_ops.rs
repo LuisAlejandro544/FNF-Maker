@@ -426,6 +426,7 @@ impl EngineSession {
                 frame_width: f.frame_width,
                 frame_height: f.frame_height,
                 rotated: f.rotated,
+                page_index: f.page_index,
             },
             None => SparrowFrameJson {
                 found: false,
@@ -439,6 +440,7 @@ impl EngineSession {
                 frame_width: 0,
                 frame_height: 0,
                 rotated: false,
+                page_index: 0,
             },
         };
         serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string())

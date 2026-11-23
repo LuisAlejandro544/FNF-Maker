@@ -31,12 +31,24 @@ const ALPHA_TRIM_THRESHOLD: u8 = 2;
 /// para evitar sangrado de bordes con filtros lineales y garantizar que `(0, 0)` quede `[0,0,0,0]`.
 const FRAME_EDGE_PAD: u32 = 1;
 
+/// Página adicional de un atlas Sparrow dividido automáticamente cuando los frames nítidos
+/// superan una sola hoja `tier_cap x tier_cap`.
+#[derive(Debug, Clone)]
+pub struct AtlasExtraPage {
+    pub page_index: u16,
+    pub image: DynamicImage,
+}
+
 /// Resultado del análisis, deduplicación y reempaquetado de un atlas Sparrow.
 #[derive(Debug, Clone)]
 pub struct AtlasRepackResult {
-    /// Nueva hoja RGBA compacta lista para guardar en `.webp` sin pérdida.
+    /// Hoja principal (página 0) RGBA compacta lista para guardar en `.webp` sin pérdida.
     pub image: DynamicImage,
-    /// Atlas con coordenadas actualizadas al nuevo lienzo (conservando tiempos y `bindings`).
+    /// Páginas adicionales (`_p1.webp`, `_p2.webp`, ...) cuando el atlas se divide en múltiples hojas.
+    pub extra_pages: Vec<AtlasExtraPage>,
+    /// Cantidad total de páginas generadas (`1 + extra_pages.len()`).
+    pub page_count: usize,
+    /// Atlas con coordenadas y `page_index` actualizados al nuevo lienzo (conservando tiempos y `bindings`).
     pub atlas: SparrowAtlas,
     /// Cantidad de frames muertos o 100 % transparentes neutralizados en `(0,0)` `1x1`.
     pub dead_frames_removed: usize,
@@ -46,7 +58,7 @@ pub struct AtlasRepackResult {
     pub trimmed_frames: usize,
     /// Cantidad de animaciones no usadas podadas del atlas.
     pub pruned_unused_anims: usize,
-    /// Indica si hubo optimización real (frames removidos, fusionados, recortados, podados o reescalados).
+    /// Indica si hubo optimización real (frames removidos, fusionados, recortados, podados, divididos o reescalados).
     pub modified: bool,
     /// Factor de escala aplicado a los frames únicos (`1.0` = nitidez 1:1 nativa).
     pub frame_scale_applied: f32,
@@ -188,8 +200,200 @@ fn find_opaque_bounds(img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
     }
 }
 
+/// Empaqueta un subconjunto `indices` de `unique_sprites` a `scale` dentro de `<= cap x cap`
+/// eligiendo el lienzo cuadrado más compacto que logre acomodar todos los rectángulos.
+fn pack_subset_with_crunch(
+    unique_sprites: &[UniqueSprite],
+    indices: &[usize],
+    scale: f32,
+    cap: usize,
+) -> Option<(u32, u32, Vec<(u32, u32, u32, u32)>)> {
+    if indices.is_empty() {
+        return Some((4, 4, Vec::new()));
+    }
+    let pad_both = (FRAME_EDGE_PAD * 2) as usize;
+    let mut scaled_dims: Vec<(usize, usize)> = Vec::with_capacity(indices.len());
+    let mut total_area: usize = 0;
+    let mut max_w: usize = 1;
+    let mut max_h: usize = 1;
+
+    for &idx in indices {
+        let sp = &unique_sprites[idx];
+        let sw = ((sp.w as f32) * scale).round().max(1.0) as usize;
+        let sh = ((sp.h as f32) * scale).round().max(1.0) as usize;
+        let pw = sw + pad_both;
+        let ph = sh + pad_both;
+        if pw > cap || ph > cap {
+            return None;
+        }
+        total_area = total_area.saturating_add(pw.saturating_mul(ph));
+        max_w = max_w.max(pw);
+        max_h = max_h.max(ph);
+        scaled_dims.push((sw, sh));
+    }
+
+    let sqrt_area = ((total_area as f64) * 1.12).sqrt().ceil() as usize;
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    for mult in [100_usize, 112, 126, 145, 175] {
+        let side = ((sqrt_area * mult) / 100)
+            .max(max_w)
+            .max(max_h)
+            .div_ceil(64)
+            * 64;
+        let clamped = side.min(cap);
+        if !candidates.contains(&(clamped, clamped)) {
+            candidates.push((clamped, clamped));
+        }
+    }
+    if !candidates.contains(&(cap, cap)) {
+        candidates.push((cap, cap));
+    }
+
+    for (bin_w, bin_h) in candidates {
+        let items: Vec<Item<usize>> = scaled_dims
+            .iter()
+            .enumerate()
+            .map(|(local_idx, &(sw, sh))| {
+                Item::new(local_idx, sw + pad_both, sh + pad_both, Rotation::None)
+            })
+            .collect();
+
+        if let Ok(packed) = crunch::pack(
+            CrunchRect {
+                x: 0,
+                y: 0,
+                w: bin_w,
+                h: bin_h,
+            },
+            items,
+        ) {
+            let mut placements = vec![(0_u32, 0_u32, 1_u32, 1_u32); indices.len()];
+            let mut used_w = 4_u32;
+            let mut used_h = 4_u32;
+
+            for p in packed {
+                let (sw, sh) = scaled_dims[p.data];
+                let px = (p.rect.x as u32) + FRAME_EDGE_PAD;
+                let py = (p.rect.y as u32) + FRAME_EDGE_PAD;
+                placements[p.data] = (px, py, sw as u32, sh as u32);
+                used_w = used_w.max(px + (sw as u32) + FRAME_EDGE_PAD);
+                used_h = used_h.max(py + (sh as u32) + FRAME_EDGE_PAD);
+            }
+
+            return Some((
+                used_w.min(cap as u32),
+                used_h.min(cap as u32),
+                placements,
+            ));
+        }
+    }
+
+    None
+}
+
+/// Comprueba rápido si el rango `[start..end)` cabe en una sola hoja `cap x cap`.
+fn range_fits_in_cap(
+    unique_sprites: &[UniqueSprite],
+    start: usize,
+    end: usize,
+    scale: f32,
+    cap: usize,
+) -> bool {
+    if start >= end {
+        return true;
+    }
+    let pad_both = (FRAME_EDGE_PAD * 2) as usize;
+    let mut area_sum = 0_usize;
+    let mut items = Vec::with_capacity(end - start);
+    for (local_idx, sp) in unique_sprites[start..end].iter().enumerate() {
+        let sw = ((sp.w as f32) * scale).round().max(1.0) as usize;
+        let sh = ((sp.h as f32) * scale).round().max(1.0) as usize;
+        let pw = sw + pad_both;
+        let ph = sh + pad_both;
+        if pw > cap || ph > cap {
+            return false;
+        }
+        area_sum = area_sum.saturating_add(pw.saturating_mul(ph));
+        if area_sum > cap.saturating_mul(cap) {
+            return false;
+        }
+        items.push(Item::new(local_idx, pw, ph, Rotation::None));
+    }
+    crunch::pack(
+        CrunchRect {
+            x: 0,
+            y: 0,
+            w: cap,
+            h: cap,
+        },
+        items,
+    )
+    .is_ok()
+}
+
+/// Divide un mega-atlas Sparrow en `2..=max_pages` hojas ordenadas por secuencia de animación
+/// manteniendo la escala óptima en pantalla (`scale`) sin sacrificar nitidez.
+fn pack_multi_page_with_crunch(
+    unique_sprites: &[UniqueSprite],
+    scale: f32,
+    tier_cap: u32,
+    max_pages: usize,
+) -> Option<(Vec<(u32, u32)>, Vec<(u16, u32, u32, u32, u32)>)> {
+    if unique_sprites.is_empty() {
+        return Some((vec![(4, 4)], Vec::new()));
+    }
+    let cap = tier_cap.max(64) as usize;
+    let total = unique_sprites.len();
+    let mut page_dims: Vec<(u32, u32)> = Vec::new();
+    let mut placements = vec![(0_u16, 0_u32, 0_u32, 1_u32, 1_u32); total];
+    let mut cursor = 0_usize;
+
+    for page_idx in 0..max_pages {
+        if cursor >= total {
+            break;
+        }
+        if !range_fits_in_cap(unique_sprites, cursor, cursor + 1, scale, cap) {
+            return None;
+        }
+
+        let best_end = if range_fits_in_cap(unique_sprites, cursor, total, scale, cap) {
+            total
+        } else {
+            let mut lo = cursor + 1;
+            let mut hi = total - 1;
+            let mut best = cursor + 1;
+            while lo <= hi {
+                let mid = lo + (hi - lo) / 2;
+                if range_fits_in_cap(unique_sprites, cursor, mid, scale, cap) {
+                    best = mid;
+                    lo = mid + 1;
+                } else if mid == 0 {
+                    break;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            best
+        };
+
+        let indices: Vec<usize> = (cursor..best_end).collect();
+        let (pw, ph, local_places) = pack_subset_with_crunch(unique_sprites, &indices, scale, cap)?;
+        page_dims.push((pw, ph));
+        for (offset, (px, py, sw, sh)) in local_places.into_iter().enumerate() {
+            placements[cursor + offset] = (page_idx as u16, px, py, sw, sh);
+        }
+        cursor = best_end;
+    }
+
+    if cursor < total || page_dims.len() <= 1 {
+        return None;
+    }
+
+    Some((page_dims, placements))
+}
+
 /// Empaqueta rectángulos únicos con `crunch` dentro de `<= tier_cap x tier_cap`, reduciendo
-/// `frame_scale` solo cuando sea necesario para que quepan sin perder nitidez innecesaria.
+/// `frame_scale` solo cuando sea necesario para que quepan en una sola hoja.
 fn pack_with_crunch(
     unique_sprites: &[UniqueSprite],
     initial_scale: f32,
@@ -200,85 +404,13 @@ fn pack_with_crunch(
     }
 
     let cap = tier_cap.max(64) as usize;
-    let pad_both = (FRAME_EDGE_PAD * 2) as usize;
+    let indices: Vec<usize> = (0..unique_sprites.len()).collect();
     let mut scale = initial_scale.clamp(0.25, 1.0);
 
     for _attempt in 0..7 {
-        let mut scaled_dims: Vec<(usize, usize)> = Vec::with_capacity(unique_sprites.len());
-        let mut total_area: usize = 0;
-        let mut max_w: usize = 1;
-        let mut max_h: usize = 1;
-        let mut fits_single = true;
-
-        for sp in unique_sprites {
-            let sw = ((sp.w as f32) * scale).round().max(1.0) as usize;
-            let sh = ((sp.h as f32) * scale).round().max(1.0) as usize;
-            let pw = sw + pad_both;
-            let ph = sh + pad_both;
-            if pw > cap || ph > cap {
-                fits_single = false;
-                break;
-            }
-            total_area = total_area.saturating_add(pw.saturating_mul(ph));
-            max_w = max_w.max(pw);
-            max_h = max_h.max(ph);
-            scaled_dims.push((sw, sh));
+        if let Some((w, h, places)) = pack_subset_with_crunch(unique_sprites, &indices, scale, cap) {
+            return Some((w.min(tier_cap), h.min(tier_cap), scale, places));
         }
-
-        if fits_single {
-            let sqrt_area = ((total_area as f64) * 1.12).sqrt().ceil() as usize;
-            let mut candidates: Vec<(usize, usize)> = Vec::new();
-            for mult in [100_usize, 112, 126, 145, 175] {
-                let side = ((sqrt_area * mult) / 100)
-                    .max(max_w)
-                    .max(max_h)
-                    .div_ceil(64)
-                    * 64;
-                let clamped = side.min(cap);
-                if !candidates.contains(&(clamped, clamped)) {
-                    candidates.push((clamped, clamped));
-                }
-            }
-            if !candidates.contains(&(cap, cap)) {
-                candidates.push((cap, cap));
-            }
-
-            for (bin_w, bin_h) in candidates {
-                let items: Vec<Item<usize>> = scaled_dims
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, &(sw, sh))| {
-                        Item::new(idx, sw + pad_both, sh + pad_both, Rotation::None)
-                    })
-                    .collect();
-
-                if let Ok(packed) = crunch::pack(
-                    CrunchRect {
-                        x: 0,
-                        y: 0,
-                        w: bin_w,
-                        h: bin_h,
-                    },
-                    items,
-                ) {
-                    let mut placements = vec![(0_u32, 0_u32, 1_u32, 1_u32); unique_sprites.len()];
-                    let mut used_w = 4_u32;
-                    let mut used_h = 4_u32;
-
-                    for p in packed {
-                        let (sw, sh) = scaled_dims[p.data];
-                        let px = (p.rect.x as u32) + FRAME_EDGE_PAD;
-                        let py = (p.rect.y as u32) + FRAME_EDGE_PAD;
-                        placements[p.data] = (px, py, sw as u32, sh as u32);
-                        used_w = used_w.max(px + (sw as u32) + FRAME_EDGE_PAD);
-                        used_h = used_h.max(py + (sh as u32) + FRAME_EDGE_PAD);
-                    }
-
-                    return Some((used_w.min(tier_cap), used_h.min(tier_cap), scale, placements));
-                }
-            }
-        }
-
         scale *= 0.84;
         if scale < 0.24 {
             break;
@@ -289,13 +421,16 @@ fn pack_with_crunch(
 }
 
 /// Ejecuta recorte de transparencia, neutralización de frames muertos, deduplicación exacta de
-/// frames repetidos, poda segura de animaciones sin uso y reempaquetado compacto con `crunch`.
-pub fn optimize_and_repack_sparrow_atlas(
+/// frames repetidos, poda segura de animaciones sin uso y reempaquetado compacto con `crunch`
+/// adaptado al tamaño real en pantalla + zoom máximo de cámara usando muestreo `Lanczos3`.
+pub fn optimize_and_repack_sparrow_atlas_for_viewport(
     entity: &StageEntity,
     atlas: &SparrowAtlas,
     src_img: &DynamicImage,
     tier_cap: u32,
     referenced_anim_prefixes: Option<&HashSet<String>>,
+    viewport_scale: f32,
+    max_camera_zoom: f32,
 ) -> Option<AtlasRepackResult> {
     if atlas.animations.is_empty() {
         return None;
@@ -430,24 +565,94 @@ pub fn optimize_and_repack_sparrow_atlas(
         anim_plan.push((prefix.clone(), anim.fps, anim.looped, frame_refs));
     }
 
-    // 3. Calcular escala inicial inteligente de frames únicos para conservar nitidez sin exceso 4K.
-    let display_max = (entity.width.max(entity.height) * entity.scale).max(128.0);
-    let ideal_frame_max = (display_max * 2.2).max(512.0);
+    // 3. Calcular mip-downscale inteligente de frames únicos según píxeles reales en pantalla + zoom máximo.
+    let safe_vp = if viewport_scale.is_finite() {
+        viewport_scale.clamp(0.45, 3.2)
+    } else {
+        1.0
+    };
+    let safe_zoom = if max_camera_zoom.is_finite() {
+        max_camera_zoom.clamp(0.55, 2.5)
+    } else {
+        1.0
+    };
+    let screen_factor = (safe_vp * safe_zoom).clamp(0.45, 3.2);
+    let display_max = (entity.width.max(entity.height) * entity.scale * screen_factor).max(128.0);
+    let ideal_frame_max = (display_max * 1.45).max(384.0);
     let initial_scale = if !matches!(entity.role, EntityRole::Background)
-        && (max_trimmed_frame_side as f32) > ideal_frame_max * 1.18
-        && orig_w.max(orig_h) > 1536
+        && (max_trimmed_frame_side as f32) > ideal_frame_max * 1.15
+        && max_trimmed_frame_side > 384
     {
-        (ideal_frame_max / (max_trimmed_frame_side as f32)).clamp(0.45, 1.0)
+        (ideal_frame_max / (max_trimmed_frame_side as f32)).clamp(0.35, 1.0)
     } else {
         1.0
     };
 
-    let (sheet_w, sheet_h, applied_scale, placements) =
-        pack_with_crunch(&unique_sprites, initial_scale, tier_cap)?;
+    let clamped_initial = initial_scale.clamp(0.25, 1.0);
+    let cap = tier_cap.max(64) as usize;
+    let all_indices: Vec<usize> = (0..unique_sprites.len()).collect();
+
+    // Si el atlas tiene >= 6 frames únicos y tope real de GPU (>= 1024 px), priorizamos dividirlo en
+    // múltiples páginas nítidas (Multi-Page Sparrow Splitting) antes que aplastar su resolución.
+    let (page_dims, applied_scale, placements): (
+        Vec<(u32, u32)>,
+        f32,
+        Vec<(u16, u32, u32, u32, u32)>,
+    ) = if let Some((w, h, single)) =
+        pack_subset_with_crunch(&unique_sprites, &all_indices, clamped_initial, cap)
+    {
+        (
+            vec![(w.min(tier_cap), h.min(tier_cap))],
+            clamped_initial,
+            single
+                .into_iter()
+                .map(|(px, py, sw, sh)| (0_u16, px, py, sw, sh))
+                .collect(),
+        )
+    } else if tier_cap >= 1024 && unique_sprites.len() >= 6 {
+        if let Some((pages, multi)) =
+            pack_multi_page_with_crunch(&unique_sprites, clamped_initial, tier_cap, 6)
+        {
+            (pages, clamped_initial, multi)
+        } else if let Some((pages, multi)) = pack_multi_page_with_crunch(
+            &unique_sprites,
+            (clamped_initial * 0.78).max(0.35),
+            tier_cap,
+            6,
+        ) {
+            (pages, (clamped_initial * 0.78).max(0.35), multi)
+        } else {
+            let (sheet_w, sheet_h, s, single) =
+                pack_with_crunch(&unique_sprites, clamped_initial, tier_cap)?;
+            (
+                vec![(sheet_w, sheet_h)],
+                s,
+                single
+                    .into_iter()
+                    .map(|(px, py, sw, sh)| (0_u16, px, py, sw, sh))
+                    .collect(),
+            )
+        }
+    } else {
+        let (sheet_w, sheet_h, s, single) =
+            pack_with_crunch(&unique_sprites, clamped_initial, tier_cap)?;
+        (
+            vec![(sheet_w, sheet_h)],
+            s,
+            single
+                .into_iter()
+                .map(|(px, py, sw, sh)| (0_u16, px, py, sw, sh))
+                .collect(),
+        )
+    };
 
     let orig_bytes = (orig_w as usize) * (orig_h as usize) * 4;
-    let new_bytes = (sheet_w as usize) * (sheet_h as usize) * 4;
+    let new_bytes: usize = page_dims
+        .iter()
+        .map(|&(pw, ph)| (pw.max(4) as usize) * (ph.max(4) as usize) * 4)
+        .sum();
     let area_shrunk_significantly = (new_bytes as f64) <= (orig_bytes as f64) * 0.90;
+    let is_multi_page = page_dims.len() > 1;
 
     let modified = dead_frames_removed > 0
         || duplicate_frames_merged > 0
@@ -455,22 +660,29 @@ pub fn optimize_and_repack_sparrow_atlas(
         || pruned_unused_anims > 0
         || had_rotated_frames
         || applied_scale < 0.999
+        || is_multi_page
         || area_shrunk_significantly;
 
-    // 4. Construir la imagen compacta RGBA8 (fondo transparente [0,0,0,0], garantizando (0,0) vacío).
-    let mut out_sheet = RgbaImage::new(sheet_w.max(4), sheet_h.max(4));
+    // 4. Construir una o más hojas RGBA8 (fondo transparente [0,0,0,0], garantizando (0,0) vacío)
+    // aplicando Lanczos3 en cada frame que requiera mip-downscale para preservar líneas limpias.
+    let mut page_sheets: Vec<RgbaImage> = page_dims
+        .iter()
+        .map(|&(pw, ph)| RgbaImage::new(pw.max(4), ph.max(4)))
+        .collect();
     for (idx, sp) in unique_sprites.iter().enumerate() {
-        let (dx, dy, dw, dh) = placements[idx];
+        let (page_idx, dx, dy, dw, dh) = placements[idx];
         let src_tile = RgbaImage::from_raw(sp.w, sp.h, sp.rgba.clone())?;
         let final_tile = if dw != sp.w || dh != sp.h {
-            image::imageops::resize(&src_tile, dw, dh, FilterType::CatmullRom)
+            image::imageops::resize(&src_tile, dw, dh, FilterType::Lanczos3)
         } else {
             src_tile
         };
-        image::imageops::replace(&mut out_sheet, &final_tile, dx as i64, dy as i64);
+        if let Some(sheet) = page_sheets.get_mut(page_idx as usize) {
+            image::imageops::replace(sheet, &final_tile, dx as i64, dy as i64);
+        }
     }
 
-    // 5. Reconstruir `SparrowAtlas` con las nuevas coordenadas y escala exacta.
+    // 5. Reconstruir `SparrowAtlas` con las nuevas coordenadas, `page_index` y escala exacta.
     let mut new_animations = BTreeMap::new();
     for (prefix, fps, looped, frame_refs) in anim_plan {
         let mut out_frames = Vec::with_capacity(frame_refs.len());
@@ -494,6 +706,7 @@ pub fn optimize_and_repack_sparrow_atlas(
                         frame_width: sw,
                         frame_height: sh,
                         rotated: false,
+                        page_index: 0,
                     });
                 }
                 FrameSourceRef::Unique {
@@ -504,7 +717,7 @@ pub fn optimize_and_repack_sparrow_atlas(
                     frame_width,
                     frame_height,
                 } => {
-                    let (px, py, pw, ph) = placements[unique_idx];
+                    let (page_idx, px, py, pw, ph) = placements[unique_idx];
                     let sfx = ((frame_x as f32) * applied_scale).round() as i32;
                     let sfy = ((frame_y as f32) * applied_scale).round() as i32;
                     let sfw = ((frame_width as f32) * applied_scale)
@@ -524,6 +737,7 @@ pub fn optimize_and_repack_sparrow_atlas(
                         frame_width: sfw,
                         frame_height: sfh,
                         rotated: false,
+                        page_index: page_idx,
                     });
                 }
             }
@@ -547,9 +761,21 @@ pub fn optimize_and_repack_sparrow_atlas(
         .collect();
 
     let vram_saved_bytes = orig_bytes.saturating_sub(new_bytes);
+    let page_count = page_sheets.len();
+    let mut sheet_iter = page_sheets.into_iter();
+    let primary_sheet = sheet_iter.next().unwrap_or_else(|| RgbaImage::new(4, 4));
+    let extra_pages: Vec<AtlasExtraPage> = sheet_iter
+        .enumerate()
+        .map(|(offset, img)| AtlasExtraPage {
+            page_index: (offset + 1) as u16,
+            image: DynamicImage::ImageRgba8(img),
+        })
+        .collect();
 
     Some(AtlasRepackResult {
-        image: DynamicImage::ImageRgba8(out_sheet),
+        image: DynamicImage::ImageRgba8(primary_sheet),
+        extra_pages,
+        page_count,
         atlas: SparrowAtlas {
             image_path_hint: atlas.image_path_hint.clone(),
             animations: new_animations,
@@ -563,6 +789,25 @@ pub fn optimize_and_repack_sparrow_atlas(
         frame_scale_applied: applied_scale,
         vram_saved_bytes,
     })
+}
+
+/// Wrapper compatible para reempaquetar atlas Sparrow usando escala de pantalla `1.0` y zoom `1.0`.
+pub fn optimize_and_repack_sparrow_atlas(
+    entity: &StageEntity,
+    atlas: &SparrowAtlas,
+    src_img: &DynamicImage,
+    tier_cap: u32,
+    referenced_anim_prefixes: Option<&HashSet<String>>,
+) -> Option<AtlasRepackResult> {
+    optimize_and_repack_sparrow_atlas_for_viewport(
+        entity,
+        atlas,
+        src_img,
+        tier_cap,
+        referenced_anim_prefixes,
+        1.0,
+        1.0,
+    )
 }
 
 #[cfg(test)]
@@ -718,5 +963,106 @@ mod tests {
         assert!(res.image.height() <= 400);
         assert!(res.frame_scale_applied < 1.0);
         assert_eq!(res.atlas.animations["boss idle"].frames.len(), 4);
+    }
+
+    #[test]
+    fn repack_downscales_oversized_frame_with_lanczos3_according_to_viewport_and_zoom() {
+        let mut sheet = RgbaImage::new(1024, 1024);
+        paint_solid(&mut sheet, 10, 10, 900, 900, Rgba([60, 180, 255, 255]));
+        let xml = r#"
+        <TextureAtlas imagePath="big_char.png">
+            <SubTexture name="big idle0000" x="0" y="0" width="960" height="960" />
+        </TextureAtlas>
+        "#;
+        let atlas = SparrowAtlas::from_xml_str(xml).unwrap();
+        let mut ent = StageEntity::new("big", "Big", EntityRole::Player);
+        ent.width = 240.0;
+        ent.height = 300.0;
+        ent.scale = 1.0;
+
+        // Pantalla 854x480 (viewport_scale ~0.67) y zoom 1.0 debe reducir más que pantalla 1920x1080 + zoom 1.6
+        let compact = optimize_and_repack_sparrow_atlas_for_viewport(
+            &ent,
+            &atlas,
+            &DynamicImage::ImageRgba8(sheet.clone()),
+            4096,
+            None,
+            0.667,
+            1.0,
+        )
+        .unwrap();
+        let zoomed_fhd = optimize_and_repack_sparrow_atlas_for_viewport(
+            &ent,
+            &atlas,
+            &DynamicImage::ImageRgba8(sheet),
+            4096,
+            None,
+            1.5,
+            1.6,
+        )
+        .unwrap();
+
+        assert!(compact.frame_scale_applied < zoomed_fhd.frame_scale_applied);
+        assert!(compact.image.width() < zoomed_fhd.image.width());
+    }
+
+    #[test]
+    fn multi_page_sparrow_splitting_preserves_crispness_across_pages_inside_tier_cap() {
+        // Hoja 2048x1600 con 10 frames únicos de 400x400 px cada uno:
+        // en tier_cap = 1024 una sola hoja solo admite 4 frames sin aplastarlos;
+        // Multi-Page Splitting debe dividirlos automáticamente en >= 3 páginas a escala 1.0.
+        let mut sheet = RgbaImage::new(2048, 1600);
+        let mut sub_tags = String::new();
+        for idx in 0..10_u32 {
+            let col = idx % 5;
+            let row = idx / 5;
+            let sx = col * 405;
+            let sy = row * 405;
+            paint_solid(
+                &mut sheet,
+                sx,
+                sy,
+                390,
+                390,
+                Rgba([30 + (idx as u8) * 20, 200 - (idx as u8) * 12, 90 + (idx as u8) * 14, 255]),
+            );
+            sub_tags.push_str(&format!(
+                r#"<SubTexture name="boss idle{:04}" x="{}" y="{}" width="390" height="390" />"#,
+                idx, sx, sy
+            ));
+        }
+
+        let xml = format!(r#"<TextureAtlas imagePath="mega.png">{}</TextureAtlas>"#, sub_tags);
+        let atlas = SparrowAtlas::from_xml_str(&xml).unwrap();
+        let mut ent = StageEntity::new("mega_boss", "Mega Boss", EntityRole::Opponent);
+        ent.width = 480.0;
+        ent.height = 480.0;
+        ent.scale = 1.0;
+
+        let res = optimize_and_repack_sparrow_atlas_for_viewport(
+            &ent,
+            &atlas,
+            &DynamicImage::ImageRgba8(sheet),
+            1024,
+            None,
+            1.5,
+            1.2,
+        )
+        .unwrap();
+
+        assert!(res.page_count >= 3);
+        assert_eq!(res.extra_pages.len(), res.page_count - 1);
+        assert!((res.frame_scale_applied - 1.0).abs() < 0.001);
+        assert!(res.image.width() <= 1024 && res.image.height() <= 1024);
+        for extra in &res.extra_pages {
+            assert!(extra.image.width() <= 1024 && extra.image.height() <= 1024);
+        }
+        let max_page = res.atlas.animations["boss idle"]
+            .frames
+            .iter()
+            .map(|f| f.page_index)
+            .max()
+            .unwrap_or(0);
+        assert_eq!(max_page as usize, res.page_count - 1);
     }
 }

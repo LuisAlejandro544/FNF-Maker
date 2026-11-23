@@ -769,6 +769,53 @@ impl EngineSession {
                 session.next_preload_event_idx += 1;
             }
 
+            // Plan temporal precomputado por el compilador en caliente: precarga temprana y retiro seguro
+            let timeline_clock_ms = song_pos_ms.max(0.0);
+            while session.next_timeline_preload_idx < session.timeline_preload_queue.len() {
+                let preload_at_ms = session.timeline_preload_queue[session.next_timeline_preload_idx].0;
+                if preload_at_ms > timeline_clock_ms {
+                    break;
+                }
+                let id = session.timeline_preload_queue[session.next_timeline_preload_idx]
+                    .1
+                    .clone();
+                session.retired_entities.remove(&id);
+                session.preload_requested_entities.insert(id);
+                session.next_timeline_preload_idx += 1;
+            }
+            while session.next_timeline_retire_idx < session.timeline_retire_queue.len() {
+                let retire_after_ms =
+                    session.timeline_retire_queue[session.next_timeline_retire_idx].0;
+                if retire_after_ms > song_pos_ms {
+                    break;
+                }
+                let id = session.timeline_retire_queue[session.next_timeline_retire_idx]
+                    .1
+                    .clone();
+                if !session.reused_later_entities.contains(&id) {
+                    let is_still_hidden = session
+                        .bundle
+                        .active_entities
+                        .iter()
+                        .find(|e| e.id == id)
+                        .map(|e| !e.visible || e.opacity <= 0.005)
+                        .unwrap_or(true);
+                    if is_still_hidden {
+                        if let Some(ent) = session
+                            .bundle
+                            .active_entities
+                            .iter_mut()
+                            .find(|e| e.id == id)
+                        {
+                            ent.visible = false;
+                        }
+                        session.preload_requested_entities.remove(&id);
+                        session.retired_entities.insert(id);
+                    }
+                }
+                session.next_timeline_retire_idx += 1;
+            }
+
             if !in_countdown {
                 if sec_idx as isize != session.last_section_idx {
                     session.last_section_idx = sec_idx as isize;

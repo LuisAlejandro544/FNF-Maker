@@ -1,7 +1,8 @@
 //! Archivo: engine/crates/pulse_android/src/session/gameplay_ops/hot_compile_ops.rs
-//! Propósito: Compilación en caliente incremental (`rayon`) de sprites WebP sin pérdida,
-//! precompilación en caché de scripts (Lua `.luac`, TypeScript/JS `.js`) y fusión de pistas
-//! de audio a `compiled_mix.wav` para reproducción por streaming de baja memoria.
+//! Propósito: Compilación en caliente incremental (`rayon`) de sprites WebP sin pérdida o con
+//! cuantización perceptual (`exoquant` / `RGB_565` con dithering), pre-escalado inteligente (`Lanczos3`)
+//! al viewport real del teléfono y zoom máximo de cámara, paginación automática de mega-atlas,
+//! planificación temporal de ciclo de vida, precompilación en caché de scripts y fusión WAV.
 
 use crate::session::EngineSession;
 use crate::session::persistence_ops::sanitize_project_id;
@@ -11,7 +12,7 @@ use pulse_core::disk_cache::{
 };
 use pulse_core::hot_compile::{
     AudioMergeFingerprint, CachedAudioEntry, DeviceResourceTier, HotCompileManifest,
-    hot_compile_project_to_dir_with_manifest,
+    ScreenViewportMetrics, hot_compile_project_to_dir_with_manifest_viewport,
 };
 use pulse_scripting::precompile_scripts_with_cache;
 use std::collections::HashMap;
@@ -20,7 +21,22 @@ use std::sync::atomic::Ordering;
 impl EngineSession {
     /// Ejecuta compilación en caliente usando el perfil de dispositivo indicado sin callback de progreso.
     pub fn hot_compile(&mut self, tier_code: i32) -> String {
-        self.hot_compile_with_progress(tier_code, |_pct, _phase, _detail| {})
+        self.hot_compile_with_viewport(tier_code, 1280, 720)
+    }
+
+    /// Ejecuta compilación en caliente adaptada a las dimensiones reales en píxeles de pantalla.
+    pub fn hot_compile_with_viewport(
+        &mut self,
+        tier_code: i32,
+        viewport_w: i32,
+        viewport_h: i32,
+    ) -> String {
+        self.hot_compile_with_progress_and_viewport(
+            tier_code,
+            viewport_w,
+            viewport_h,
+            |_pct, _phase, _detail| {},
+        )
     }
 
     /// Ejecuta compilación en caliente con caché incremental por huella (`manifest.json`),
@@ -29,11 +45,31 @@ impl EngineSession {
     where
         F: Fn(f32, &str, &str) + Send + Sync,
     {
+        self.hot_compile_with_progress_and_viewport(tier_code, 1280, 720, on_progress)
+    }
+
+    /// Ejecuta compilación en caliente tomando en cuenta el tamaño real del viewport horizontal
+    /// del teléfono y el zoom máximo detectado en cámaras y eventos del chart (mip-downscale `Lanczos3`).
+    pub fn hot_compile_with_progress_and_viewport<F>(
+        &mut self,
+        tier_code: i32,
+        viewport_w: i32,
+        viewport_h: i32,
+        on_progress: F,
+    ) -> String
+    where
+        F: Fn(f32, &str, &str) + Send + Sync,
+    {
         let tier = match tier_code {
             0 => DeviceResourceTier::LowRam32Bit,
             2 => DeviceResourceTier::HighQuality,
             _ => DeviceResourceTier::Balanced,
         };
+        let viewport = ScreenViewportMetrics {
+            pixel_width: viewport_w.max(320) as u32,
+            pixel_height: viewport_h.max(240) as u32,
+        }
+        .normalized();
 
         let cache_root = self.compiled_cache_root_dir();
         cleanup_legacy_flat_compiled_cache(&cache_root);
@@ -43,26 +79,27 @@ impl EngineSession {
 
         on_progress(
             0.04,
-            "Leyendo caché incremental...",
-            "Verificando huellas de sprites, audio y scripts",
+            "Revisando proyecto...",
+            "Comprobando imágenes, escenario y scripts guardados",
         );
 
         let mut manifest = HotCompileManifest::load_or_default(&out_dir, &self.project.id);
 
-        let mut bundle = hot_compile_project_to_dir_with_manifest(
+        let mut bundle = hot_compile_project_to_dir_with_manifest_viewport(
             &self.project,
             tier,
+            viewport,
             Some(&out_dir),
             &mut manifest,
             |pct, detail| {
-                on_progress(pct, "Deduplicando y optimizando sprites WebP", detail);
+                on_progress(pct, "Optimizando personajes y fondos", detail);
             },
         );
 
         on_progress(
             0.75,
-            "Precompilando scripts Lua / TypeScript / JS",
-            "Generando bytecode Lua 5.4 y JS transpilado con oxc",
+            "Preparando scripts y eventos",
+            "Activando animaciones y efectos personalizados",
         );
         let scripts_cache_dir = out_dir.join("scripts");
         let script_precompile = precompile_scripts_with_cache(
@@ -81,6 +118,22 @@ impl EngineSession {
                 path.to_string_lossy().into_owned(),
             );
         }
+        let mut texture_pages: HashMap<String, Vec<String>> =
+            HashMap::with_capacity(bundle.compiled_texture_pages.len());
+        for (entity_id, pages) in &bundle.compiled_texture_pages {
+            texture_pages.insert(
+                entity_id.clone(),
+                pages
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            );
+        }
+        let mut pixel_formats: HashMap<String, String> =
+            HashMap::with_capacity(bundle.texture_pixel_formats.len());
+        for (entity_id, fmt) in &bundle.texture_pixel_formats {
+            pixel_formats.insert(entity_id.clone(), fmt.as_key().to_string());
+        }
 
         let target_sr = self
             .audio_engine
@@ -95,8 +148,8 @@ impl EngineSession {
             if &cached_audio.fingerprint == fp && compiled_wav.exists() {
                 on_progress(
                     0.85,
-                    "Reutilizando mezcla de audio en caché",
-                    "Streaming WAV listo sin recodificar",
+                    "Mezcla de música lista",
+                    "Audio preparado al instante sin volver a convertir",
                 );
                 bundle.report.merged_audio_tracks = cached_audio.merged_tracks;
                 bundle.report.compiled_audio_path = Some(compiled_wav.clone());
@@ -115,8 +168,8 @@ impl EngineSession {
             if let Some(fp) = audio_fp_opt {
                 on_progress(
                     0.82,
-                    "Fusionando pistas de audio...",
-                    "Creando mezcla streaming WAV de baja memoria",
+                    "Preparando pistas musicales...",
+                    "Uniendo música y voces para sonar sin cortes",
                 );
                 if self.project.active_audio_count() > 0
                     && self.decoded_tracks.iter().all(|t| t.is_none())
@@ -172,12 +225,15 @@ impl EngineSession {
 
         on_progress(
             0.90,
-            "Manifiesto incremental guardado",
-            "Preparando texturas WebP y entorno de juego",
+            "Escenario guardado y listo",
+            "Cargando todo para empezar la partida",
         );
 
         self.compiled_texture_paths = texture_paths;
+        self.compiled_texture_pages = texture_pages;
+        self.texture_pixel_formats = pixel_formats;
         self.last_compile_report = Some(bundle.report.clone());
+        self.last_timeline_windows = bundle.timeline_windows.clone();
         self.compiled_bundle = Some(bundle);
         self.ok_response("Compilación en caliente inteligente completada")
     }

@@ -1,7 +1,7 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/gameplay/GameplayRenderPrimitives.kt
-// Propósito: Estructuras ligeras sin GC por frame (`GameplayTouchMaskState`, `RatingPopupHolder`,
-// `SplashPoolHolder`), geometría compartida de carriles móviles y primitivas `DrawScope`
-// reutilizadas por el renderizador de mundo, notas y capa multi-touch de `GameplayScreen`.
+// Propósito: Estructuras ligeras sin GC por frame (`GameplayTouchMaskState`, `RatingPopupPoolHolder`,
+// `SplashPoolHolder`), resolvedor dinámico del jugador activo para que los popups de juicio
+// sigan al jugador en cada frame, geometría de carriles y primitivas `DrawScope`.
 
 package com.beatforge.studio.ui.screens.gameplay
 
@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.MutableDynamicDrawable
 import kotlin.math.roundToInt
 
@@ -29,13 +30,111 @@ internal class GameplayTouchMaskState {
     var pendingJustPressedMask: Int = 0
 }
 
-internal class RatingPopupHolder {
-    var lastEventId: Int = 0
+internal class RatingPopupSlot {
     var active: Boolean = false
     var ratingCode: Int = 0
     var startNano: Long = 0L
-    var worldX: Float = 860f
-    var worldY: Float = 360f
+    var jitterX: Float = 0f
+    var jitterY: Float = 0f
+}
+
+internal class LivePlayerAnchor {
+    var x: Float = 880f
+    var y: Float = 430f
+    var width: Float = 240f
+    var height: Float = 300f
+    var sideSign: Float = -1f // -1f = izquierda del jugador (hacia centro), +1f = derecha
+}
+
+internal class RatingPopupPoolHolder {
+    var lastEventId: Int = 0
+    var cursor: Int = 0
+    val slots = Array(6) { RatingPopupSlot() }
+    val livePlayerAnchor = LivePlayerAnchor()
+
+    fun clear() {
+        for (i in slots.indices) {
+            slots[i].active = false
+        }
+    }
+}
+
+/**
+ * Resuelve cada frame la posición, tamaño y orientación del jugador actualmente activo
+ * para que los popups `SICK!`/`GOOD!`/`BAD`/`MISS` sigan al jugador aunque camine,
+ * cambie de pose (`anim_offsets`), haga tweens o cambie de personaje (`Change Character`).
+ */
+internal fun resolveLivePlayerAnchor(
+    frameState: GameplayFrameState,
+    out: LivePlayerAnchor
+) {
+    val entCount = frameState.entityCount
+    val activePlayerIdx = frameState.activePlayerIdx
+    var playerEntIdx = -1
+
+    if (activePlayerIdx in 0 until entCount && !frameState.entitiesPool[activePlayerIdx].retired) {
+        playerEntIdx = activePlayerIdx
+    } else {
+        for (i in 0 until entCount) {
+            val ent = frameState.entitiesPool[i]
+            if (ent.roleCode == 2 && ent.visible && !ent.retired) {
+                playerEntIdx = i
+                break
+            }
+        }
+        if (playerEntIdx < 0) {
+            for (i in 0 until entCount) {
+                val ent = frameState.entitiesPool[i]
+                if (ent.roleCode == 2 && !ent.retired) {
+                    playerEntIdx = i
+                    break
+                }
+            }
+        }
+    }
+
+    if (playerEntIdx >= 0) {
+        val ent = frameState.entitiesPool[playerEntIdx]
+        out.x = ent.x
+        out.y = ent.y
+        out.width = (ent.width * ent.scale).coerceAtLeast(80f)
+        out.height = (ent.height * ent.scale).coerceAtLeast(100f)
+    } else {
+        out.x = 880f
+        out.y = 430f
+        out.width = 240f
+        out.height = 300f
+    }
+
+    val activeOppIdx = frameState.activeOpponentIdx
+    var oppEntIdx = -1
+    if (activeOppIdx in 0 until entCount && !frameState.entitiesPool[activeOppIdx].retired) {
+        oppEntIdx = activeOppIdx
+    } else {
+        for (i in 0 until entCount) {
+            val ent = frameState.entitiesPool[i]
+            if (ent.roleCode == 1 && ent.visible && !ent.retired) {
+                oppEntIdx = i
+                break
+            }
+        }
+        if (oppEntIdx < 0) {
+            for (i in 0 until entCount) {
+                val ent = frameState.entitiesPool[i]
+                if (ent.roleCode == 1 && !ent.retired) {
+                    oppEntIdx = i
+                    break
+                }
+            }
+        }
+    }
+
+    out.sideSign = if (oppEntIdx >= 0) {
+        val oppX = frameState.entitiesPool[oppEntIdx].x
+        if (out.x < oppX - 40f) 1f else -1f
+    } else {
+        if (out.x < frameState.virtualWidth * 0.42f) 1f else -1f
+    }
 }
 
 internal class SplashSlot {

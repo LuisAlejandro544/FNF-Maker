@@ -284,6 +284,7 @@ impl EngineSession {
                 frame_width: f.frame_width,
                 frame_height: f.frame_height,
                 rotated: f.rotated,
+                page_index: f.page_index,
             });
             entities.push(GameplayEntityFrameJson {
                 id: ent.id.clone(),
@@ -667,6 +668,7 @@ impl EngineSession {
                 if f.rotated {
                     e_flags |= 1 << 3;
                 }
+                e_flags |= ((f.page_index as u32) & 0xFF) << 8;
             }
             if session.preload_requested_entities.contains(&ent.id) {
                 e_flags |= 1 << 6;

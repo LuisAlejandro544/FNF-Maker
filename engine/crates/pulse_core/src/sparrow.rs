@@ -34,6 +34,8 @@ pub struct SparrowFrame {
     pub frame_width: u32,
     pub frame_height: u32,
     pub rotated: bool,
+    #[serde(default)]
+    pub page_index: u16,
 }
 
 /// Roles de animación estándar que el ensamblador automático detecta para un personaje.
@@ -153,6 +155,7 @@ impl SparrowAtlas {
                 frame_width,
                 frame_height,
                 rotated,
+                page_index: 0,
             });
         }
 

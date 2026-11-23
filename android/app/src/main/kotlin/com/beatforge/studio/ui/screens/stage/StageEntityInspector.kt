@@ -217,7 +217,7 @@ fun StageEntityInspector(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             if (activeTab == 0) {
                 // Coordenadas y selector de paso
@@ -555,6 +555,7 @@ fun StageEntityInspector(
                     )
                 }
             }
+            Spacer(Modifier.height(6.dp))
         }
     }
 }

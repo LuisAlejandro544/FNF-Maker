@@ -534,6 +534,7 @@ pub fn bake_animate_atlas(
             frame_width: logical_canvas_w.max(fw),
             frame_height: logical_canvas_h.max(fh),
             rotated: false,
+            page_index: 0,
         });
     }
 

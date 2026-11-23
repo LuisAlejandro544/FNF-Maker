@@ -12,17 +12,21 @@ mod pipeline;
 mod tests;
 
 pub use analysis::{
-    analyze_reused_entity_ids, collect_script_referenced_ids, compute_smart_texture_scale,
-    is_permanently_invisible,
+    EntityLifecycleWindow, TIMELINE_PRELOAD_LEAD_MS, TIMELINE_RETIRE_GRACE_MS,
+    analyze_reused_entity_ids, collect_script_referenced_ids, compute_project_max_camera_zoom,
+    compute_smart_texture_scale, compute_smart_texture_scale_for_viewport,
+    compute_timeline_asset_lifecycle, is_permanently_invisible,
 };
 pub use fingerprints::{
     AssetFileFingerprint, AudioMergeFingerprint, AudioSlotFingerprint, DeviceResourceTier,
-    TextureFingerprint, fnv1a_64_bytes, fnv1a_64_str,
+    ScreenViewportMetrics, TextureFingerprint, fnv1a_64_bytes, fnv1a_64_str,
 };
 pub use manifest::{
     CachedAudioEntry, CachedScriptEntry, CachedTextureEntry, CompiledBundle, HotCompileManifest,
     HotCompileReport, MANIFEST_SCHEMA_VERSION, OptimizedTexture, SCRIPT_OPTIMIZER_CACHE_VERSION,
+    TexturePixelFormat,
 };
 pub use pipeline::{
     hot_compile_project, hot_compile_project_to_dir, hot_compile_project_to_dir_with_manifest,
+    hot_compile_project_to_dir_with_manifest_viewport, hot_compile_project_to_dir_with_viewport,
 };

@@ -705,6 +705,9 @@ pub(super) fn drain_and_apply_script_commands(
                         cloned.id = id.clone();
                         cloned.x = x;
                         cloned.y = y;
+                        if let Some(pages) = session.compiled_texture_pages.get(&source_id).cloned() {
+                            session.compiled_texture_pages.insert(id.clone(), pages);
+                        }
                         if let Some(path) = session.compiled_texture_paths.get(&source_id).cloned() {
                             session.compiled_texture_paths.insert(id, path);
                         }

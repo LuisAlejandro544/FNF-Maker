@@ -63,6 +63,7 @@ impl AnimateSpritemap {
                         rect.h.max(1)
                     },
                     rotated: rect.rotated,
+                    page_index: 0,
                 });
             }
         }
@@ -198,6 +199,7 @@ pub(super) fn parse_texture_packer_json(root: &Value) -> Result<SparrowAtlas, St
             frame_width: fw,
             frame_height: fh,
             rotated,
+            page_index: 0,
         });
     };
 

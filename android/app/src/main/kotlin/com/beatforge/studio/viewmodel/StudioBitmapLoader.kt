@@ -1,8 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/viewmodel/StudioBitmapLoader.kt
 // Propósito: Cargador y caché de bitmaps/assets gráficos en `Dispatchers.IO` para
 // `StudioViewModel`: detecta gama de hardware 32/64-bit, decodifica regiones 1:1 de Sparrow
-// con `BitmapRegionDecoder` + `LruCache` (20 MB), recorta tiras de íconos 2-frame y carga
-// texturas compiladas, flechas, receptores y ratings SVG rasterizados por `resvg`.
+// con `BitmapRegionDecoder` + `LruCache` (20 MB), recorta tiras de íconos 2-frame, soporta
+// `Bitmap.Config.RGB_565` para fondos opacos con dithering y carga mega-atlas multipágina.
 
 package com.beatforge.studio.viewmodel
 
@@ -260,7 +260,9 @@ internal class StudioBitmapLoader {
         entities: List<StageEntitySnapshot>,
         tier: DeviceTier,
         onlyInitiallyVisible: Boolean = true,
-        repackedEntityIds: Set<String> = emptySet()
+        repackedEntityIds: Set<String> = emptySet(),
+        compiledPages: Map<String, List<String>> = emptyMap(),
+        texturePixelFormats: Map<String, String> = emptyMap()
     ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
         val origPaths = entities.associate { it.id to it.imagePath }
@@ -268,11 +270,16 @@ internal class StudioBitmapLoader {
             if (onlyInitiallyVisible && (!ent.visible || ent.opacity <= 0.005f)) {
                 continue
             }
-            val cPath = compiledPaths[ent.id] ?: origPaths[ent.id] ?: continue
-            // Si el atlas fue reempaquetado en caliente, las coordenadas de sus frames ya pertenecen al WebP compilado.
-            val oPath = if (ent.id in repackedEntityIds) cPath else (origPaths[ent.id] ?: cPath)
-            val cap = compiledGameplayMaxSide(tier, ent)
-            decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = cap)?.let { loaded ->
+            decodeCompiledPagesForEntity(
+                entityId = ent.id,
+                ent = ent,
+                origPath = origPaths[ent.id],
+                compiledPaths = compiledPaths,
+                compiledPages = compiledPages,
+                texturePixelFormats = texturePixelFormats,
+                tier = tier,
+                repackedEntityIds = repackedEntityIds
+            )?.let { loaded ->
                 out[ent.id] = loaded
             }
         }
@@ -284,14 +291,63 @@ internal class StudioBitmapLoader {
         compiledPaths: Map<String, String>,
         entities: List<StageEntitySnapshot>,
         tier: DeviceTier,
-        repackedEntityIds: Set<String> = emptySet()
+        repackedEntityIds: Set<String> = emptySet(),
+        compiledPages: Map<String, List<String>> = emptyMap(),
+        texturePixelFormats: Map<String, String> = emptyMap()
     ): LoadedEntityBitmap? {
         val ent = entities.firstOrNull { it.id == entityId } ?: return null
-        val origPath = ent.imagePath
-        val cPath = compiledPaths[entityId] ?: origPath ?: return null
+        return decodeCompiledPagesForEntity(
+            entityId = entityId,
+            ent = ent,
+            origPath = ent.imagePath,
+            compiledPaths = compiledPaths,
+            compiledPages = compiledPages,
+            texturePixelFormats = texturePixelFormats,
+            tier = tier,
+            repackedEntityIds = repackedEntityIds
+        )
+    }
+
+    private fun decodeCompiledPagesForEntity(
+        entityId: String,
+        ent: StageEntitySnapshot,
+        origPath: String?,
+        compiledPaths: Map<String, String>,
+        compiledPages: Map<String, List<String>>,
+        texturePixelFormats: Map<String, String>,
+        tier: DeviceTier,
+        repackedEntityIds: Set<String>
+    ): LoadedEntityBitmap? {
+        val pages = compiledPages[entityId]?.takeIf { it.isNotEmpty() }
+        val cPath = pages?.firstOrNull() ?: compiledPaths[entityId] ?: origPath ?: return null
+        // Si el atlas fue reempaquetado en caliente, las coordenadas de sus frames ya pertenecen al WebP compilado.
         val oPath = if (entityId in repackedEntityIds) cPath else (origPath ?: cPath)
         val cap = compiledGameplayMaxSide(tier, ent)
-        return decodeEntityBitmapWithOrigDims(cPath, oPath, maxDecodeSide = cap)
+        val fmtKey = texturePixelFormats[entityId] ?: "argb8888"
+
+        val baseLoaded = decodeEntityBitmapWithOrigDims(
+            loadPath = cPath,
+            origPath = oPath,
+            maxDecodeSide = cap,
+            pixelFormatKey = fmtKey
+        ) ?: return null
+
+        if (pages == null || pages.size <= 1) {
+            return baseLoaded
+        }
+
+        val extras = ArrayList<LoadedEntityBitmap>(pages.size - 1)
+        for (pIdx in 1 until pages.size) {
+            val extraPath = pages[pIdx]
+            val extraLoaded = decodeEntityBitmapWithOrigDims(
+                loadPath = extraPath,
+                origPath = extraPath,
+                maxDecodeSide = cap,
+                pixelFormatKey = fmtKey
+            ) ?: break
+            extras.add(extraLoaded)
+        }
+        return if (extras.isEmpty()) baseLoaded else baseLoaded.copy(extraPages = extras)
     }
 
     private fun decodePngBytes(bytes: ByteArray): ImageBitmap? {
@@ -361,7 +417,8 @@ internal class StudioBitmapLoader {
     private fun decodeEntityBitmapWithOrigDims(
         loadPath: String,
         origPath: String,
-        maxDecodeSide: Int
+        maxDecodeSide: Int,
+        pixelFormatKey: String = "argb8888"
     ): LoadedEntityBitmap? {
         val file = File(loadPath)
         if (!file.exists()) return null
@@ -379,9 +436,14 @@ internal class StudioBitmapLoader {
             sampleSize *= 2
         }
 
+        val preferredConfig = if (pixelFormatKey == "rgb565") {
+            Bitmap.Config.RGB_565
+        } else {
+            Bitmap.Config.ARGB_8888
+        }
         val decodeOpts = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inPreferredConfig = preferredConfig
             inScaled = false
         }
         val bmp = BitmapFactory.decodeFile(loadPath, decodeOpts) ?: return null

@@ -350,14 +350,14 @@ fun HubScreen(
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                text = "Motor Gráfico (Terreno GPU)",
+                                text = "Rendimiento Gráfico",
                                 color = StudioColors.TextPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
                             )
                         }
                         Text(
-                            text = if (gfxCapabilities.vulkanSupported) "Vulkan listo" else gfxCapabilities.glesVersionLabel,
+                            text = if (gfxCapabilities.vulkanSupported) "Gráficos avanzados listos" else gfxCapabilities.glesVersionLabel,
                             color = StudioColors.AccentEmerald,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold
@@ -401,7 +401,7 @@ fun HubScreen(
                                         text = if (kind == RenderBackendKind.Canvas2d) {
                                             "Activo"
                                         } else if (supported) {
-                                            "Sonda OK"
+                                            "Compatible"
                                         } else {
                                             "No disp."
                                         },
