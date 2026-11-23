@@ -295,6 +295,8 @@ fn timeline_asset_lifecycle_schedules_preload_and_safe_retire_windows() {
         language: crate::project::ScriptLanguage::Lua,
         source_code: "if curBeat == 32 then showEntity('secret_boss') end".to_string(),
         enabled: true,
+        precompiled_js: None,
+        precompiled_bytecode: None,
     });
 
     let windows = compute_timeline_asset_lifecycle(&project);
