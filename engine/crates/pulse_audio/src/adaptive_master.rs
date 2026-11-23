@@ -1212,7 +1212,7 @@ where
         "Mejorando claridad y evitando saturación...",
         &dsp_plan.adaptation_summary,
     );
-    let (mastered_samples, out_true_peak_dbtp) = process_pcm_with_plan(&raw_samples, &dsp_plan)?;
+    let (mastered_samples, output_true_peak_dbtp) = process_pcm_with_plan(&raw_samples, &dsp_plan)?;
 
     on_progress(
         0.92,
