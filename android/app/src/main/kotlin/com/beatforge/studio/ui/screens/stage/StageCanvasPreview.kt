@@ -84,6 +84,7 @@ import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StageCanvasPreview(
     entities: List<StageEntitySnapshot>,
@@ -851,7 +852,6 @@ fun StageCanvasPreview(
             HorizontalDivider(color = StudioColors.BorderSubtle)
 
             // Barra inferior de acciones rápidas sin recortes al alcance del pulgar
-            @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()

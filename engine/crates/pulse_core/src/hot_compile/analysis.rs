@@ -4,8 +4,7 @@
 //! de texturas según resolución de pantalla y gama del dispositivo.
 
 use super::fingerprints::{DeviceResourceTier, ScreenViewportMetrics};
-use crate::chart::camera_events::parse_chart_camera_event;
-use crate::chart::ParsedChartCameraAction;
+use crate::chart::{ParsedChartCameraAction, parse_chart_camera_event};
 use crate::project::ModProject;
 use crate::stage::{EntityRole, StageEntity};
 use std::collections::HashSet;

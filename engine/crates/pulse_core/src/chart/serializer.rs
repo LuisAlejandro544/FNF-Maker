@@ -83,9 +83,9 @@ impl ChartData {
         for ev in &self.events {
             let t = round_ms(ev.time_ms);
             let entry = json!([ev.name, ev.value1, ev.value2]);
-            if let Some(last) = grouped_events.last_mut() {
-                if last.first().and_then(|v| v.as_f64()) == Some(t) {
-                    if let Some(arr) = last.get_mut(1).and_then(|v| v.as_array_mut()) {
+            if let Some(last_arr) = grouped_events.last_mut().and_then(|v| v.as_array_mut()) {
+                if last_arr.first().and_then(|v| v.as_f64()) == Some(t) {
+                    if let Some(arr) = last_arr.get_mut(1).and_then(|v| v.as_array_mut()) {
                         arr.push(entry);
                         continue;
                     }
