@@ -472,6 +472,7 @@ mod tests {
         let track = Arc::new(DecodedTrack {
             sample_rate: 48_000,
             stereo_samples: vec![1000_i16; 96_000 * 2], // 2000 ms
+            waveform_peaks: Vec::new(),
         });
         mixer.set_track(0, Some(track));
         assert!((mixer.max_track_duration_ms() - 2000.0).abs() < 0.1);
@@ -510,6 +511,7 @@ mod tests {
         let track = Arc::new(DecodedTrack {
             sample_rate: 48_000,
             stereo_samples: vec![1000_i16; 96_000 * 2], // 2000 ms
+            waveform_peaks: Vec::new(),
         });
         mixer.set_track(0, Some(track));
 
