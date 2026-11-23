@@ -3,23 +3,25 @@
 //! que se ejecuta como fase independiente después del Compilador en Caliente y antes del Gameplay:
 //! 1. Fusiona el sondeo físico del teléfono (`AudioManager` + `AudioDeviceInfo`) con el stream
 //!    real de `libaaudio.so` (`AudioHardwareProbe`: frecuencia nativa, frames/ráfaga, baja latencia).
-//! 2. Analiza cada canción con `ebur128` (LUFS integrado, LRA, True Peak dBTP) y `realfft`
+//! 2. Decodifica las pistas activas directamente en ruta `f32` de alta precisión a su frecuencia
+//!    nativa (`decode_audio_file_raw_f32`), sin `resample_stereo_linear` ni cuantización temprana a `i16`.
+//! 3. Analiza cada canción con `ebur128` (LUFS integrado, LRA, True Peak dBTP) y `realfft`
 //!    (energía espectral de 5 bandas con ventana Hann).
-//! 3. Diseña y aplica una cadena DSP específica para ese teléfono + ruta activa + canción usando
+//! 4. Diseña y aplica una cadena DSP específica para ese teléfono + ruta activa + canción usando
 //!    `rubato` (`FftFixedIn`), filtros IIR `biquad` (`DirectForm2Transposed`), pliegue mono seguro
-//!    para altavoces de teléfono mono y limitador True Peak, escribiendo un WAV optimizado en caché.
+//!    o anchura estéreo Mid/Side + crossfeed ligero, limitador True Peak con Lookahead (~4 ms)
+//!    y envolvente suave sin overshoot, y dither TPDF al guardar el WAV optimizado en caché.
 
-use crate::decoder::DecodedTrack;
+use crate::decoder::{DecodedTrack, decode_audio_file_raw_f32, resample_stereo_f32_rubato};
 use crate::rust_audio_backend::AudioHardwareProbe;
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, Q_BUTTERWORTH_F32, ToHertz, Type};
 use ebur128::{EbuR128, Mode};
 use pulse_core::project::{AudioTrackSlot, MAX_AUDIO_TRACKS};
 use realfft::RealFftPlanner;
-use rubato::{FftFixedIn, Resampler};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -183,6 +185,16 @@ pub struct EqBandAdjustment {
     pub reason: String,
 }
 
+fn default_stereo_width() -> f32 {
+    1.0
+}
+fn default_lookahead_ms() -> f32 {
+    4.0
+}
+fn default_true() -> bool {
+    true
+}
+
 /// Plan de masterización adaptativa derivado para este teléfono y canción concretos.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +209,16 @@ pub struct AdaptiveDspPlan {
     pub resample_needed: bool,
     pub source_sample_rate: u32,
     pub target_sample_rate: u32,
+    #[serde(default = "default_stereo_width")]
+    pub stereo_width: f32,
+    #[serde(default)]
+    pub crossfeed_strength: f32,
+    #[serde(default = "default_lookahead_ms")]
+    pub limiter_lookahead_ms: f32,
+    #[serde(default = "default_true")]
+    pub dither_applied: bool,
+    #[serde(default)]
+    pub high_precision_f32_path: bool,
     pub eq_bands: Vec<EqBandAdjustment>,
 }
 
@@ -483,6 +505,8 @@ pub fn build_adaptive_dsp_plan(
     let mut target_lufs = -14.5_f32;
     let mut ceiling_dbtp = -1.0_f32;
     let mut mono_fold_enabled = false;
+    let mut stereo_width = 1.0_f32;
+    let mut crossfeed_strength = 0.0_f32;
     let mut summary_notes: Vec<String> = Vec::new();
 
     let sub = song.bands.sub_bass_20_90_hz;
@@ -500,6 +524,8 @@ pub fn build_adaptive_dsp_plan(
                 // Altavoz único pequeño: evitar distorsión por sub-graves y preservar canales paneados.
                 highpass_hz = if sub > 0.22 { 150.0 } else { 135.0 };
                 mono_fold_enabled = song.stereo_correlation < 0.92;
+                stereo_width = 0.0;
+                crossfeed_strength = 0.0;
                 eq_bands.push(EqBandAdjustment {
                     kind: "high_pass".to_string(),
                     freq_hz: highpass_hz,
@@ -537,8 +563,16 @@ pub fn build_adaptive_dsp_plan(
                 summary_notes.push("Corte sub-grave + pliegue mono seguro".to_string());
                 "Altavoz Mono Adaptativo".to_string()
             } else {
-                // Doble altavoz estéreo: conservar anchura, controlar sub-grave extremo y realzar pegada.
+                // Doble altavoz estéreo: expandir suavemente separación Mid/Side en bocinas cercanas.
                 highpass_hz = if sub > 0.24 { 105.0 } else { 88.0 };
+                stereo_width = if song.stereo_correlation > 0.35 {
+                    1.16
+                } else if song.stereo_correlation > 0.10 {
+                    1.08
+                } else {
+                    1.00
+                };
+                crossfeed_strength = 0.0;
                 eq_bands.push(EqBandAdjustment {
                     kind: "high_pass".to_string(),
                     freq_hz: highpass_hz,
@@ -575,6 +609,9 @@ pub fn build_adaptive_dsp_plan(
                     reason: "Ajusta presencia según brillo medido por FFT".to_string(),
                 });
                 summary_notes.push("Estéreo móvil calibrado por espectro".to_string());
+                if stereo_width > 1.02 {
+                    summary_notes.push("Amplitud estéreo M/S".to_string());
+                }
                 "Altavoz Estéreo Adaptativo".to_string()
             }
         }
@@ -582,6 +619,8 @@ pub fn build_adaptive_dsp_plan(
             target_lufs = -15.5;
             ceiling_dbtp = -1.0;
             highpass_hz = 28.0;
+            stereo_width = if song.stereo_correlation > 0.85 { 1.06 } else { 1.0 };
+            crossfeed_strength = 0.22;
             eq_bands.push(EqBandAdjustment {
                 kind: "high_pass".to_string(),
                 freq_hz: highpass_hz,
@@ -628,12 +667,15 @@ pub fn build_adaptive_dsp_plan(
                 });
             }
             summary_notes.push("Respuesta full-range fiel para audífonos".to_string());
+            summary_notes.push("Crossfeed ligero".to_string());
             "Audífonos Cable Alta Fidelidad".to_string()
         }
         AndroidOutputRoute::UsbAudio => {
             target_lufs = -16.0;
             ceiling_dbtp = -1.2;
             highpass_hz = 24.0;
+            stereo_width = 1.0;
+            crossfeed_strength = 0.16;
             eq_bands.push(EqBandAdjustment {
                 kind: "high_pass".to_string(),
                 freq_hz: highpass_hz,
@@ -651,6 +693,7 @@ pub fn build_adaptive_dsp_plan(
                 });
             }
             summary_notes.push("Perfil audiófilo transparente DAC USB".to_string());
+            summary_notes.push("Crossfeed audiófilo".to_string());
             "DAC USB-C Referencia".to_string()
         }
         AndroidOutputRoute::BluetoothA2dp | AndroidOutputRoute::BluetoothLe => {
@@ -658,6 +701,8 @@ pub fn build_adaptive_dsp_plan(
             // Margen estricto de seguridad contra distorsión en códecs SBC/AAC/LC3
             ceiling_dbtp = -1.6;
             highpass_hz = 38.0;
+            stereo_width = if song.stereo_correlation > 0.30 { 1.04 } else { 1.0 };
+            crossfeed_strength = 0.12;
             eq_bands.push(EqBandAdjustment {
                 kind: "high_pass".to_string(),
                 freq_hz: highpass_hz,
@@ -686,12 +731,15 @@ pub fn build_adaptive_dsp_plan(
                 });
             }
             summary_notes.push("Techo -1.6 dBTP anti-clipping para códec BT".to_string());
+            summary_notes.push("Crossfeed BT".to_string());
             "Bluetooth Anti-Clipping".to_string()
         }
         AndroidOutputRoute::HdmiOrExternal | AndroidOutputRoute::Unknown => {
             target_lufs = -15.0;
             ceiling_dbtp = -1.0;
             highpass_hz = 34.0;
+            stereo_width = 1.0;
+            crossfeed_strength = 0.0;
             eq_bands.push(EqBandAdjustment {
                 kind: "high_pass".to_string(),
                 freq_hz: highpass_hz,
@@ -746,6 +794,11 @@ pub fn build_adaptive_dsp_plan(
         resample_needed,
         source_sample_rate: song.sample_rate,
         target_sample_rate: target_sr,
+        stereo_width,
+        crossfeed_strength,
+        limiter_lookahead_ms: 4.0,
+        dither_applied: true,
+        high_precision_f32_path: true,
         eq_bands,
     }
 }
@@ -757,71 +810,12 @@ pub fn resample_stereo_with_rubato(
     fs_in: u32,
     fs_out: u32,
 ) -> Result<Vec<f32>, String> {
-    let in_frames = interleaved_in.len() / 2;
-    if in_frames == 0 || fs_in == fs_out || fs_in == 0 || fs_out == 0 {
-        return Ok(interleaved_in.to_vec());
-    }
-
-    let chunk_size = 1024usize;
-    let sub_chunks = 2usize;
-    let mut resampler = FftFixedIn::<f32>::new(fs_in as usize, fs_out as usize, chunk_size, sub_chunks, 2)
-        .map_err(|e| format!("Error creando remuestreador Rubato: {}", e))?;
-
-    let delay_frames = resampler.output_delay();
-    let expected_out_frames =
-        ((in_frames as f64) * (fs_out as f64) / (fs_in as f64)).round() as usize;
-
-    let mut left_all = Vec::with_capacity(expected_out_frames + chunk_size * 2);
-    let mut right_all = Vec::with_capacity(expected_out_frames + chunk_size * 2);
-
-    let step = resampler.input_frames_next().max(1);
-    let mut chunk_l = vec![0.0_f32; step];
-    let mut chunk_r = vec![0.0_f32; step];
-
-    let mut frame_cursor = 0usize;
-    // Añadir frames de cola para drenar completamente `output_delay` al final de la canción.
-    let flush_frames = ((delay_frames as f64 * (fs_in as f64 / fs_out as f64)).ceil() as usize) + step;
-    let total_feed_frames = in_frames + flush_frames;
-
-    while frame_cursor < total_feed_frames {
-        chunk_l.fill(0.0);
-        chunk_r.fill(0.0);
-        for i in 0..step {
-            let src_idx = frame_cursor + i;
-            if src_idx < in_frames {
-                let base = src_idx * 2;
-                chunk_l[i] = interleaved_in[base];
-                chunk_r[i] = interleaved_in[base + 1];
-            }
-        }
-        let wave_in = [&chunk_l, &chunk_r];
-        let out_chunks = resampler
-            .process(&[wave_in[0].clone(), wave_in[1].clone()], None)
-            .map_err(|e| format!("Error procesando remuestreo Rubato: {}", e))?;
-        if out_chunks.len() >= 2 {
-            left_all.extend_from_slice(&out_chunks[0]);
-            right_all.extend_from_slice(&out_chunks[1]);
-        }
-        frame_cursor += step;
-    }
-
-    let start_trim = delay_frames.min(left_all.len());
-    let avail = left_all.len().saturating_sub(start_trim).min(expected_out_frames);
-    let mut interleaved_out = Vec::with_capacity(expected_out_frames * 2);
-    for i in 0..avail {
-        let idx = start_trim + i;
-        interleaved_out.push(left_all[idx]);
-        interleaved_out.push(right_all[idx]);
-    }
-    while interleaved_out.len() < expected_out_frames * 2 {
-        interleaved_out.push(0.0);
-        interleaved_out.push(0.0);
-    }
-    Ok(interleaved_out)
+    resample_stereo_f32_rubato(interleaved_in, fs_in, fs_out)
 }
 
-/// Ejecuta la cadena de procesamiento DSP (`rubato` + filtros IIR `biquad` + pliegue mono seguro
-/// + nivelación LUFS + limitador True Peak con envolvente de anticipación suave).
+/// Ejecuta la cadena de procesamiento DSP (`rubato` + filtros IIR `biquad` + pliegue mono
+/// / anchura Mid-Side + crossfeed psicoacústico ligero + nivelación LUFS + limitador
+/// True Peak con Lookahead ~4 ms y envolvente suave de ganancia).
 pub fn process_pcm_with_plan(
     samples_interleaved: &[f32],
     plan: &AdaptiveDspPlan,
@@ -840,13 +834,15 @@ pub fn process_pcm_with_plan(
         samples_interleaved.to_vec()
     };
 
-    let fs_hz = (plan.target_sample_rate.max(8000) as f32).hz();
+    let target_sr = plan.target_sample_rate.max(8000);
+    let fs_f32 = target_sr as f32;
+    let fs_hz = fs_f32.hz();
 
-    // Construir banco de filtros IIR dual-channel con `biquad::DirectForm2Transposed`
+    // 1. Construir banco de filtros IIR dual-channel con `biquad::DirectForm2Transposed`
     let mut filters_l: Vec<DirectForm2Transposed<f32>> = Vec::with_capacity(plan.eq_bands.len());
     let mut filters_r: Vec<DirectForm2Transposed<f32>> = Vec::with_capacity(plan.eq_bands.len());
     for band in &plan.eq_bands {
-        let max_f = (plan.target_sample_rate as f32 * 0.45).max(100.0);
+        let max_f = (fs_f32 * 0.45).max(100.0);
         let f0 = band.freq_hz.clamp(20.0, max_f).hz();
         let q = band.q.clamp(0.25, 4.0);
         let filter_type = match band.kind.as_str() {
@@ -861,59 +857,166 @@ pub fn process_pcm_with_plan(
         }
     }
 
-    // Aplicar EQ IIR + pliegue mono seguro en altavoz único
+    // 2. Estado de Crossfeed psicoacústico ligero (LP ~700 Hz + retardo interaural ~0.25 ms)
+    let crossfeed = if plan.mono_fold_enabled || plan.stereo_width <= 0.001 {
+        0.0_f32
+    } else {
+        plan.crossfeed_strength.clamp(0.0, 0.35)
+    };
+    let width = if plan.mono_fold_enabled {
+        0.0_f32
+    } else {
+        plan.stereo_width.clamp(0.0, 1.35)
+    };
+    let alpha_lp = 1.0_f32 - (-2.0_f32 * std::f32::consts::PI * 700.0_f32 / fs_f32).exp();
+    let delay_frames = ((0.00025_f32 * fs_f32).round() as usize).clamp(1, 64);
+    let mut delay_l = vec![0.0_f32; delay_frames];
+    let mut delay_r = vec![0.0_f32; delay_frames];
+    let mut delay_idx = 0usize;
+    let mut lp_l = 0.0_f32;
+    let mut lp_r = 0.0_f32;
+
+    // Aplicar EQ IIR + Mid/Side + Crossfeed antes del limitador
     for pair in work.chunks_exact_mut(2) {
-        let mut l = pair[0];
-        let mut r = pair[1];
+        let mut l = if pair[0].is_finite() { pair[0] } else { 0.0 };
+        let mut r = if pair[1].is_finite() { pair[1] } else { 0.0 };
         for f in &mut filters_l {
             l = f.run(l);
         }
         for f in &mut filters_r {
             r = f.run(r);
         }
-        if plan.mono_fold_enabled {
+        if plan.mono_fold_enabled || width <= 0.001 {
             let mono = 0.5 * (l + r);
             pair[0] = mono;
             pair[1] = mono;
         } else {
-            pair[0] = l;
-            pair[1] = r;
+            if (width - 1.0).abs() > 0.001 {
+                let mid = 0.5 * (l + r);
+                let side = 0.5 * (l - r) * width;
+                l = mid + side;
+                r = mid - side;
+            }
+            if crossfeed > 0.001 {
+                lp_l += alpha_lp * (l - lp_l);
+                lp_r += alpha_lp * (r - lp_r);
+                let delayed_lp_l = delay_l[delay_idx];
+                let delayed_lp_r = delay_r[delay_idx];
+                delay_l[delay_idx] = lp_l;
+                delay_r[delay_idx] = lp_r;
+                delay_idx = (delay_idx + 1) % delay_frames;
+
+                let k = 0.5 * crossfeed;
+                let high_l = l - lp_l;
+                let high_r = r - lp_r;
+                l = high_l + (1.0 - k) * lp_l + k * delayed_lp_r;
+                r = high_r + (1.0 - k) * lp_r + k * delayed_lp_l;
+            }
+            pair[0] = if l.is_finite() { l } else { 0.0 };
+            pair[1] = if r.is_finite() { r } else { 0.0 };
         }
     }
 
-    // Ganancia por LUFS objetivo + limitador suave con envolvente de ataque/liberación hacia ceiling_dbtp
+    // 3. Ganancia por LUFS objetivo + Limitador Lookahead (~4 ms en anillo O(L) de pocos KB)
+    let total_frames = work.len() / 2;
     let makeup_lin = 10.0_f32.powf(plan.applied_makeup_gain_db / 20.0);
     let ceiling_lin = 10.0_f32.powf(plan.ceiling_dbtp.min(-0.3) / 20.0);
-    let release_coeff = (-1.0_f32 / (0.045 * plan.target_sample_rate.max(8000) as f32)).exp();
+    let lookahead_sec = plan.limiter_lookahead_ms.clamp(0.0, 10.0) * 0.001;
+    let lookahead_frames = if lookahead_sec > 0.0 {
+        ((lookahead_sec * fs_f32).round() as usize).clamp(16, 512)
+    } else {
+        1
+    };
+    let release_coeff = (-1.0_f32 / (0.065 * fs_f32)).exp();
+
+    let mut ring_l = vec![0.0_f32; lookahead_frames];
+    let mut ring_r = vec![0.0_f32; lookahead_frames];
+    let mut ring_req = vec![1.0_f32; lookahead_frames];
+    let mut ring_pos = 0usize;
+    let mut below_unity_count = 0usize;
 
     let mut env_gain = 1.0_f32;
     let mut max_out_abs = 1e-9_f32;
-    for pair in work.chunks_exact_mut(2) {
-        let l = pair[0] * makeup_lin;
-        let r = pair[1] * makeup_lin;
-        let peak = l.abs().max(r.abs());
-        let desired_gain = if peak > ceiling_lin {
-            ceiling_lin / peak
+
+    for step in 0..(total_frames + lookahead_frames) {
+        let (in_l, in_r, req_in) = if step < total_frames {
+            let base = step * 2;
+            let sl = work[base] * makeup_lin;
+            let sr = work[base + 1] * makeup_lin;
+            let sl_c = if sl.is_finite() { sl } else { 0.0 };
+            let sr_c = if sr.is_finite() { sr } else { 0.0 };
+            let peak = sl_c.abs().max(sr_c.abs());
+            let req = if peak > ceiling_lin {
+                ceiling_lin / peak
+            } else {
+                1.0
+            };
+            (sl_c, sr_c, req)
         } else {
-            1.0
+            (0.0, 0.0, 1.0)
         };
-        if desired_gain < env_gain {
-            // Ataque instantáneo para proteger contra cualquier overshot True Peak
-            env_gain = desired_gain;
-        } else {
-            env_gain = release_coeff * env_gain + (1.0 - release_coeff) * desired_gain;
+
+        let out_l_raw = ring_l[ring_pos];
+        let out_r_raw = ring_r[ring_pos];
+        let req_now = ring_req[ring_pos];
+        if req_now < 0.999_999 {
+            below_unity_count = below_unity_count.saturating_sub(1);
         }
-        let mut out_l = (l * env_gain).clamp(-ceiling_lin, ceiling_lin);
-        let mut out_r = (r * env_gain).clamp(-ceiling_lin, ceiling_lin);
-        if !out_l.is_finite() {
-            out_l = 0.0;
+
+        ring_l[ring_pos] = in_l;
+        ring_r[ring_pos] = in_r;
+        ring_req[ring_pos] = req_in;
+        if req_in < 0.999_999 {
+            below_unity_count += 1;
         }
-        if !out_r.is_finite() {
-            out_r = 0.0;
+
+        if step >= lookahead_frames {
+            if below_unity_count == 0 && req_now >= 1.0 {
+                env_gain = release_coeff * env_gain + (1.0 - release_coeff);
+                if env_gain > 0.999_99 {
+                    env_gain = 1.0;
+                }
+            } else {
+                // Buscar pendiente máxima de pre-atenuación en los próximos `L` frames + tope mínimo futuro
+                let mut max_slope = 0.0_f32;
+                let mut min_future = 1.0_f32;
+                for d in 1..=lookahead_frames {
+                    let idx = (ring_pos + d) % lookahead_frames;
+                    let r_d = ring_req[idx];
+                    if r_d < min_future {
+                        min_future = r_d;
+                    }
+                    if r_d < env_gain {
+                        let slope = (env_gain - r_d) / (d as f32);
+                        if slope > max_slope {
+                            max_slope = slope;
+                        }
+                    }
+                }
+                if max_slope > 0.0 {
+                    env_gain = (env_gain - max_slope).min(req_now).max(0.0);
+                } else {
+                    let released = release_coeff * env_gain + (1.0 - release_coeff);
+                    env_gain = released.min(min_future).min(req_now);
+                }
+            }
+
+            let mut out_l = (out_l_raw * env_gain).clamp(-ceiling_lin, ceiling_lin);
+            let mut out_r = (out_r_raw * env_gain).clamp(-ceiling_lin, ceiling_lin);
+            if !out_l.is_finite() {
+                out_l = 0.0;
+            }
+            if !out_r.is_finite() {
+                out_r = 0.0;
+            }
+            max_out_abs = max_out_abs.max(out_l.abs()).max(out_r.abs());
+
+            let out_base = (step - lookahead_frames) * 2;
+            work[out_base] = out_l;
+            work[out_base + 1] = out_r;
         }
-        max_out_abs = max_out_abs.max(out_l.abs()).max(out_r.abs());
-        pair[0] = out_l;
-        pair[1] = out_r;
+
+        ring_pos = (ring_pos + 1) % lookahead_frames;
     }
 
     let out_dbtp = 20.0 * max_out_abs.max(1e-9).log10();
@@ -935,7 +1038,7 @@ fn compute_adaptation_cache_hash(
     device: &EffectiveDeviceAcoustics,
 ) -> String {
     let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
-    fnv1a_update(&mut hash, b"bf_audio_adapt_v1");
+    fnv1a_update(&mut hash, b"bf_audio_adapt_v2");
     fnv1a_update(&mut hash, device.route_label.as_bytes());
     fnv1a_update(&mut hash, device.manufacturer.as_bytes());
     fnv1a_update(&mut hash, device.model.as_bytes());
@@ -960,6 +1063,19 @@ fn compute_adaptation_cache_hash(
         let cfg = &configs[slot];
         fnv1a_update(&mut hash, &[slot as u8, u8::from(cfg.muted)]);
         fnv1a_update(&mut hash, &cfg.gain.to_bits().to_le_bytes());
+        if let Some(path) = &cfg.file_path {
+            if let Ok(meta) = std::fs::metadata(path) {
+                fnv1a_update(&mut hash, path.to_string_lossy().as_bytes());
+                fnv1a_update(&mut hash, &meta.len().to_le_bytes());
+                let mod_ms = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                fnv1a_update(&mut hash, &mod_ms.to_le_bytes());
+            }
+        }
         if let Some(track) = &tracks[slot] {
             fnv1a_update(&mut hash, &track.sample_rate.to_le_bytes());
             fnv1a_update(&mut hash, &(track.stereo_samples.len() as u64).to_le_bytes());
@@ -1012,6 +1128,60 @@ fn read_wav_stereo_f32(path: &Path) -> Result<(Vec<f32>, u32), String> {
     Ok((stereo, sr))
 }
 
+/// Decodifica las pistas fuente activas desde disco directamente en `f32` a su frecuencia nativa
+/// (evitando `i16` previo y remuestreo lineal), mezclándolas con su ganancia en punto flotante.
+fn mix_raw_source_files_f32(
+    configs: &[AudioTrackSlot; MAX_AUDIO_TRACKS],
+) -> Result<Option<(Vec<f32>, u32)>, String> {
+    let active_slots: Vec<usize> = (0..MAX_AUDIO_TRACKS)
+        .filter(|&slot| {
+            !configs[slot].muted
+                && configs[slot]
+                    .file_path
+                    .as_ref()
+                    .is_some_and(|p| p.is_file())
+        })
+        .collect();
+
+    if active_slots.is_empty() {
+        return Ok(None);
+    }
+
+    let first_slot = active_slots[0];
+    let first_path = configs[first_slot].file_path.as_ref().unwrap();
+    let (base_sr, mut mix_buf) = decode_audio_file_raw_f32(first_path)
+        .map_err(|e| format!("Error decodificando pista {} en f32: {}", first_slot + 1, e))?;
+    let first_gain = configs[first_slot].gain.clamp(0.0, 2.0);
+    if (first_gain - 1.0).abs() > 1e-5 {
+        for s in &mut mix_buf {
+            *s *= first_gain;
+        }
+    }
+
+    for &slot in &active_slots[1..] {
+        let path = configs[slot].file_path.as_ref().unwrap();
+        let (track_sr, raw_samples) = decode_audio_file_raw_f32(path)
+            .map_err(|e| format!("Error decodificando pista {} en f32: {}", slot + 1, e))?;
+        let aligned = if track_sr != base_sr {
+            resample_stereo_f32_rubato(&raw_samples, track_sr, base_sr)?
+        } else {
+            raw_samples
+        };
+        if aligned.len() > mix_buf.len() {
+            mix_buf.resize(aligned.len(), 0.0);
+        }
+        let gain = configs[slot].gain.clamp(0.0, 2.0);
+        for (dst, &src) in mix_buf.iter_mut().zip(aligned.iter()) {
+            *dst += src * gain;
+        }
+    }
+
+    if mix_buf.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((mix_buf, base_sr)))
+}
+
 fn mix_decoded_tracks_f32(
     tracks: &[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
     configs: &[AudioTrackSlot; MAX_AUDIO_TRACKS],
@@ -1047,6 +1217,16 @@ fn mix_decoded_tracks_f32(
     Some((out, sample_rate))
 }
 
+#[inline]
+fn next_tpdf_lsb_unit(rng_state: &mut u64) -> f32 {
+    *rng_state = rng_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *rng_state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    ((z >> 40) as f32) * (1.0 / 16_777_216.0)
+}
+
 fn write_stereo_i16_wav_atomic(
     out_path: &Path,
     samples_interleaved: &[f32],
@@ -1069,8 +1249,12 @@ fn write_stereo_i16_wav_atomic(
         let buf_writer = BufWriter::with_capacity(64 * 1024, file);
         let mut writer = hound::WavWriter::new(buf_writer, spec)
             .map_err(|e| format!("Error abriendo cabecera WAV adaptado: {}", e))?;
+        let mut rng_state: u64 = 0x9E37_79B9_7F4A_7C15 ^ (sample_rate as u64);
         for &s in samples_interleaved {
-            let pcm = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            let clean = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+            // Dither triangular TPDF de ±1 LSB para cuantización limpia de 32f a 16-bit
+            let tpdf = next_tpdf_lsb_unit(&mut rng_state) - next_tpdf_lsb_unit(&mut rng_state);
+            let pcm = (clean * 32767.0 + tpdf).round().clamp(-32768.0, 32767.0) as i16;
             writer
                 .write_sample(pcm)
                 .map_err(|e| format!("Error escribiendo muestra WAV adaptada: {}", e))?;
@@ -1089,8 +1273,9 @@ fn write_stereo_i16_wav_atomic(
 }
 
 /// Orquesta la fase independiente de Adaptación Acústica Adaptativa en Rust:
-/// sondea el hardware real + AAudio, verifica caché por huella, analiza con `ebur128` + `realfft`,
-/// construye el plan para este teléfono y salida, procesa con `rubato` + `biquad` y guarda el WAV.
+/// sondea el hardware real + AAudio, verifica caché por huella, decodifica en ruta `f32` nativa,
+/// analiza con `ebur128` + `realfft`, construye el plan para este teléfono y salida, procesa con
+/// `rubato` + `biquad` + Mid/Side + Crossfeed + Lookahead Limiter y guarda el WAV con dither TPDF.
 pub fn adapt_audio_for_device<F>(
     enabled: bool,
     tracks: &[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
@@ -1158,11 +1343,16 @@ where
 
     on_progress(
         0.22,
-        "Preparando la canción...",
-        "Cargando el audio para equilibrar su volumen",
+        "Preparando señal de alta precisión...",
+        "Decodificando audio nativo en f32 sin pérdida previa",
     );
 
-    let loaded_source = if let Some((samples, sr)) = mix_decoded_tracks_f32(tracks, configs) {
+    // Prioridad 1: ruta nativa en `f32` directo desde archivos fuente (sin `i16` ni `tanh()` previo).
+    let mut used_high_precision_f32 = false;
+    let loaded_source = if let Some((samples, sr)) = mix_raw_source_files_f32(configs)? {
+        used_high_precision_f32 = true;
+        Some((samples, sr))
+    } else if let Some((samples, sr)) = mix_decoded_tracks_f32(tracks, configs) {
         Some((samples, sr))
     } else if let Some(wav_path) = pre_merged_wav {
         if wav_path.is_file() {
@@ -1205,18 +1395,19 @@ where
         "Calibrando sonido para tu teléfono...",
         &format!("Salida activa: {}", device.route_label),
     );
-    let dsp_plan = build_adaptive_dsp_plan(&device, &song_analysis);
+    let mut dsp_plan = build_adaptive_dsp_plan(&device, &song_analysis);
+    dsp_plan.high_precision_f32_path = used_high_precision_f32;
 
     on_progress(
         0.78,
-        "Mejorando claridad y evitando saturación...",
+        "Masterizando con Lookahead y espacialidad...",
         &dsp_plan.adaptation_summary,
     );
     let (mastered_samples, output_true_peak_dbtp) = process_pcm_with_plan(&raw_samples, &dsp_plan)?;
 
     on_progress(
         0.92,
-        "Guardando audio calibrado...",
+        "Guardando audio calibrado (TPDF Dither)...",
         "Listo para sonar con nitidez y sin cortes",
     );
     write_stereo_i16_wav_atomic(&adapted_wav, &mastered_samples, dsp_plan.target_sample_rate)?;
@@ -1353,9 +1544,13 @@ mod tests {
 
         assert!(p_mono.highpass_hz >= 140.0);
         assert!(p_mono.mono_fold_enabled);
+        assert_eq!(p_mono.stereo_width, 0.0);
+        assert_eq!(p_mono.crossfeed_strength, 0.0);
         assert!(p_hp.highpass_hz <= 30.0);
         assert!(!p_hp.mono_fold_enabled);
+        assert!(p_hp.crossfeed_strength > 0.15);
         assert!(p_bt.ceiling_dbtp <= -1.5);
+        assert!(p_bt.crossfeed_strength > 0.0);
         assert!(p_mono.resample_needed);
         assert!(!p_bt.resample_needed);
     }
@@ -1388,5 +1583,108 @@ mod tests {
         let out_frames = out.len() / 2;
         assert!((out_frames as isize - 48_000).abs() <= 4);
         assert!(out_dbtp <= plan.ceiling_dbtp + 0.05);
+    }
+
+    #[test]
+    fn lookahead_limiter_pre_attenuates_smoothly_before_transient_and_caps_true_peak() {
+        let sr = 48_000_u32;
+        let frames = 4_800usize;
+        let mut src = Vec::with_capacity(frames * 2);
+        // Señal moderada seguida de un transiente fuerte en el frame 2000
+        for f in 0..frames {
+            let amp = if (2000..2048).contains(&f) { 0.95 } else { 0.20 };
+            src.push(amp);
+            src.push(-amp);
+        }
+        let plan = AdaptiveDspPlan {
+            profile_name: "Lookahead Test".to_string(),
+            adaptation_summary: "Test".to_string(),
+            target_lufs: -14.0,
+            applied_makeup_gain_db: 6.0, // x2 -> transiente llegaría a 1.90
+            ceiling_dbtp: -1.0,          // ~0.89125
+            highpass_hz: 24.0,
+            mono_fold_enabled: false,
+            resample_needed: false,
+            source_sample_rate: sr,
+            target_sample_rate: sr,
+            stereo_width: 1.0,
+            crossfeed_strength: 0.0,
+            limiter_lookahead_ms: 4.0,
+            dither_applied: true,
+            high_precision_f32_path: true,
+            eq_bands: Vec::new(),
+        };
+        let (out, out_dbtp) = process_pcm_with_plan(&src, &plan).unwrap();
+        assert_eq!(out.len(), frames * 2);
+        assert!(out_dbtp <= -0.99);
+        // Alrededor de 2 ms antes del transiente (frame 1904..1999) la envolvente ya empieza a reducir ganancia
+        let pre_gain_sample = out[1950 * 2].abs();
+        let baseline_sample = 0.20 * 10.0_f32.powf(6.0 / 20.0);
+        assert!(pre_gain_sample < baseline_sample * 0.96);
+    }
+
+    #[test]
+    fn adaptive_pipeline_decodes_raw_f32_wav_sources_and_preserves_center_with_crossfeed() {
+        let tmp_wav = std::env::temp_dir().join("beatforge_adapt_raw_f32_src.wav");
+        let tmp_cache = std::env::temp_dir().join("beatforge_adapt_cache_dir");
+        let _ = std::fs::remove_file(&tmp_wav);
+        let _ = std::fs::remove_dir_all(&tmp_cache);
+
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut w = hound::WavWriter::create(&tmp_wav, spec).unwrap();
+            for i in 0..22_050 {
+                let s = ((2.0 * std::f32::consts::PI * 330.0 * (i as f32 / 44_100.0)).sin()
+                    * 2_000_000.0) as i32;
+                w.write_sample(s).unwrap();
+                w.write_sample(s).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+
+        let mut configs = AudioTrackSlot::default_three_slots();
+        configs[0].file_path = Some(tmp_wav.clone());
+        let tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS] = [None, None, None];
+        let os_probe = DeviceAudioProbeInput {
+            route: AndroidOutputRoute::WiredHeadphones,
+            os_sample_rate: 48_000,
+            reported_channel_count: 2,
+            ..Default::default()
+        };
+        let aaudio = AudioHardwareProbe {
+            aaudio_active: true,
+            sample_rate: 48_000,
+            channel_count: 2,
+            ..Default::default()
+        };
+
+        let report = adapt_audio_for_device(
+            true,
+            &tracks,
+            &configs,
+            None,
+            &os_probe,
+            &aaudio,
+            &tmp_cache,
+            |_, _, _| {},
+        )
+        .unwrap();
+
+        let plan = report.dsp_plan.expect("dsp plan present");
+        assert!(plan.high_precision_f32_path);
+        assert!(plan.dither_applied);
+        assert!((plan.limiter_lookahead_ms - 4.0).abs() < 0.01);
+        assert!((plan.crossfeed_strength - 0.22).abs() < 0.01);
+        assert_eq!(plan.source_sample_rate, 44_100);
+        assert_eq!(plan.target_sample_rate, 48_000);
+        assert!(report.output_true_peak_dbtp <= plan.ceiling_dbtp + 0.05);
+
+        let _ = std::fs::remove_file(&tmp_wav);
+        let _ = std::fs::remove_dir_all(&tmp_cache);
     }
 }

@@ -379,20 +379,31 @@ fun AudioAdaptScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     val extras = buildList {
+                                        if (plan.highPrecisionF32Path) {
+                                            add("Ruta 32f")
+                                        }
                                         add("Filtro ${plan.highpassHz.roundToInt()}Hz")
                                         if (plan.resampleNeeded) {
                                             add("Adaptado a ${plan.targetSampleRate}Hz")
                                         }
                                         if (plan.monoFoldEnabled) {
                                             add("Mezcla Mono")
+                                        } else {
+                                            if (plan.stereoWidth > 1.02f) {
+                                                add("Amplitud ${(plan.stereoWidth * 100f).roundToInt()}%")
+                                            }
+                                            if (plan.crossfeedStrength > 0.01f) {
+                                                add("Crossfeed ${(plan.crossfeedStrength * 100f).roundToInt()}%")
+                                            }
                                         }
+                                        add("Lookahead ${String.format(Locale.US, "%.0f", plan.limiterLookaheadMs)}ms")
                                         add("Límite ${String.format(Locale.US, "%.1f", plan.ceilingDbtp)} dB")
                                     }.joinToString(" · ")
                                     Text(
                                         text = extras,
                                         color = Color(0xFFA7F3D0),
                                         fontSize = 10.sp,
-                                        maxLines = 2,
+                                        maxLines = 3,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }

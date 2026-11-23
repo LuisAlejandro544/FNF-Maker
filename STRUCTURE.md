@@ -17,7 +17,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 ├── package.json                         # Dependencias web + tsx para tests del SDK
 │
 ├── engine/                              # Motor nativo modular en Rust (Workspace Cargo, sin UI)
-│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, crunch, exoquant, texture2ddecoder, zstd, ebur128, realfft, rustfft, biquad, rubato)
+│   ├── Cargo.toml                       # Dependencias centralizadas (libc, jni, mlua, rquickjs, oxc, resvg, rayon, crunch, exoquant, texture2ddecoder, zstd, rmp3+float, ebur128, realfft, rustfft, biquad, rubato)
 │   ├── .cargo/
 │   │   └── config.toml                  # Flags de enlazador Android (alineación 16KB para Android 15+)
 │   └── crates/
@@ -69,11 +69,11 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │   ├── Cargo.toml
 │       │   └── src/
 │       │       ├── lib.rs               # AudioEngineHandle, AudioHardwareProbe, adaptive_master y streaming
-│       │       ├── decoder.rs           # Decodificación OGG/WAV/MP3 a PCM i16 compacto (50% menos RAM) y resampleo
+│       │       ├── decoder.rs           # Decodificación nativa `f32` OGG/WAV/MP3 (`rmp3 float`), resampleo `rubato::FftFixedIn` (sin `resample_stereo_linear`) y salida `i16` para editor
 │       │       ├── audio_cache.rs       # Caché binario `.bfaud` (picos de onda + PCM i16) en `cacheDir/audio_cache/` con escritura atómica y LRU
 │       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`) + streaming SPSC 512 KB desde disco
-│       │       ├── adaptive_master.rs   # Adaptador Acústico (`ebur128` LUFS + `realfft` 5 bandas + `biquad` IIR + `rubato` FftFixedIn + caché)
-│       │       ├── mixer.rs             # Mezclador lock-free + reloj maestro + countdown BPM + síntesis SFX Game Over
+│       │       ├── adaptive_master.rs   # Adaptador Acústico `f32` (`ebur128`, `realfft`, `biquad`, `rubato`, M/S + crossfeed, Lookahead 4ms + dither TPDF + caché `v2`)
+│       │       ├── mixer.rs             # Mezclador lock-free (`stream_source` lineal sin `tanh()`, `tanh()` solo en multi-pista editor) + reloj + countdown BPM + Game Over
 │       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI + probe hardware, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados sin ataduras
@@ -189,7 +189,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders y flipX
 │                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS (`camera_system.lua` y `stage_events.lua`) con referencia API
 │                       ├── HotCompileScreen.kt    # Pantalla de carga con barra y círculo determinados (`0%–100%`) + fase en vivo
-│                       ├── AudioAdaptScreen.kt    # Pantalla independiente pre-gameplay: hardware/AAudio, EBU R128 + FFT 5 bandas y plan DSP
+│                       ├── AudioAdaptScreen.kt    # Pantalla independiente pre-gameplay: hardware/AAudio, EBU R128 + FFT 5 bandas y plan DSP (Ruta 32f, Amplitud, Crossfeed, Lookahead)
 │                       ├── GameplayScreen.kt      # Coordinador jugable 60 FPS (`withFrameNanos`), medición FPS, flash HUD y ocultamiento HUD limpio
 │                       └── gameplay/              # Submódulos especializados de `GameplayScreen`
 │                           ├── GameplayRenderPrimitives.kt # Pools sin GC, `GameplayTouchMaskState` y geometría de carriles
@@ -202,8 +202,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, multicámara, `Lanczos3` viewport scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP, `optimizeSparrowAtlasPlan`, `.mod`, `BFGP` v2
-│       └── engine-tools.test.ts         # 60 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, multicámara, `Lanczos3` viewport scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF, `optimizeSparrowAtlasPlan`, `.mod`, `BFGP` v2
+│       └── engine-tools.test.ts         # 64 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

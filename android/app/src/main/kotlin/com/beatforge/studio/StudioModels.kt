@@ -257,6 +257,11 @@ data class AdaptiveDspPlanSnapshot(
     val resampleNeeded: Boolean = false,
     val sourceSampleRate: Int = 44_100,
     val targetSampleRate: Int = 48_000,
+    val stereoWidth: Float = 1f,
+    val crossfeedStrength: Float = 0f,
+    val limiterLookaheadMs: Float = 4f,
+    val ditherApplied: Boolean = true,
+    val highPrecisionF32Path: Boolean = false,
     val eqBands: List<EqBandAdjustmentSnapshot> = emptyList()
 )
 
@@ -971,6 +976,11 @@ object StudioJsonParser {
                 resampleNeeded = p.optBoolean("resampleNeeded", false),
                 sourceSampleRate = p.optInt("sourceSampleRate", 44_100),
                 targetSampleRate = p.optInt("targetSampleRate", 48_000),
+                stereoWidth = p.optDouble("stereoWidth", 1.0).toFloat(),
+                crossfeedStrength = p.optDouble("crossfeedStrength", 0.0).toFloat(),
+                limiterLookaheadMs = p.optDouble("limiterLookaheadMs", 4.0).toFloat(),
+                ditherApplied = p.optBoolean("ditherApplied", true),
+                highPrecisionF32Path = p.optBoolean("highPrecisionF32Path", false),
                 eqBands = eqBands
             )
         }

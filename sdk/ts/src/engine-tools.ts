@@ -5857,6 +5857,11 @@ export interface AdaptiveDspPlan {
   resampleNeeded: boolean;
   sourceSampleRate: number;
   targetSampleRate: number;
+  stereoWidth: number;
+  crossfeedStrength: number;
+  limiterLookaheadMs: number;
+  ditherApplied: boolean;
+  highPrecisionF32Path: boolean;
   eqBands: EqBandAdjustment[];
 }
 
@@ -5955,6 +5960,8 @@ export function buildAdaptiveDspPlan(
   let targetLufs = -14.5;
   let ceilingDbtp = -1.0;
   let monoFoldEnabled = false;
+  let stereoWidth = 1.0;
+  let crossfeedStrength = 0.0;
   const summaryNotes: string[] = [];
 
   const {
@@ -5972,6 +5979,8 @@ export function buildAdaptiveDspPlan(
     if (device.isMonoSpeaker) {
       highpassHz = sub > 0.22 ? 150 : 135;
       monoFoldEnabled = song.stereoCorrelation < 0.92;
+      stereoWidth = 0.0;
+      crossfeedStrength = 0.0;
       eqBands.push({
         kind: 'high_pass',
         freqHz: highpassHz,
@@ -6004,6 +6013,9 @@ export function buildAdaptiveDspPlan(
       profileName = 'Altavoz Mono Adaptativo';
     } else {
       highpassHz = sub > 0.24 ? 105 : 88;
+      stereoWidth =
+        song.stereoCorrelation > 0.35 ? 1.16 : song.stereoCorrelation > 0.1 ? 1.08 : 1.0;
+      crossfeedStrength = 0.0;
       eqBands.push({
         kind: 'high_pass',
         freqHz: highpassHz,
@@ -6035,12 +6047,17 @@ export function buildAdaptiveDspPlan(
         reason: 'Ajusta presencia según brillo medido por FFT',
       });
       summaryNotes.push('Estéreo móvil calibrado por espectro');
+      if (stereoWidth > 1.02) {
+        summaryNotes.push('Amplitud estéreo M/S');
+      }
       profileName = 'Altavoz Estéreo Adaptativo';
     }
   } else if (device.route === 'wired_headphones') {
     targetLufs = -15.5;
     ceilingDbtp = -1.0;
     highpassHz = 28;
+    stereoWidth = song.stereoCorrelation > 0.85 ? 1.06 : 1.0;
+    crossfeedStrength = 0.22;
     eqBands.push({
       kind: 'high_pass',
       freqHz: highpassHz,
@@ -6084,11 +6101,14 @@ export function buildAdaptiveDspPlan(
       });
     }
     summaryNotes.push('Respuesta full-range fiel para audífonos');
+    summaryNotes.push('Crossfeed ligero');
     profileName = 'Audífonos Cable Alta Fidelidad';
   } else if (device.route === 'usb_audio') {
     targetLufs = -16.0;
     ceilingDbtp = -1.2;
     highpassHz = 24;
+    stereoWidth = 1.0;
+    crossfeedStrength = 0.16;
     eqBands.push({
       kind: 'high_pass',
       freqHz: highpassHz,
@@ -6106,11 +6126,14 @@ export function buildAdaptiveDspPlan(
       });
     }
     summaryNotes.push('Perfil audiófilo transparente DAC USB');
+    summaryNotes.push('Crossfeed audiófilo');
     profileName = 'DAC USB-C Referencia';
   } else if (device.route === 'bluetooth_a2dp' || device.route === 'bluetooth_le') {
     targetLufs = -14.5;
     ceilingDbtp = -1.6;
     highpassHz = 38;
+    stereoWidth = song.stereoCorrelation > 0.3 ? 1.04 : 1.0;
+    crossfeedStrength = 0.12;
     eqBands.push({
       kind: 'high_pass',
       freqHz: highpassHz,
@@ -6137,11 +6160,14 @@ export function buildAdaptiveDspPlan(
       });
     }
     summaryNotes.push('Techo -1.6 dBTP anti-clipping para códec BT');
+    summaryNotes.push('Crossfeed BT');
     profileName = 'Bluetooth Anti-Clipping';
   } else {
     targetLufs = -15.0;
     ceilingDbtp = -1.0;
     highpassHz = 34;
+    stereoWidth = 1.0;
+    crossfeedStrength = 0.0;
     eqBands.push({
       kind: 'high_pass',
       freqHz: highpassHz,
@@ -6183,8 +6209,232 @@ export function buildAdaptiveDspPlan(
     resampleNeeded,
     sourceSampleRate: song.sampleRate,
     targetSampleRate,
+    stereoWidth,
+    crossfeedStrength,
+    limiterLookaheadMs: 4.0,
+    ditherApplied: true,
+    highPrecisionF32Path: true,
     eqBands,
   };
+}
+
+/**
+ * Espejo puro de la etapa Mid/Side + Crossfeed psicoacústico ligero en `pulse_audio::adaptive_master`:
+ * conserva el centro exacto en 0 dB cuando `L == R` y solo mezcla bajas frecuencias (<700 Hz)
+ * con retardo interaural de ~0.25 ms en salidas de audífonos / DAC / Bluetooth.
+ */
+export function applyStereoWidthAndCrossfeed(
+  interleaved: Float32Array | number[],
+  sampleRate: number,
+  params: { monoFoldEnabled: boolean; stereoWidth: number; crossfeedStrength: number },
+): Float32Array {
+  const frames = Math.floor(interleaved.length / 2);
+  const out = new Float32Array(frames * 2);
+  if (frames === 0) return out;
+
+  const fs = Math.max(8000, sampleRate);
+  const width = params.monoFoldEnabled ? 0 : Math.max(0, Math.min(1.35, params.stereoWidth));
+  const crossfeed =
+    params.monoFoldEnabled || width <= 0.001
+      ? 0
+      : Math.max(0, Math.min(0.35, params.crossfeedStrength));
+
+  const alphaLp = 1 - Math.exp((-2 * Math.PI * 700) / fs);
+  const delayFrames = Math.max(1, Math.min(64, Math.round(0.00025 * fs)));
+  const delayL = new Float32Array(delayFrames);
+  const delayR = new Float32Array(delayFrames);
+  let delayIdx = 0;
+  let lpL = 0;
+  let lpR = 0;
+
+  for (let f = 0; f < frames; f += 1) {
+    let l = Number.isFinite(interleaved[f * 2]) ? interleaved[f * 2] : 0;
+    let r = Number.isFinite(interleaved[f * 2 + 1]) ? interleaved[f * 2 + 1] : 0;
+
+    if (params.monoFoldEnabled || width <= 0.001) {
+      const mono = 0.5 * (l + r);
+      out[f * 2] = mono;
+      out[f * 2 + 1] = mono;
+      continue;
+    }
+
+    if (Math.abs(width - 1) > 0.001) {
+      const mid = 0.5 * (l + r);
+      const side = 0.5 * (l - r) * width;
+      l = mid + side;
+      r = mid - side;
+    }
+
+    if (crossfeed > 0.001) {
+      lpL += alphaLp * (l - lpL);
+      lpR += alphaLp * (r - lpR);
+      const delayedLpL = delayL[delayIdx];
+      const delayedLpR = delayR[delayIdx];
+      delayL[delayIdx] = lpL;
+      delayR[delayIdx] = lpR;
+      delayIdx = (delayIdx + 1) % delayFrames;
+
+      const k = 0.5 * crossfeed;
+      l = l - lpL + (1 - k) * lpL + k * delayedLpR;
+      r = r - lpR + (1 - k) * lpR + k * delayedLpL;
+    }
+
+    out[f * 2] = l;
+    out[f * 2 + 1] = r;
+  }
+
+  return out;
+}
+
+/**
+ * Espejo puro del limitador True Peak con Lookahead (~4 ms) y envolvente suave de
+ * `pulse_audio::adaptive_master::process_pcm_with_plan`: pre-atenúa gradualmente antes de un
+ * transiente, libera exponencialmente (~65 ms) y garantiza cero overshoot sobre `ceilingDbtp`.
+ */
+export function applyLookaheadLimiterStereo(
+  interleaved: Float32Array | number[],
+  sampleRate: number,
+  params: { makeupGainDb: number; ceilingDbtp: number; lookaheadMs?: number; releaseMs?: number },
+): { samples: Float32Array; outputTruePeakDbtp: number; minGainApplied: number } {
+  const totalFrames = Math.floor(interleaved.length / 2);
+  const out = new Float32Array(totalFrames * 2);
+  if (totalFrames === 0) {
+    return { samples: out, outputTruePeakDbtp: -90, minGainApplied: 1 };
+  }
+
+  const fs = Math.max(8000, sampleRate);
+  const makeupLin = 10 ** (params.makeupGainDb / 20);
+  const ceilingLin = 10 ** (Math.min(-0.3, params.ceilingDbtp) / 20);
+  const lookaheadSec = Math.max(0, Math.min(10, params.lookaheadMs ?? 4)) * 0.001;
+  const lookaheadFrames =
+    lookaheadSec > 0 ? Math.max(16, Math.min(512, Math.round(lookaheadSec * fs))) : 1;
+  const releaseSec = Math.max(0.01, (params.releaseMs ?? 65) * 0.001);
+  const releaseCoeff = Math.exp(-1 / (releaseSec * fs));
+
+  const ringL = new Float32Array(lookaheadFrames);
+  const ringR = new Float32Array(lookaheadFrames);
+  const ringReq = new Float32Array(lookaheadFrames).fill(1);
+  let ringPos = 0;
+  let belowUnityCount = 0;
+  let envGain = 1;
+  let minGainApplied = 1;
+  let maxOutAbs = 1e-9;
+
+  for (let step = 0; step < totalFrames + lookaheadFrames; step += 1) {
+    let inL = 0;
+    let inR = 0;
+    let reqIn = 1;
+    if (step < totalFrames) {
+      const sl = interleaved[step * 2] * makeupLin;
+      const sr = interleaved[step * 2 + 1] * makeupLin;
+      inL = Number.isFinite(sl) ? sl : 0;
+      inR = Number.isFinite(sr) ? sr : 0;
+      const peak = Math.max(Math.abs(inL), Math.abs(inR));
+      reqIn = peak > ceilingLin ? ceilingLin / peak : 1;
+    }
+
+    const outLRaw = ringL[ringPos];
+    const outRRaw = ringR[ringPos];
+    const reqNow = ringReq[ringPos];
+    if (reqNow < 0.999999) {
+      belowUnityCount = Math.max(0, belowUnityCount - 1);
+    }
+
+    ringL[ringPos] = inL;
+    ringR[ringPos] = inR;
+    ringReq[ringPos] = reqIn;
+    if (reqIn < 0.999999) {
+      belowUnityCount += 1;
+    }
+
+    if (step >= lookaheadFrames) {
+      if (belowUnityCount === 0 && reqNow >= 1) {
+        envGain = releaseCoeff * envGain + (1 - releaseCoeff);
+        if (envGain > 0.99999) envGain = 1;
+      } else {
+        let maxSlope = 0;
+        let minFuture = 1;
+        for (let d = 1; d <= lookaheadFrames; d += 1) {
+          const idx = (ringPos + d) % lookaheadFrames;
+          const rD = ringReq[idx];
+          if (rD < minFuture) minFuture = rD;
+          if (rD < envGain) {
+            const slope = (envGain - rD) / d;
+            if (slope > maxSlope) maxSlope = slope;
+          }
+        }
+        if (maxSlope > 0) {
+          envGain = Math.max(0, Math.min(reqNow, envGain - maxSlope));
+        } else {
+          const released = releaseCoeff * envGain + (1 - releaseCoeff);
+          envGain = Math.min(reqNow, minFuture, released);
+        }
+      }
+
+      if (envGain < minGainApplied) minGainApplied = envGain;
+      const outL = Math.max(-ceilingLin, Math.min(ceilingLin, outLRaw * envGain));
+      const outR = Math.max(-ceilingLin, Math.min(ceilingLin, outRRaw * envGain));
+      maxOutAbs = Math.max(maxOutAbs, Math.abs(outL), Math.abs(outR));
+
+      const outBase = (step - lookaheadFrames) * 2;
+      out[outBase] = outL;
+      out[outBase + 1] = outR;
+    }
+
+    ringPos = (ringPos + 1) % lookaheadFrames;
+  }
+
+  return {
+    samples: out,
+    outputTruePeakDbtp: 20 * Math.log10(Math.max(1e-9, maxOutAbs)),
+    minGainApplied,
+  };
+}
+
+/**
+ * Espejo puro del dither triangular TPDF (±1 LSB) aplicado al guardar el WAV adaptado de 16 bits.
+ */
+export function quantizeF32ToI16Tpdf(
+  samples: Float32Array | number[],
+  sampleRate = 48000,
+): Int16Array {
+  let rng = (BigInt(0x9e3779b9) << 32n) | BigInt(0x7f4a7c15);
+  rng ^= BigInt(sampleRate >>> 0);
+  const mask64 = (1n << 64n) - 1n;
+  const nextUnit = (): number => {
+    rng = (rng + 0x9e3779b97f4a7c15n) & mask64;
+    let z = rng;
+    z = ((z ^ (z >> 30n)) * 0xbf58476d1ce4e5b9n) & mask64;
+    z = ((z ^ (z >> 27n)) * 0x94d049bb133111ebn) & mask64;
+    z ^= z >> 31n;
+    return Number(z >> 40n) / 16777216;
+  };
+
+  const out = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i += 1) {
+    const raw = samples[i];
+    const clean = Number.isFinite(raw) ? Math.max(-1, Math.min(1, raw)) : 0;
+    const tpdf = nextUnit() - nextUnit();
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(clean * 32767 + tpdf)));
+  }
+  return out;
+}
+
+/**
+ * Espejo puro de la etapa de salida en `pulse_audio::mixer::render_audio_frames`:
+ * pasa linealmente (`clamp[-1, 1]`) sin `tanh()` cuando reproduce `stream_source` único ya
+ * compilado/masterizado, reservando `tanh()` para mezcla en vivo multipista del editor.
+ */
+export function applyMixerOutputStagePolicy(
+  samples: Float32Array | number[],
+  usedCompiledStream: boolean,
+): Float32Array {
+  const out = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = Number.isFinite(samples[i]) ? samples[i] : 0;
+    out[i] = usedCompiledStream ? Math.max(-1, Math.min(1, s)) : Math.tanh(s);
+  }
+  return out;
 }
 
 export const TIMELINE_PRELOAD_LEAD_MS = 4000;

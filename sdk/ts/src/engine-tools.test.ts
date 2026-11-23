@@ -18,6 +18,9 @@ import {
   STREAM_RING_BYTES,
   advanceNoteSlidingWindow,
   analyzeStageEventRamLifecycle,
+  applyLookaheadLimiterStereo,
+  applyMixerOutputStagePolicy,
+  applyStereoWidthAndCrossfeed,
   autoBindSparrowPrefixes,
   buildAdaptiveDspPlan,
   buildBfaudCacheKey,
@@ -58,6 +61,7 @@ import {
   parseChartJson,
   parseUiBlackoutEvent,
   planMultiProjectLruEviction,
+  quantizeF32ToI16Tpdf,
   renderCameraLuaConfigBlock,
   resolveChartPlayheadStep,
   resolveChartStageStateAtTime,
@@ -2448,9 +2452,31 @@ test('fuseDeviceAndAAudioProbe & buildAdaptiveDspPlan adapt DSP settings differe
   const monoPlan = buildAdaptiveDspPlan(monoSpeaker, darkHeavySong);
   assert.equal(monoPlan.profileName, 'Altavoz Mono Adaptativo');
   assert.equal(monoPlan.monoFoldEnabled, true);
+  assert.equal(monoPlan.stereoWidth, 0);
+  assert.equal(monoPlan.crossfeedStrength, 0);
+  assert.equal(monoPlan.limiterLookaheadMs, 4);
+  assert.equal(monoPlan.ditherApplied, true);
+  assert.equal(monoPlan.highPrecisionF32Path, true);
   assert.equal(monoPlan.resampleNeeded, true);
   assert.ok(monoPlan.highpassHz >= 145);
   assert.ok(monoPlan.appliedMakeupGainDb > 4.0);
+
+  // Caso 1b: Teléfono con altavoz estéreo activa expansión Mid/Side sin crossfeed
+  const stereoSpeaker = fuseDeviceAndAAudioProbe(
+    {
+      route: 'builtin_speaker',
+      manufacturer: 'Pixel',
+      model: '8',
+      osSampleRate: 48000,
+      reportedChannelCount: 2,
+      isMonoSpeaker: false,
+    },
+    { aaudioActive: true, sampleRate: 48000, channelCount: 2, framesPerBurst: 192, hardwareChannelCount: 2 },
+  );
+  const stereoSpeakerPlan = buildAdaptiveDspPlan(stereoSpeaker, darkHeavySong);
+  assert.equal(stereoSpeakerPlan.profileName, 'Altavoz Estéreo Adaptativo');
+  assert.ok(stereoSpeakerPlan.stereoWidth > 1.1);
+  assert.equal(stereoSpeakerPlan.crossfeedStrength, 0);
 
   // Caso 2: Audífonos por cable en teléfono gama alta 96 kHz
   const wiredPhone = fuseDeviceAndAAudioProbe(
@@ -2476,6 +2502,7 @@ test('fuseDeviceAndAAudioProbe & buildAdaptiveDspPlan adapt DSP settings differe
   const wiredPlan = buildAdaptiveDspPlan(wiredPhone, darkHeavySong);
   assert.equal(wiredPlan.profileName, 'Audífonos Cable Alta Fidelidad');
   assert.equal(wiredPlan.monoFoldEnabled, false);
+  assert.equal(wiredPlan.crossfeedStrength, 0.22);
   assert.ok(wiredPlan.highpassHz <= 30);
   assert.ok(wiredPlan.eqBands.some((b) => b.kind === 'low_shelf' && b.gainDb < 0));
   assert.ok(wiredPlan.eqBands.some((b) => b.kind === 'high_shelf' && b.gainDb > 0));
@@ -2488,6 +2515,7 @@ test('fuseDeviceAndAAudioProbe & buildAdaptiveDspPlan adapt DSP settings differe
   const btPlan = buildAdaptiveDspPlan(btDevice, darkHeavySong);
   assert.equal(btPlan.profileName, 'Bluetooth Anti-Clipping');
   assert.equal(btPlan.ceilingDbtp, -1.6);
+  assert.equal(btPlan.crossfeedStrength, 0.12);
   assert.equal(btPlan.resampleNeeded, false);
 });
 
@@ -2673,3 +2701,115 @@ test('extractArrowSkinTailColor derives monochrome gray tails for B&W arrows and
   assert.equal(emptyPal.isMonochrome, false);
   assert.deepEqual(emptyPal.bodyRgb, defaultPurple);
 });
+
+test('applyLookaheadLimiterStereo pre-attenuates smoothly 4ms before transients and prevents True Peak overshoot', () => {
+  const sr = 48000;
+  const frames = 14400; // 300 ms para verificar ataque lookahead + recuperación exponencial (~65 ms)
+  const src = new Float32Array(frames * 2);
+  for (let f = 0; f < frames; f += 1) {
+    const amp = f >= 2000 && f < 2048 ? 0.95 : 0.2;
+    src[f * 2] = amp;
+    src[f * 2 + 1] = -amp;
+  }
+
+  const res = applyLookaheadLimiterStereo(src, sr, {
+    makeupGainDb: 6.0, // ~2x -> pico sin limitar llegaría a 1.90 (+5.5 dBFS)
+    ceilingDbtp: -1.0,
+    lookaheadMs: 4.0,
+    releaseMs: 65.0,
+  });
+
+  assert.equal(res.samples.length, frames * 2);
+  assert.ok(res.outputTruePeakDbtp <= -0.99);
+  assert.ok(res.minGainApplied < 0.5);
+
+  // ~2 ms antes del transiente (frame 1950), la rampa de anticipación ya bajó la ganancia
+  const preTransient = Math.abs(res.samples[1950 * 2]);
+  const unattenuated = 0.2 * 10 ** (6 / 20);
+  assert.ok(preTransient < unattenuated * 0.96);
+
+  // ~55 ms después del transiente (frame 4700), el release exponencial (~65 ms) sigue recuperándose suavemente (~77%)
+  const midRecovery = Math.abs(res.samples[4700 * 2]);
+  assert.ok(midRecovery > unattenuated * 0.65 && midRecovery < unattenuated * 0.88);
+
+  // ~205 ms después del transiente (frame 11900, >3*tau), la ganancia ya superó el 95% de normal
+  const recovered = Math.abs(res.samples[11900 * 2]);
+  assert.ok(recovered > unattenuated * 0.95);
+});
+
+test('applyStereoWidthAndCrossfeed widens stereo speakers, folds mono safely, and preserves center with light crossfeed', () => {
+  const sr = 48000;
+  const frames = 2048;
+
+  // Señal paneada izquierda (L=0.6, R=0.1): altavoz estéreo amplía diferencia M/S, mono pliega a 0.35
+  const stereoSrc = new Float32Array(frames * 2);
+  for (let f = 0; f < frames; f += 1) {
+    stereoSrc[f * 2] = 0.6;
+    stereoSrc[f * 2 + 1] = 0.1;
+  }
+  const widened = applyStereoWidthAndCrossfeed(stereoSrc, sr, {
+    monoFoldEnabled: false,
+    stereoWidth: 1.16,
+    crossfeedStrength: 0,
+  });
+  assert.ok(widened[0] > 0.6 && widened[1] < 0.1);
+  assert.ok(Math.abs((widened[0] + widened[1]) - 0.7) < 1e-5);
+
+  const folded = applyStereoWidthAndCrossfeed(stereoSrc, sr, {
+    monoFoldEnabled: true,
+    stereoWidth: 0,
+    crossfeedStrength: 0.22,
+  });
+  assert.ok(Math.abs(folded[0] - 0.35) < 1e-5);
+  assert.ok(Math.abs(folded[1] - 0.35) < 1e-5);
+
+  // Señal centrada (L == R): el crossfeed conserva ganancia 0 dB tras estabilizarse el retardo
+  const centerSrc = new Float32Array(frames * 2).fill(0.5);
+  const withCrossfeed = applyStereoWidthAndCrossfeed(centerSrc, sr, {
+    monoFoldEnabled: false,
+    stereoWidth: 1.0,
+    crossfeedStrength: 0.22,
+  });
+  assert.ok(Math.abs(withCrossfeed[(frames - 1) * 2] - 0.5) < 1e-4);
+  assert.ok(Math.abs(withCrossfeed[(frames - 1) * 2 + 1] - 0.5) < 1e-4);
+
+  // Señal solo izquierda en bajos (L=0.8, R=0): crossfeed transfiere un porcentaje sutil al oído opuesto
+  const hardLeft = new Float32Array(frames * 2);
+  for (let f = 0; f < frames; f += 1) {
+    hardLeft[f * 2] = 0.8;
+    hardLeft[f * 2 + 1] = 0.0;
+  }
+  const fed = applyStereoWidthAndCrossfeed(hardLeft, sr, {
+    monoFoldEnabled: false,
+    stereoWidth: 1.0,
+    crossfeedStrength: 0.22,
+  });
+  const crossRatio = fed[(frames - 1) * 2 + 1] / 0.8;
+  assert.ok(crossRatio > 0.09 && crossRatio < 0.13);
+});
+
+test('quantizeF32ToI16Tpdf and applyMixerOutputStagePolicy keep linear compiled playback without tanh', () => {
+  // 1. Stream compilado único pasa lineal sin saturación armónica tanh()
+  const streamSamples = [0.85, -0.85, 0.5, -0.5, 1.2, -1.2];
+  const linearOut = applyMixerOutputStagePolicy(streamSamples, true);
+  assert.ok(Math.abs(linearOut[0] - 0.85) < 1e-6);
+  assert.ok(Math.abs(linearOut[2] - 0.5) < 1e-6);
+  assert.equal(linearOut[4], 1.0);
+  assert.equal(linearOut[5], -1.0);
+
+  // Mezcla en vivo del editor sí aplica soft-clipping tanh()
+  const multiTrackOut = applyMixerOutputStagePolicy([0.85, 1.8], false);
+  assert.ok(Math.abs(multiTrackOut[0] - Math.tanh(0.85)) < 1e-6);
+  assert.ok(multiTrackOut[1] > 0.94 && multiTrackOut[1] < 0.96);
+
+  // 2. Dither TPDF sobre silencios queda estrictamente en [-1, +1] LSB con sesgo medio ~0
+  const zeros = new Float32Array(4000);
+  const ditheredZeros = quantizeF32ToI16Tpdf(zeros, 48000);
+  let sum = 0;
+  for (let i = 0; i < ditheredZeros.length; i += 1) {
+    assert.ok(ditheredZeros[i] >= -1 && ditheredZeros[i] <= 1);
+    sum += ditheredZeros[i];
+  }
+  assert.ok(Math.abs(sum / ditheredZeros.length) < 0.08);
+});
+

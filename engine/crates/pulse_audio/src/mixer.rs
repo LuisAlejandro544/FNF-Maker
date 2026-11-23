@@ -1,8 +1,8 @@
 //! Archivo: engine/crates/pulse_audio/src/mixer.rs
 //! Propósito: Mezclador en tiempo real lock-free para:
-//! - Modo estudio/editor: hasta 3 pistas compactas `i16` en RAM (`tracks`).
+//! - Modo estudio/editor: hasta 3 pistas compactas `i16` en RAM (`tracks`) con soft-clip `tanh()`.
 //! - Modo gameplay compilado: 1 único stream en disco (`stream_source`) vía buffer circular
-//!   lock-free de ~512 KB, liberando la RAM de las pistas sueltas en móviles de 32 bits / 2-3 GB.
+//!   lock-free de ~512 KB, pasando linealmente sin `tanh()` para preservar la masterización True Peak.
 //! Incluye cuenta regresiva sincronizada al BPM ("3, 2, 1, ¡YA!") con reloj maestro `AtomicU64`.
 
 use crate::decoder::DecodedTrack;
@@ -301,11 +301,13 @@ impl AudioMixerState {
         let miss_duck = self.player_missed_recently.load(Ordering::Relaxed);
 
         let mut any_track = false;
+        let mut used_compiled_stream = false;
 
         // Prioridad 1: archivo único compilado en streaming desde disco (~512 KB RAM)
         if let Some(stream_guard) = self.stream_source.try_read() {
             if let Some(stream) = stream_guard.as_ref() {
                 any_track = true;
+                used_compiled_stream = true;
                 stream.read_frames_add(slice_out, 1.0);
             }
         }
@@ -359,9 +361,17 @@ impl AudioMixerState {
             }
         }
 
-        // Limitador suave (soft clip) para evitar distorsión al sumar 3 pistas fuertes.
-        for s in slice_out.iter_mut() {
-            *s = (*s).tanh();
+        if used_compiled_stream {
+            // El stream único ya viene fusionado/masterizado con limitador True Peak;
+            // evitar `tanh()` elimina compresión no lineal y distorsión armónica innecesaria.
+            for s in slice_out.iter_mut() {
+                *s = s.clamp(-1.0, 1.0);
+            }
+        } else {
+            // Limitador suave (soft clip) únicamente al mezclar en vivo hasta 3 pistas del editor o sinte demo.
+            for s in slice_out.iter_mut() {
+                *s = (*s).tanh();
+            }
         }
 
         self.frame_cursor
@@ -526,5 +536,55 @@ mod tests {
         assert!(!playing1);
         assert!((dur1 - 2500.0).abs() < 0.1);
         assert!((pos1 - 2500.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn stream_source_passes_linearly_without_tanh_while_multitrack_soft_clips() {
+        let tmp = std::env::temp_dir().join("beatforge_mixer_linear_stream_test.wav");
+        let _ = std::fs::remove_file(&tmp);
+
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        // 0.85 * 32768 ~= 27853; sin tanh() debe salir ~0.85 (no tanh(0.85) ~= 0.691)
+        let amp_i16 = 27_853_i16;
+        {
+            let mut w = hound::WavWriter::create(&tmp, spec).unwrap();
+            for _ in 0..1024 {
+                w.write_sample(amp_i16).unwrap();
+                w.write_sample(-amp_i16).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+
+        let mixer = AudioMixerState::new(48_000);
+        let stream = StreamingAudioSource::open(&tmp).unwrap();
+        mixer.set_stream_source(Some(stream));
+        mixer.play();
+
+        let mut buf = vec![0.0_f32; 256 * 2];
+        mixer.render_audio_frames(&mut buf);
+        assert!((buf[0] - 0.85).abs() < 0.01);
+        assert!((buf[1] + 0.85).abs() < 0.01);
+
+        // Sin stream_source, dos pistas fuertes sumadas (0.9 + 0.9 = 1.8) sí aplican tanh() < 1.0
+        mixer.clear_stream_source();
+        let loud = Arc::new(DecodedTrack {
+            sample_rate: 48_000,
+            stereo_samples: vec![29_491_i16; 1024 * 2], // ~0.90
+            waveform_peaks: Vec::new(),
+        });
+        mixer.set_track(0, Some(Arc::clone(&loud)));
+        mixer.set_track(1, Some(loud));
+        mixer.seek_ms(0.0);
+        mixer.play();
+        let mut buf_mix = vec![0.0_f32; 256 * 2];
+        mixer.render_audio_frames(&mut buf_mix);
+        assert!(buf_mix[0] > 0.90 && buf_mix[0] < 0.97);
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }

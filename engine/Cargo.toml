@@ -25,7 +25,7 @@ libc = "0.2.172"
 # Decodificadores y procesamiento DSP adaptativo con licencias permisivas (MIT / Apache-2.0, sin MPL/GPL)
 lewton = "0.10.2"   # OGG Vorbis (MIT / Apache-2.0)
 hound = "3.5.1"     # WAV (Apache-2.0)
-rmp3 = "0.3.1"      # MP3 (MIT)
+rmp3 = { version = "0.3.1", features = ["float"] } # MP3 en f32 nativo (MIT)
 ebur128 = "0.1.11"  # Medición Loudness LUFS, LRA y True Peak EBU R128 (MIT)
 realfft = "3.5.0"   # Análisis espectral FFT real-to-complex (MIT / Apache-2.0)
 rustfft = "6.4.1"   # Backend FFT de alto rendimiento en Rust puro (MIT / Apache-2.0)
