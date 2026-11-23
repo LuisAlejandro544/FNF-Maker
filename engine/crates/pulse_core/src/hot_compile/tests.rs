@@ -220,6 +220,8 @@ fn hot_compile_repacks_atlas_and_reuses_repacked_atlas_on_cache_hit() {
 fn viewport_and_max_camera_zoom_guide_lanczos3_mip_downscale_and_invalidate_cache() {
     let mut project = ModProject::new_demo();
     project.stage.camera.base_zoom = 0.85;
+    // El chart demo incluye un evento `Add Camera Zoom` (+0.04); aislamos primero `ZoomCamera`.
+    project.chart.events.clear();
     project.chart.events.push(crate::chart::ChartEvent {
         time_ms: 4000.0,
         name: "ZoomCamera".to_string(),
@@ -228,6 +230,14 @@ fn viewport_and_max_camera_zoom_guide_lanczos3_mip_downscale_and_invalidate_cach
     });
     let max_zoom = compute_project_max_camera_zoom(&project);
     assert!((max_zoom - 1.55).abs() < 0.01);
+
+    project.chart.events.push(crate::chart::ChartEvent {
+        time_ms: 5000.0,
+        name: "Add Camera Zoom".to_string(),
+        value1: "0.04".to_string(),
+        value2: "0.02".to_string(),
+    });
+    assert!((compute_project_max_camera_zoom(&project) - 1.59).abs() < 0.01);
 
     let mut prop = StageEntity::new("bg_hq", "Fondo HQ", EntityRole::Background);
     prop.width = 1280.0;

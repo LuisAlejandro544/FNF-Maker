@@ -146,20 +146,20 @@ pub fn default_arrow_svg_bundle(dir: NoteDirection) -> &'static str {
 pub fn default_receptor_svg_bundle(dir: NoteDirection) -> &'static str {
     match dir {
         NoteDirection::Left => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <path d="M16 64 L64 18 L64 42 L110 42 L110 86 L64 86 L64 110 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
-  <path d="M32 64 L56 42 L56 54 L94 54 L94 74 L56 74 L56 86 Z" fill="#94A3B8" fill-opacity="0.35"/>
+  <path d="M16 64 L64 18 L64 42 L110 42 L110 86 L64 86 L64 110 Z" fill="#737373" fill-opacity="0.72" stroke="#D4D4D4" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M32 64 L56 42 L56 54 L94 54 L94 74 L56 74 L56 86 Z" fill="#A3A3A3" fill-opacity="0.35"/>
 </svg>"##,
         NoteDirection::Down => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <path d="M64 112 L18 64 L42 64 L42 18 L86 18 L86 64 L110 64 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
-  <path d="M64 96 L42 72 L54 72 L54 34 L74 34 L74 72 L86 72 Z" fill="#94A3B8" fill-opacity="0.35"/>
+  <path d="M64 112 L18 64 L42 64 L42 18 L86 18 L86 64 L110 64 Z" fill="#737373" fill-opacity="0.72" stroke="#D4D4D4" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M64 96 L42 72 L54 72 L54 34 L74 34 L74 72 L86 72 Z" fill="#A3A3A3" fill-opacity="0.35"/>
 </svg>"##,
         NoteDirection::Up => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <path d="M64 16 L110 64 L86 64 L86 110 L42 110 L42 64 L18 64 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
-  <path d="M64 32 L86 56 L74 56 L74 94 L54 94 L54 56 L42 56 Z" fill="#94A3B8" fill-opacity="0.35"/>
+  <path d="M64 16 L110 64 L86 64 L86 110 L42 110 L42 64 L18 64 Z" fill="#737373" fill-opacity="0.72" stroke="#D4D4D4" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M64 32 L86 56 L74 56 L74 94 L54 94 L54 56 L42 56 Z" fill="#A3A3A3" fill-opacity="0.35"/>
 </svg>"##,
         NoteDirection::Right => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <path d="M112 64 L64 110 L64 86 L18 86 L18 42 L64 42 L64 18 Z" fill="#64748B" fill-opacity="0.72" stroke="#CBD5E1" stroke-width="6" stroke-linejoin="round"/>
-  <path d="M96 64 L72 86 L72 74 L34 74 L34 54 L72 54 L72 42 Z" fill="#94A3B8" fill-opacity="0.35"/>
+  <path d="M112 64 L64 110 L64 86 L18 86 L18 42 L64 42 L64 18 Z" fill="#737373" fill-opacity="0.72" stroke="#D4D4D4" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M96 64 L72 86 L72 74 L34 74 L34 54 L72 54 L72 42 Z" fill="#A3A3A3" fill-opacity="0.35"/>
 </svg>"##,
     }
 }

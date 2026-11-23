@@ -1264,8 +1264,10 @@ mod tests {
 
     #[test]
     fn ebur128_and_realfft_distinguish_sub_bass_vs_bright_track() {
-        let bass_track = make_sine_stereo(60.0, 48_000, 1.5, 0.5);
-        let bright_track = make_sine_stereo(3000.0, 48_000, 1.5, 0.25);
+        // K-weighting (ITU-R BS.1770) atenúa ~3 dB a 60 Hz y realza ~4 dB a 3 kHz (~7 dB de sesgo).
+        // Usamos 0.75 vs 0.15 (~14 dB de diferencia RMS) para que la pista grave sea claramente más fuerte en LUFS.
+        let bass_track = make_sine_stereo(60.0, 48_000, 1.5, 0.75);
+        let bright_track = make_sine_stereo(3000.0, 48_000, 1.5, 0.15);
 
         let a_bass = analyze_song_acoustics(&bass_track, 48_000);
         let a_bright = analyze_song_acoustics(&bright_track, 48_000);

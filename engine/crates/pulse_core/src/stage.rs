@@ -1154,6 +1154,9 @@ mod tests {
     fn multi_camera_slots_resolve_targets_and_protect_base_three() {
         let mut stage = StageScene::default();
         stage.camera.ensure_default_cameras();
+        // Desactivamos el recorte al fondo 1280x720 para validar las coordenadas crudas de cada ancla en zoom 1.0
+        // (el recorte activo se prueba en `swapped_active_entities_clamp_camera_without_exposing_black_bars`).
+        stage.camera.clamp_to_background = false;
         assert_eq!(stage.camera.cameras.len(), 3);
 
         // Cam 0 fija en (640, 360)
