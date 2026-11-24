@@ -468,7 +468,6 @@ mod tests {
 
     #[test]
     fn lua_and_js_camera_vignette_bindings_emit_expected_commands() {
-        let mut rt = ModScriptRuntime::default();
         let lua_asset = ScriptAsset {
             id: "vig_lua".to_string(),
             name: "vig_test.lua".to_string(),
@@ -501,7 +500,7 @@ function onCreate() {
             precompiled_bytecode: None,
             precompiled_js: None,
         };
-        let errs = rt.load_scripts(&[lua_asset, js_asset]);
+        let (mut rt, errs) = ModScriptRuntime::load_from_scripts(&[lua_asset, js_asset]);
         assert!(errs.is_empty(), "errores inesperados: {:?}", errs);
         rt.call_on_create();
         let cmds = rt.drain_commands();
