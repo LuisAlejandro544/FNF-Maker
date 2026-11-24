@@ -4,6 +4,7 @@
 //! y métodos de inicialización, sincronización de scripts y asignación de pistas de audio.
 
 use super::camera_lua::render_camera_lua_script;
+use super::countdown::CountdownAssetsConfig;
 use super::stage_events_lua::render_stage_events_lua_script;
 use super::ui_blackout_lua::{UI_BLACKOUT_RUNTIME_V2_MARKER, render_ui_blackout_lua_script};
 use crate::chart::ChartData;
@@ -167,6 +168,8 @@ pub struct ModProject {
     pub preferred_render_backend: RenderBackendKind,
     #[serde(default = "default_audio_adapt_enabled")]
     pub audio_adapt_enabled: bool,
+    #[serde(default)]
+    pub countdown: CountdownAssetsConfig,
 }
 
 impl ModProject {
@@ -268,6 +271,7 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             scroll_speed_override: None,
             preferred_render_backend: RenderBackendKind::Canvas2d,
             audio_adapt_enabled: true,
+            countdown: CountdownAssetsConfig::default(),
         }
     }
 

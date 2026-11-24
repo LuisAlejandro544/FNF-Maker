@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import com.beatforge.studio.CountdownStepSnapshot
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.MobileControlMode
@@ -54,6 +55,8 @@ fun GameplayScreen(
     healthBarBitmap: ImageBitmap?,
     ratingBitmaps: Map<Int, ImageBitmap>,
     noteSplashBitmap: ImageBitmap?,
+    countdownSlots: List<CountdownStepSnapshot>,
+    countdownBitmaps: Map<Int, LoadedEntityBitmap>,
     fallbackPlayerId: String?,
     fallbackOpponentId: String?,
     entityNormalIcons: Map<String, ImageBitmap>,
@@ -177,6 +180,10 @@ fun GameplayScreen(
                 dynamicTextPaint = dynamicTextPaint
             )
 
+            if (!frameState.vignetteOverHud) {
+                drawCameraSideVignette(frameState)
+            }
+
             drawClassicHitboxColumns(
                 frameState = frameState,
                 pressedMask = touchMaskState.pressedMask,
@@ -232,6 +239,9 @@ fun GameplayScreen(
         // cubre escenario, flechas y barra de vida, pero conserva visible el conteo "3, 2, 1, ¡YA!" y Pausa.
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (frameState.drawTick < 0L) return@Canvas
+            if (frameState.vignetteOverHud) {
+                drawCameraSideVignette(frameState)
+            }
             val blackoutAlpha = frameState.screenBlackoutAlpha.coerceIn(0f, 1f)
             if (blackoutAlpha > 0.002f) {
                 drawRect(
@@ -264,7 +274,11 @@ fun GameplayScreen(
             GameplayScriptBanner(hud = hud)
         }
 
-        GameplayCountdownOverlay(hud = hud)
+        GameplayCountdownOverlay(
+            hud = hud,
+            countdownSlots = countdownSlots,
+            countdownBitmaps = countdownBitmaps
+        )
 
         GameplayGameOverOverlay(
             hud = hud,

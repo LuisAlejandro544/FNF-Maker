@@ -80,6 +80,10 @@ const NECESSARY_ENGINE_APIS: &[&str] = &[
     "retireEntity",
     "swapEntity",
     "setActiveCharacter",
+    "setCameraVignette",
+    "tweenCameraVignette",
+    "clearCameraVignette",
+    "getCameraVignetteAlpha",
 ];
 
 fn strip_comments_for_api_scan(body: &str) -> String {

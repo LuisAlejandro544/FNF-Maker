@@ -26,6 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.FlipToBack
 import androidx.compose.material.icons.rounded.FlipToFront
 import androidx.compose.material.icons.rounded.HelpOutline
@@ -74,6 +76,8 @@ fun StageLayersPanel(
     onOpenFilesGuide: () -> Unit,
     onToggleVisibility: (StageEntitySnapshot) -> Unit,
     onReorderEntity: (entityId: String, action: String) -> Unit,
+    onRemoveEntity: (StageEntitySnapshot) -> Unit,
+    onClearScene: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val reversedEntities = remember(entities) { entities.asReversed() }
@@ -152,6 +156,18 @@ fun StageLayersPanel(
                     )
                 }
                 IconButton(
+                    onClick = onClearScene,
+                    enabled = entities.isNotEmpty(),
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteSweep,
+                        contentDescription = "Vaciar escena",
+                        tint = if (entities.isNotEmpty()) StudioColors.AccentCoral else StudioColors.TextMuted.copy(alpha = 0.45f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                IconButton(
                     onClick = onOpenFilesGuide,
                     modifier = Modifier.size(26.dp)
                 ) {
@@ -216,6 +232,9 @@ fun StageLayersPanel(
                         }
                         IconButton(onClick = { onReorderEntity(selected.id, "back") }, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Rounded.FlipToBack, "Al fondo", tint = StudioColors.AccentIndigo, modifier = Modifier.size(16.dp))
+                        }
+                        IconButton(onClick = { onRemoveEntity(selected) }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.DeleteOutline, "Eliminar capa", tint = StudioColors.AccentCoral, modifier = Modifier.size(17.dp))
                         }
                     }
                 }

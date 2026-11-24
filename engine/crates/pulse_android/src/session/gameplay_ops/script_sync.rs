@@ -224,6 +224,7 @@ pub(super) fn sync_script_host_state(
     *state.camera_y.lock() = stage.camera_y;
     *state.camera_zoom.lock() = stage.camera_zoom;
     *state.camera_base_zoom.lock() = stage.camera_base_zoom;
+    *state.camera_vignette_alpha.lock() = stage.vignette_alpha;
     *state.must_hit_section.lock() = must_hit;
     *state.gf_section.lock() = gf_section;
     *state.active_camera_slot.lock() = active_camera_slot;
@@ -427,6 +428,12 @@ pub(super) fn update_active_tweens(
             TweenTarget::ScreenBlackout => {
                 session.screen_blackout_alpha = val.clamp(0.0, 1.0);
             }
+            TweenTarget::CameraVignetteAlpha => {
+                stage.vignette_alpha = val.clamp(0.0, 1.0);
+            }
+            TweenTarget::CameraVignetteWidth => {
+                stage.vignette_width = val.clamp(0.05, 0.50);
+            }
         }
         if raw_t >= 1.0 {
             completed_tweens.push(tw.tag.clone());
@@ -538,6 +545,98 @@ pub(super) fn drain_and_apply_script_commands(
                     stage.clamp_camera_to_background(stage.camera_x, stage.camera_y, stage.camera_zoom);
                 stage.camera_x = cx;
                 stage.camera_y = cy;
+            }
+            ScriptCommand::SetCameraVignette {
+                color_argb,
+                alpha,
+                width,
+                pulse,
+                over_hud,
+            } => {
+                session.active_tweens.retain(|t| {
+                    !matches!(
+                        t.target,
+                        TweenTarget::CameraVignetteAlpha | TweenTarget::CameraVignetteWidth
+                    )
+                });
+                stage.vignette_color_argb = color_argb;
+                stage.vignette_alpha = alpha.clamp(0.0, 1.0);
+                stage.vignette_width = width.clamp(0.05, 0.50);
+                stage.vignette_pulse = pulse.clamp(0.0, 1.0);
+                stage.vignette_over_hud = over_hud;
+            }
+            ScriptCommand::TweenCameraVignette {
+                tag,
+                target_alpha,
+                duration_sec,
+                ease,
+                color_argb,
+                target_width,
+                pulse,
+                over_hud,
+            } => {
+                if let Some(c) = color_argb {
+                    stage.vignette_color_argb = c;
+                }
+                if let Some(p) = pulse {
+                    stage.vignette_pulse = p.clamp(0.0, 1.0);
+                }
+                if let Some(oh) = over_hud {
+                    stage.vignette_over_hud = oh;
+                }
+                let end_alpha = target_alpha.clamp(0.0, 1.0);
+                let tag_w = format!("{}__w", tag);
+                session
+                    .active_tweens
+                    .retain(|t| t.tag != tag && t.tag != tag_w);
+                if duration_sec <= 0.01 {
+                    stage.vignette_alpha = end_alpha;
+                    if let Some(w) = target_width {
+                        stage.vignette_width = w.clamp(0.05, 0.50);
+                    }
+                } else {
+                    session.active_tweens.push(ActiveTweenState {
+                        tag,
+                        target: TweenTarget::CameraVignetteAlpha,
+                        start_val: stage.vignette_alpha,
+                        end_val: end_alpha,
+                        elapsed_sec: 0.0,
+                        duration_sec: duration_sec.max(0.001),
+                        ease: ease.clone(),
+                    });
+                    if let Some(w) = target_width {
+                        session.active_tweens.push(ActiveTweenState {
+                            tag: tag_w,
+                            target: TweenTarget::CameraVignetteWidth,
+                            start_val: stage.vignette_width,
+                            end_val: w.clamp(0.05, 0.50),
+                            elapsed_sec: 0.0,
+                            duration_sec: duration_sec.max(0.001),
+                            ease,
+                        });
+                    }
+                }
+            }
+            ScriptCommand::ClearCameraVignette { duration_sec, ease } => {
+                session.active_tweens.retain(|t| {
+                    !matches!(
+                        t.target,
+                        TweenTarget::CameraVignetteAlpha | TweenTarget::CameraVignetteWidth
+                    )
+                });
+                if duration_sec <= 0.01 {
+                    stage.vignette_alpha = 0.0;
+                } else {
+                    session.active_tweens.push(ActiveTweenState {
+                        tag: "__cam_vignette_clear".to_string(),
+                        target: TweenTarget::CameraVignetteAlpha,
+                        start_val: stage.vignette_alpha,
+                        end_val: 0.0,
+                        elapsed_sec: 0.0,
+                        duration_sec: duration_sec.max(0.001),
+                        ease,
+                    });
+                }
             }
             ScriptCommand::SetEntityProp {
                 entity_id,
@@ -878,9 +977,10 @@ pub(super) fn drain_and_apply_script_commands(
             }
             ScriptCommand::CancelTween(tag) => {
                 let tag_y = format!("{}__y", tag);
+                let tag_w = format!("{}__w", tag);
                 session
                     .active_tweens
-                    .retain(|t| t.tag != tag && t.tag != tag_y);
+                    .retain(|t| t.tag != tag && t.tag != tag_y && t.tag != tag_w);
             }
             ScriptCommand::RunTimer { tag, duration_sec } => {
                 session.active_timers.retain(|t| t.tag != tag);

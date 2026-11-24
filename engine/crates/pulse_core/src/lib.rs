@@ -71,14 +71,17 @@ pub use mod_descriptors::{
     parse_stage_descriptor_str,
 };
 pub use project::{
-    AudioTrackSlot, CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MobileControlMode, ModProject,
-    ScriptAsset, ScriptLanguage, parse_camera_config_from_lua, render_camera_lua_script,
+    AudioTrackSlot, CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, COUNTDOWN_STEP_COUNT,
+    CountdownAssetsConfig, CountdownStepAsset, MAX_AUDIO_TRACKS, MobileControlMode, ModProject,
+    STAGE_EVENTS_SCRIPT_ID, STAGE_EVENTS_SCRIPT_NAME, ScriptAsset, ScriptLanguage,
+    UI_BLACKOUT_SCRIPT_ID, UI_BLACKOUT_SCRIPT_NAME, countdown_step_label, current_epoch_ms,
+    parse_camera_config_from_lua, parse_countdown_sparrow_xml, render_camera_lua_script,
 };
 pub use script_optimizer::{ScriptBatchReport, ScriptLoopOptResult, optimize_scripts_for_hot_compile, optimize_single_script};
 pub use sparrow::{AnimSet, CharacterAnimKind, SparrowAtlas, SparrowFrame};
 pub use stage::{
     CameraFollowMode, CameraTargetKind, EntityRole, StageCameraConfig, StageCameraSlot,
-    StageEntity, StageScene, default_camera_slots,
+    StageEntity, StageScene, default_camera_slots, parse_vignette_color_argb,
 };
 pub use svg_skin::{
     ArrowSkinSet, RasterizedArrow, default_arrow_svg_bundle, default_hurt_arrow_x_svg,

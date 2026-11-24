@@ -14,6 +14,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,12 +38,15 @@ import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.CropFree
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -76,6 +82,18 @@ private val CAMERA_TARGET_OPTIONS = listOf(
     "entity" to "Entidad"
 )
 
+private val VIGNETTE_PRESET_COLORS = listOf(
+    "#EF4444" to "Rojo",
+    "#DC2626" to "Carmesí",
+    "#3B82F6" to "Azul",
+    "#06B6D4" to "Cian",
+    "#A855F7" to "Morado",
+    "#F59E0B" to "Ámbar",
+    "#10B981" to "Verde",
+    "#09090B" to "Negro"
+)
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StageCameraInspector(
     camera: StageCameraSnapshot,
@@ -93,6 +111,15 @@ fun StageCameraInspector(
         smoothSpeed: Float,
         panStrength: Float,
         clampToBackground: Boolean,
+        commitSave: Boolean
+    ) -> Unit,
+    onUpdateCameraVignette: (
+        enabled: Boolean,
+        colorHex: String,
+        alpha: Float,
+        width: Float,
+        pulse: Float,
+        overHud: Boolean,
         commitSave: Boolean
     ) -> Unit,
     onSelectCameraSlot: (slotIndex: Int) -> Unit,
@@ -130,7 +157,14 @@ fun StageCameraInspector(
     var isDraggingSmooth by remember { mutableStateOf(false) }
     var localPan by remember(activeSlot.index) { mutableFloatStateOf(activeSlot.panStrength) }
     var isDraggingPan by remember { mutableStateOf(false) }
-    var activeTab by remember { mutableIntStateOf(0) } // 0 = Ranura & FOV, 1 = Modo & Chart
+    var localVignetteColor by remember { mutableStateOf(camera.vignetteColor) }
+    var localVignetteAlpha by remember { mutableFloatStateOf(camera.vignetteAlpha) }
+    var isDraggingVigAlpha by remember { mutableStateOf(false) }
+    var localVignetteWidth by remember { mutableFloatStateOf(camera.vignetteWidth) }
+    var isDraggingVigWidth by remember { mutableStateOf(false) }
+    var localVignettePulse by remember { mutableFloatStateOf(camera.vignettePulse) }
+    var isDraggingVigPulse by remember { mutableStateOf(false) }
+    var activeTab by remember { mutableIntStateOf(0) } // 0 = Ranura & FOV, 1 = Modo & Chart, 2 = Viñeta
 
     LaunchedEffect(activeSlot.index, activeSlot.zoom) {
         if (!isDraggingZoom) localZoom = activeSlot.zoom
@@ -140,6 +174,18 @@ fun StageCameraInspector(
     }
     LaunchedEffect(activeSlot.index, activeSlot.panStrength) {
         if (!isDraggingPan) localPan = activeSlot.panStrength
+    }
+    LaunchedEffect(camera.vignetteColor) {
+        localVignetteColor = camera.vignetteColor
+    }
+    LaunchedEffect(camera.vignetteAlpha) {
+        if (!isDraggingVigAlpha) localVignetteAlpha = camera.vignetteAlpha
+    }
+    LaunchedEffect(camera.vignetteWidth) {
+        if (!isDraggingVigWidth) localVignetteWidth = camera.vignetteWidth
+    }
+    LaunchedEffect(camera.vignettePulse) {
+        if (!isDraggingVigPulse) localVignettePulse = camera.vignettePulse
     }
 
     val useLiveSlot = liveTransform.isInteractingCamera && liveTransform.camSlotIndex == activeSlot.index
@@ -179,6 +225,26 @@ fun StageCameraInspector(
             camera.panStrength,
             clampToBackground,
             true
+        )
+    }
+
+    fun commitVignette(
+        enabled: Boolean = camera.vignetteEnabled,
+        colorHex: String = localVignetteColor,
+        alpha: Float = localVignetteAlpha,
+        width: Float = localVignetteWidth,
+        pulse: Float = localVignettePulse,
+        overHud: Boolean = camera.vignetteOverHud,
+        save: Boolean = true
+    ) {
+        onUpdateCameraVignette(
+            enabled,
+            colorHex,
+            alpha.coerceIn(0f, 1f),
+            width.coerceIn(0.05f, 0.50f),
+            pulse.coerceIn(0f, 1f),
+            overHud,
+            save
         )
     }
 
@@ -365,24 +431,31 @@ fun StageCameraInspector(
             }
         }
 
-        // Pestañas ergonómicas: Ranura & FOV / Modo & Chart
+        // Pestañas ergonómicas: Ranura & FOV / Modo & Chart / Viñeta
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             CameraTabChip(
                 label = "Ranura & FOV",
                 icon = Icons.Rounded.CropFree,
                 selected = activeTab == 0,
                 onClick = { activeTab = 0 },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1.1f)
             )
             CameraTabChip(
-                label = "Modo & Chart",
+                label = "Modo",
                 icon = Icons.Rounded.Tune,
                 selected = activeTab == 1,
                 onClick = { activeTab = 1 },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(0.85f)
+            )
+            CameraTabChip(
+                label = "Viñeta",
+                icon = Icons.Rounded.Palette,
+                selected = activeTab == 2,
+                onClick = { activeTab = 2 },
+                modifier = Modifier.weight(0.9f)
             )
         }
 
@@ -711,7 +784,7 @@ fun StageCameraInspector(
                         )
                     }
                 }
-            } else {
+            } else if (activeTab == 1) {
                 // Pestaña 2: Modo de seguimiento del chart, Intervalo, Suavizado de ranura y Script Lua
                 Button(
                     onClick = onOpenCameraScript,
@@ -929,8 +1002,267 @@ fun StageCameraInspector(
                         )
                     }
                 }
+            } else {
+                // Pestaña 3: Viñeta / Brillo Lateral que sigue a la cámara
+                Text(
+                    text = "Resplandor o viñeta lateral que acompaña siempre el encuadre de la cámara. Puedes activarla desde el inicio o hacer que aparezca/desaparezca en cualquier paso # del Chart.",
+                    color = StudioColors.TextMuted,
+                    fontSize = 9.5.sp,
+                    lineHeight = 12.5.sp
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = StudioColors.BgCard,
+                    border = BorderStroke(
+                        1.dp,
+                        if (camera.vignetteEnabled) StudioColors.AccentCoral.copy(alpha = 0.65f) else StudioColors.BorderSubtle
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Activar viñeta lateral base",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Visible desde el arranque (o desactívala y lánzala por pasos en el Chart)",
+                                color = StudioColors.TextMuted,
+                                fontSize = 9.5.sp,
+                                lineHeight = 12.sp
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Switch(
+                            checked = camera.vignetteEnabled,
+                            onCheckedChange = { nextEnabled ->
+                                commitVignette(enabled = nextEnabled, save = true)
+                            }
+                        )
+                    }
+                }
+
+                Text("Color de los bordes laterales", color = StudioColors.TextMuted, fontSize = 10.5.sp)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    VIGNETTE_PRESET_COLORS.forEach { (hex, label) ->
+                        val parsed = parseInspectorHexColor(hex)
+                        val isSel = localVignetteColor.equals(hex, ignoreCase = true)
+                        Row(
+                            modifier = Modifier
+                                .height(26.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (isSel) parsed.copy(alpha = 0.24f) else StudioColors.BgCard)
+                                .border(
+                                    1.dp,
+                                    if (isSel) parsed else StudioColors.BorderSubtle,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable {
+                                    localVignetteColor = hex
+                                    commitVignette(enabled = true, colorHex = hex, save = true)
+                                }
+                                .padding(horizontal = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(parsed)
+                                    .border(0.8.dp, Color.White.copy(alpha = 0.45f), CircleShape)
+                            )
+                            Text(
+                                text = label,
+                                color = StudioColors.TextPrimary,
+                                fontSize = 10.sp,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = localVignetteColor,
+                        onValueChange = { raw ->
+                            localVignetteColor = raw
+                            val clean = raw.trim().removePrefix("#")
+                            if (clean.length == 6 || clean.length == 8) {
+                                val normalized = "#$clean"
+                                commitVignette(colorHex = normalized, save = false)
+                            }
+                        },
+                        label = { Text("Color Hex (#RRGGBB)", fontSize = 10.sp) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(
+                        onClick = { commitVignette(enabled = true, colorHex = localVignetteColor, save = true) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Text("Fijar", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Column {
+                    Text(
+                        text = "Intensidad lateral: ${(localVignetteAlpha * 100f).roundToInt()}%",
+                        color = StudioColors.TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Slider(
+                        value = localVignetteAlpha.coerceIn(0f, 1f),
+                        onValueChange = { nextA ->
+                            isDraggingVigAlpha = true
+                            localVignetteAlpha = nextA
+                            commitVignette(alpha = nextA, save = false)
+                        },
+                        onValueChangeFinished = {
+                            isDraggingVigAlpha = false
+                            commitVignette(alpha = localVignetteAlpha, save = true)
+                        },
+                        valueRange = 0f..1f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = StudioColors.AccentCoral,
+                            activeTrackColor = StudioColors.AccentCoral
+                        )
+                    )
+                }
+
+                Column {
+                    Text(
+                        text = "Ancho de borde lateral: ${(localVignetteWidth * 100f).roundToInt()}%",
+                        color = StudioColors.TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Slider(
+                        value = localVignetteWidth.coerceIn(0.05f, 0.50f),
+                        onValueChange = { nextW ->
+                            isDraggingVigWidth = true
+                            localVignetteWidth = nextW
+                            commitVignette(width = nextW, save = false)
+                        },
+                        onValueChangeFinished = {
+                            isDraggingVigWidth = false
+                            commitVignette(width = localVignetteWidth, save = true)
+                        },
+                        valueRange = 0.05f..0.50f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = StudioColors.AccentCyan,
+                            activeTrackColor = StudioColors.AccentCyan
+                        )
+                    )
+                }
+
+                Column {
+                    Text(
+                        text = "Pulso al Beat / Shake: ${(localVignettePulse * 100f).roundToInt()}%",
+                        color = StudioColors.TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Slider(
+                        value = localVignettePulse.coerceIn(0f, 1f),
+                        onValueChange = { nextP ->
+                            isDraggingVigPulse = true
+                            localVignettePulse = nextP
+                            commitVignette(pulse = nextP, save = false)
+                        },
+                        onValueChangeFinished = {
+                            isDraggingVigPulse = false
+                            commitVignette(pulse = localVignettePulse, save = true)
+                        },
+                        valueRange = 0f..1f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = StudioColors.AccentAmber,
+                            activeTrackColor = StudioColors.AccentAmber
+                        )
+                    )
+                }
+
+                Text("Capa visual de la viñeta", color = StudioColors.TextMuted, fontSize = 10.5.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(false to "Escenario (detrás HUD)", true to "Sobre HUD / Flechas").forEach { (over, label) ->
+                        val isSel = camera.vignetteOverHud == over
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(29.dp)
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(if (isSel) StudioColors.AccentCyan.copy(alpha = 0.22f) else StudioColors.BgCard)
+                                .border(
+                                    1.dp,
+                                    if (isSel) StudioColors.AccentCyan else StudioColors.BorderSubtle,
+                                    RoundedCornerShape(7.dp)
+                                )
+                                .clickable { commitVignette(overHud = over, save = true) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (isSel) StudioColors.AccentCyan else StudioColors.TextPrimary,
+                                fontSize = 10.sp,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = onOpenCameraScript,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.AccentPurple,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                ) {
+                    Icon(Icons.Rounded.Code, null, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Editar camera_system.lua", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
+    }
+}
+
+private fun parseInspectorHexColor(raw: String): Color {
+    val clean = raw.trim().removePrefix("#")
+    return try {
+        when (clean.length) {
+            6 -> Color((0xFF000000L or clean.toLong(16)).toInt())
+            8 -> Color(clean.toLong(16).toInt())
+            else -> StudioColors.AccentCoral
+        }
+    } catch (_: Throwable) {
+        StudioColors.AccentCoral
     }
 }
 

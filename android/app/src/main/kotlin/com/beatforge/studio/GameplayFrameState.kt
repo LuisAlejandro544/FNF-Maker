@@ -15,7 +15,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 private const val BINARY_FRAME_MAGIC = 0x42464750 // "BFGP"
-private const val BINARY_HEADER_SIZE = 152
+private const val BINARY_HEADER_SIZE = 168
 
 @Immutable
 data class GameplayHudState(
@@ -166,6 +166,11 @@ class GameplayFrameState {
     var flashColorArgb: Int = -1
     var flashAlpha: Float = 0f
     var flashOverHud: Boolean = false
+    var vignetteColorArgb: Int = 0xFFEF4444.toInt()
+    var vignetteAlpha: Float = 0f
+    var vignetteWidth: Float = 0.24f
+    var vignettePulse: Float = 0.35f
+    var vignetteOverHud: Boolean = false
     var activePlayerIdx: Int = -1
     var activeOpponentIdx: Int = -1
     var lastRatingCode: Int = 0
@@ -221,6 +226,11 @@ class GameplayFrameState {
         flashColorArgb = -1
         flashAlpha = 0f
         flashOverHud = false
+        vignetteColorArgb = 0xFFEF4444.toInt()
+        vignetteAlpha = 0f
+        vignetteWidth = 0.24f
+        vignettePulse = 0.35f
+        vignetteOverHud = false
         activePlayerIdx = -1
         activeOpponentIdx = -1
         lastRatingCode = 0
@@ -269,6 +279,11 @@ class GameplayFrameState {
         flashColorArgb = step.flashColorArgb.toInt()
         flashAlpha = step.flashAlpha
         flashOverHud = step.flashOverHud
+        vignetteColorArgb = step.vignetteColorArgb.toInt()
+        vignetteAlpha = step.vignetteAlpha
+        vignetteWidth = step.vignetteWidth
+        vignettePulse = step.vignettePulse
+        vignetteOverHud = step.vignetteOverHud
         activePlayerIdx = step.activePlayerIdx
         activeOpponentIdx = step.activeOpponentIdx
         lastRatingCode = step.ratingCode
@@ -452,6 +467,10 @@ class GameplayFrameState {
         val noteCount = buf.short.toInt() and 0xFFFF
         val strumCount = buf.short.toInt() and 0xFFFF
         val dynCount = buf.short.toInt() and 0xFFFF
+        vignetteColorArgb = buf.int
+        vignetteAlpha = buf.float
+        vignetteWidth = buf.float
+        vignettePulse = buf.float
 
         active = (flags and 1) != 0
         downscroll = (flags and (1 shl 1)) != 0
@@ -466,6 +485,7 @@ class GameplayFrameState {
         gameOverPhase = (flags ushr 10) and 0x3
         botplay = (flags and (1 shl 12)) != 0
         practiceMode = (flags and (1 shl 13)) != 0
+        vignetteOverHud = (flags and (1 shl 14)) != 0
         screenBlackoutAlpha = ((flags ushr 16) and 0xFF) / 255f
         arrowsOpacity = 1f - (((flags ushr 24) and 0xFF) / 255f)
         hudOpacity = hudOpVal

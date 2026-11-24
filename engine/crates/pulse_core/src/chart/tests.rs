@@ -227,3 +227,53 @@ fn chart_intro_ui_round_trips_and_parses_shorthands() {
     assert!(parsed.intro_ui.hide_arrows);
     assert!(!parsed.intro_ui.reveal_on_song_start);
 }
+
+#[test]
+fn chart_camera_vignette_events_and_long_blackout_delay_parse() {
+    let show = parse_chart_camera_event(
+        "Camera Vignette",
+        "#EF4444",
+        "action=show;alpha=0.72;width=0.30;pulse=0.45;hud=1;dur=0.5;ease=quadOut",
+        120.0,
+    );
+    assert_eq!(
+        show,
+        Some(ParsedChartCameraAction::SetVignette {
+            enabled: true,
+            color_argb: Some(0xFFEF4444),
+            alpha: Some(0.72),
+            width: Some(0.30),
+            pulse: Some(0.45),
+            over_hud: Some(true),
+            duration_sec: 0.5,
+            ease: "quadOut".to_string(),
+        })
+    );
+
+    let hide = parse_chart_camera_event("Camera Vignette", "off", "dur=0.4", 120.0);
+    assert_eq!(
+        hide,
+        Some(ParsedChartCameraAction::SetVignette {
+            enabled: false,
+            color_argb: None,
+            alpha: Some(0.0),
+            width: None,
+            pulse: None,
+            over_hud: None,
+            duration_sec: 0.4,
+            ease: "sineOut".to_string(),
+        })
+    );
+
+    let mut chart = ChartData::bundled_demo_chart();
+    chart.set_intro_ui(ChartIntroUiConfig {
+        start_blackout: true,
+        blackout_alpha: 1.0,
+        hide_hud: true,
+        hide_arrows: true,
+        reveal_on_song_start: true,
+        reveal_delay_ms: 95_000.0,
+        fade_sec: 0.8,
+    });
+    assert!((chart.intro_ui.reveal_delay_ms - 95_000.0).abs() < 0.1);
+}

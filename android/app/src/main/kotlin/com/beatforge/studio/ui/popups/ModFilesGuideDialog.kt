@@ -109,6 +109,13 @@ private val MOD_GUIDE_ENTRIES = listOf(
         whereInStudio = "Barra lateral -> Skin -> 1. Hoja .PNG y 2. Atlas .XML",
         whereInModFolders = "images/NOTE_assets.png + images/NOTE_assets.xml, mods/images/NOTE_assets.*, assets/shared/images/NOTE_assets.* o images/noteSkins/",
         note = "El motor recorta automáticamente las 4 direcciones (purple/blue/green/red o left/down/up/right). Las notas peligrosas (Hurt / Instakill) muestran la flecha SVG con una X."
+    ),
+    ModFileGuideEntry(
+        title = "10. Cuenta Regresiva (3 · 2 · 1 · ¡YA!): Sprites + Voces Separadas",
+        accent = StudioColors.AccentAmber,
+        whereInStudio = "Sprites -> Botón 3-2-1  o  Audio -> Botón Voces 3-2-1",
+        whereInModFolders = "Sprites: images/ready.png, images/set.png, images/go.png (o mods/images/) con su .xml opcional · Voces: sounds/intro3.ogg, intro2.ogg, intro1.ogg, introGo.ogg",
+        note = "Cada paso del conteo es independiente: puedes subir solo imágenes, PNG + Sparrow .xml animado y/o audios separados (.ogg/.wav/.mp3)."
     )
 )
 

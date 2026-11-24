@@ -5,9 +5,11 @@
 //! - `editor_ops`: Edición de charts, audio, escenario, scripts y skins SVG.
 //! - `sprite_ops`: Carga de texturas `.png`/`.astc`, XML Sparrow y horneado Adobe Animate.
 //! - `gameplay_ops`: Compilación en caliente (`rayon`) y simulación frame a frame con cuenta regresiva BPM.
+//! - `countdown_ops`: Sprites, XML Sparrow opcional y voces separadas de cuenta regresiva (`3, 2, 1, ¡YA!`).
 //! - `persistence_ops`: Persistencia automática instantánea en `filesDir` y menú de proyectos.
 //! - Espejo `flip_x`: intercambia `Left <-> Right` y `MissLeft <-> MissRight` al disparar notas.
 
+pub mod countdown_ops;
 pub mod dto;
 pub mod editor_ops;
 pub mod gameplay_ops;
@@ -18,10 +20,10 @@ pub mod sprite_ops;
 pub use dto::{
     ActionResultJson, ActiveTimerState, ActiveTweenState, AudioTrackSnapshotJson,
     ChartEventJson, ChartIntroUiSnapshotJson, ChartSectionSnapshotJson, ChartSnapshotJson,
-    CompileReportJson, DynamicDrawableState, DynamicScriptItemJson, GameplayEntityFrameJson,
-    GameplayRuntimeState, GameplayStepJson, ProjectSnapshotJson, ProjectSummaryJson,
-    ScriptSnapshotJson, SparrowFrameJson, StageCameraSlotSnapshotJson, StageEntitySnapshotJson,
-    StrumOverrideJson, StrumOverrideState, TweenTarget, VisibleNoteJson,
+    CompileReportJson, CountdownStepSnapshotJson, DynamicDrawableState, DynamicScriptItemJson,
+    GameplayEntityFrameJson, GameplayRuntimeState, GameplayStepJson, ProjectSnapshotJson,
+    ProjectSummaryJson, ScriptSnapshotJson, SparrowFrameJson, StageCameraSlotSnapshotJson,
+    StageEntitySnapshotJson, StrumOverrideJson, StrumOverrideState, TweenTarget, VisibleNoteJson,
 };
 
 use pulse_audio::{AudioAdaptationReport, AudioEngineHandle, AudioMixerState, DecodedTrack};
@@ -30,7 +32,7 @@ use pulse_core::disk_cache::{
     evict_lru_files, evict_lru_subdirs,
 };
 use pulse_core::hot_compile::{CompiledBundle, EntityLifecycleWindow, HotCompileReport};
-use pulse_core::project::{MAX_AUDIO_TRACKS, MobileControlMode, ModProject};
+use pulse_core::project::{COUNTDOWN_STEP_COUNT, MAX_AUDIO_TRACKS, MobileControlMode, ModProject};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::{EntityRole, NoteDirection, ScriptLanguage, StageEntity};
 use std::collections::HashMap;
@@ -49,6 +51,7 @@ pub struct EngineSession {
     pub project: ModProject,
     pub audio_engine: AudioEngineHandle,
     pub decoded_tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
+    pub decoded_countdown_cues: [Option<Arc<DecodedTrack>>; COUNTDOWN_STEP_COUNT],
     pub compiled_bundle: Option<CompiledBundle>,
     pub compiled_texture_paths: HashMap<String, String>,
     pub compiled_texture_pages: HashMap<String, Vec<String>>,
@@ -89,6 +92,7 @@ impl EngineSession {
             project: ModProject::new_demo(),
             audio_engine: AudioEngineHandle::new_deferred(),
             decoded_tracks: [None, None, None],
+            decoded_countdown_cues: [None, None, None, None],
             compiled_bundle: None,
             compiled_texture_paths: HashMap::new(),
             compiled_texture_pages: HashMap::new(),

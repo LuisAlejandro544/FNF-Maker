@@ -52,13 +52,24 @@ pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<
     let mut intro_hide_arrows = chart.intro_ui.hide_arrows;
     let mut intro_reveal_on_start = chart.intro_ui.reveal_on_song_start;
     let mut intro_reveal_delay_sec =
-        (chart.intro_ui.reveal_delay_ms / 1000.0).clamp(0.0, 60.0);
+        (chart.intro_ui.reveal_delay_ms / 1000.0).clamp(0.0, 600.0);
     let mut intro_fade_sec = if chart.intro_ui.fade_sec > 0.01 {
         (chart.intro_ui.fade_sec as f64).clamp(0.0, 25.0)
     } else {
         0.65_f64
     };
-    let mut cue_lines = Vec::new();
+
+    struct CompiledBlackoutCue {
+        time_ms: f64,
+        action: String,
+        black: f64,
+        hud: f64,
+        arrows: f64,
+        dur_sec: f64,
+        ease: String,
+    }
+    let mut compiled_cues: Vec<CompiledBlackoutCue> = Vec::new();
+    let mut pending_auto_ends: Vec<(f64, f64, String)> = Vec::new();
 
     for ev in &sorted_events {
         let lower_name = ev.name.trim().to_ascii_lowercase();
@@ -167,6 +178,8 @@ pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<
             0.60_f64
         };
         let mut reveal_ms = 0.0_f64;
+        let mut end_ms: Option<f64> = None;
+        let mut end_dur_sec: Option<f64> = None;
         let mut explicit_on_start: Option<bool> = None;
         let mut ease = "sineInOut".to_string();
 
@@ -268,10 +281,24 @@ pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<
                             }
                         }
                     }
+                    "enddur" | "end_dur" | "fadeout" | "outdur" => {
+                        if let Ok(d) = v.parse::<f64>() {
+                            if d.is_finite() && d >= 0.0 {
+                                end_dur_sec = Some(d.clamp(0.0, 25.0));
+                            }
+                        }
+                    }
+                    "endms" | "end_ms" => {
+                        if let Ok(em) = v.parse::<f64>() {
+                            if em.is_finite() && em > 0.0 {
+                                end_ms = Some(em.clamp(0.0, 600_000.0));
+                            }
+                        }
+                    }
                     "revealms" | "reveal_ms" | "delayms" => {
                         if let Ok(rm) = v.parse::<f64>() {
                             if rm.is_finite() && rm >= 0.0 {
-                                reveal_ms = rm.clamp(0.0, 60_000.0);
+                                reveal_ms = rm.clamp(0.0, 600_000.0);
                             }
                         }
                     }
@@ -298,6 +325,12 @@ pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<
                         || (arrows_alpha >= 0.0 && arrows_alpha <= 0.15))));
         let is_intro_cue = action == "intro" || hides_at_start;
 
+        if let Some(em) = end_ms {
+            if em > ev.time_ms.max(0.0) + 5.0 {
+                pending_auto_ends.push((em, end_dur_sec.unwrap_or(dur_sec), ease.clone()));
+            }
+        }
+
         if is_intro_cue {
             if black_alpha > 0.01 {
                 intro_black_enabled = true;
@@ -311,13 +344,15 @@ pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<
             }
             if let Some(flag) = explicit_on_start {
                 intro_reveal_on_start = flag || reveal_ms > 0.0;
+            } else if end_ms.is_some() {
+                intro_reveal_on_start = false;
             } else if reveal_ms > 0.0 || action == "intro" {
                 intro_reveal_on_start = true;
             } else if !chart.intro_ui.is_active() {
                 intro_reveal_on_start = false;
             }
             if reveal_ms > 0.0 {
-                intro_reveal_delay_sec = (reveal_ms / 1000.0).clamp(0.0, 60.0);
+                intro_reveal_delay_sec = (reveal_ms / 1000.0).clamp(0.0, 600.0);
             }
             if dur_sec > 0.01 {
                 intro_fade_sec = dur_sec;
@@ -325,17 +360,50 @@ pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<
             continue;
         }
 
-        cue_lines.push(format!(
-            "    {{ timeMs = {:.2}, action = {}, black = {:.2}, hud = {:.2}, arrows = {:.2}, durSec = {:.3}, ease = {} }},",
-            ev.time_ms.max(0.0),
-            lua_escape_str(&action),
-            black_alpha,
-            hud_alpha,
-            arrows_alpha,
+        compiled_cues.push(CompiledBlackoutCue {
+            time_ms: ev.time_ms.max(0.0),
+            action,
+            black: black_alpha,
+            hud: hud_alpha,
+            arrows: arrows_alpha,
             dur_sec,
-            lua_escape_str(&ease),
-        ));
+            ease,
+        });
     }
+
+    for (end_ms, end_dur, end_ease) in pending_auto_ends {
+        let already_has_show = compiled_cues
+            .iter()
+            .any(|c| c.action == "show" && (c.time_ms - end_ms).abs() <= 50.0);
+        if !already_has_show {
+            compiled_cues.push(CompiledBlackoutCue {
+                time_ms: end_ms,
+                action: "show".to_string(),
+                black: 0.0,
+                hud: 1.0,
+                arrows: 1.0,
+                dur_sec: end_dur,
+                ease: end_ease,
+            });
+        }
+    }
+    compiled_cues.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+
+    let cue_lines: Vec<String> = compiled_cues
+        .iter()
+        .map(|c| {
+            format!(
+                "    {{ timeMs = {:.2}, action = {}, black = {:.2}, hud = {:.2}, arrows = {:.2}, durSec = {:.3}, ease = {} }},",
+                c.time_ms,
+                lua_escape_str(&c.action),
+                c.black,
+                c.hud,
+                c.arrows,
+                c.dur_sec,
+                lua_escape_str(&c.ease),
+            )
+        })
+        .collect();
 
     let cfg_and_cues_block = if cue_lines.is_empty() {
         format!(
@@ -605,4 +673,33 @@ end\n",
         UI_BLACKOUT_RUNTIME_V2_MARKER,
         cfg_and_cues_block
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_intro_blackout_range_and_auto_synthesizes_mid_song_end_cue() {
+        let mut chart = ChartData::bundled_demo_chart();
+        chart.add_event(
+            0.0,
+            "UI Blackout",
+            "intro",
+            "black=1.00;hud=0.00;arrows=0.00;dur=0.50;onStart=0;endMs=12000;fadeOut=0.75",
+        );
+        chart.add_event(
+            18_000.0,
+            "UI Blackout",
+            "hide",
+            "black=0.90;hud=0.00;arrows=1.00;dur=0.40;endMs=24000;fadeOut=0.60",
+        );
+
+        let lua_src = render_ui_blackout_lua_script(&chart, None);
+        assert!(lua_src.contains("local INTRO_BLACK_ENABLED = true"));
+        assert!(lua_src.contains("local INTRO_REVEAL_AT_SONG_START = false"));
+        assert!(lua_src.contains("timeMs = 12000.00, action = \"show\", black = 0.00"));
+        assert!(lua_src.contains("timeMs = 18000.00, action = \"hide\", black = 0.90"));
+        assert!(lua_src.contains("timeMs = 24000.00, action = \"show\", black = 0.00"));
+    }
 }

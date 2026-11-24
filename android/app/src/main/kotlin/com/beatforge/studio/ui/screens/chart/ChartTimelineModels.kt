@@ -34,6 +34,7 @@ data class IndexedChartEvent(
 
 enum class StepCueKind {
     Camera,
+    Vignette,
     Swap,
     Flash,
     Character,
@@ -59,7 +60,9 @@ sealed class ChartTimelineRow {
         val sustainPassesByCol: Map<Int, ChartSustainPass>,
         val rowEvents: List<IndexedChartEvent>,
         val eventKinds: List<StepCueKind>,
-        val activeFlashColor: Color?
+        val activeFlashColor: Color?,
+        val activeBlackoutAlpha: Float = 0f,
+        val activeVignetteColor: Color? = null
     ) : ChartTimelineRow()
 }
 
@@ -83,10 +86,24 @@ private data class TempStepEntry(
     val notesByCol: MutableMap<Int, VisibleNote> = LinkedHashMap(),
     val sustainByCol: MutableMap<Int, ChartSustainPass> = LinkedHashMap(),
     val events: MutableList<IndexedChartEvent> = ArrayList(),
-    var activeFlashColor: Color? = null
+    var activeFlashColor: Color? = null,
+    var activeBlackoutAlpha: Float = 0f,
+    var activeVignetteColor: Color? = null
 )
 
 private data class FlashSpan(
+    val startMs: Double,
+    val endMs: Double,
+    val color: Color
+)
+
+private data class BlackoutSpan(
+    val startMs: Double,
+    val endMs: Double,
+    val alpha: Float
+)
+
+private data class VignetteSpan(
     val startMs: Double,
     val endMs: Double,
     val color: Color
@@ -111,6 +128,14 @@ fun classifyChartEvent(event: ChartEventSnapshot): StepCueKind {
             lower == "add cam zoom" ||
             lower == "camera movement" ||
             lower == "cameramovement" -> StepCueKind.Camera
+        lower == "camera vignette" ||
+            lower == "side glow" ||
+            lower == "vignette" ||
+            lower == "camera side glow" ||
+            lower == "brillo lateral" ||
+            lower == "viñeta camara" ||
+            lower == "viñeta cámara" ||
+            lower == "viñeta" -> StepCueKind.Vignette
         lower == "flash effect" || lower == "flash hud" || lower == "flash camera" || lower == "camera flash" ->
             StepCueKind.Flash
         lower == "preload sprite" -> StepCueKind.Preload
@@ -185,6 +210,24 @@ fun summarizeChartEvent(event: ChartEventSnapshot): String {
                 }
             }
         }
+        StepCueKind.Vignette -> {
+            val v1 = event.value1.trim()
+            val v1Lower = v1.lowercase()
+            val params = parseSemiKv(event.value2)
+            val action = params["action"]?.lowercase() ?: v1Lower
+            val off = action == "off" || action == "hide" || action == "clear" || action == "none" ||
+                params["enabled"] == "0" || params["enabled"] == "false" ||
+                (params["alpha"]?.toFloatOrNull()?.let { it <= 0.01f } == true)
+            val dur = params["dur"] ?: params["duration"] ?: "0.45"
+            if (off) {
+                "Viñeta Cámara OFF · ${dur}s"
+            } else {
+                val colorTag = params["color"] ?: v1.takeIf { it.startsWith("#") || it.isNotBlank() } ?: "#EF4444"
+                val alphaPct = ((params["alpha"]?.toFloatOrNull() ?: 0.58f) * 100f).roundToInt()
+                val layerTag = if (params["hud"] == "1" || params["hud"] == "true") "HUD" else "Escena"
+                "Viñeta $colorTag ($alphaPct%) · ${dur}s ($layerTag)"
+            }
+        }
         StepCueKind.Flash -> {
             val col = event.value1.ifBlank { "#FFFFFF" }
             val params = parseSemiKv(event.value2)
@@ -211,7 +254,7 @@ fun summarizeChartEvent(event: ChartEventSnapshot): String {
                 "hide_arrows" -> "Ocultar Flechas · ${dur}s"
                 "show_arrows" -> "Mostrar Flechas · ${dur}s"
                 "toggle_arrows" -> "Alternar Flechas · ${dur}s"
-                "show", "reveal", "show ui", "show hud" -> "Mostrar Escena y UI/Flechas · ${dur}s"
+                "show", "reveal", "show ui", "show hud" -> "Volver a Color y Mostrar UI · ${dur}s"
                 "toggle", "toggle ui" -> "Alternar UI y Flechas · ${dur}s"
                 else -> {
                     val blackVal = params["black"]?.toDoubleOrNull()
@@ -343,13 +386,30 @@ fun buildChartTimeline(chart: ChartSnapshot): Pair<List<ChartTimelineRow>, Map<I
         }
     }
 
-    // 2. Mapear eventos a sus pasos `#` y marcar rangos de duración de Flash
+    // 2. Mapear eventos a sus pasos `#` y marcar rangos de duración de Flash, Negro (UI Blackout) y Viñeta
     val flashSpans = mutableListOf<FlashSpan>()
+    val blackoutSpans = mutableListOf<BlackoutSpan>()
+    val vignetteSpans = mutableListOf<VignetteSpan>()
+    val timelineEndMs = steps.last().let { it.stepTimeMs + it.stepMs }
+
+    var activeBlackStartMs: Double? = if (chart.introUi.startBlackout && chart.introUi.blackoutAlpha > 0.04f) 0.0 else null
+    var activeBlackAlpha: Float = if (activeBlackStartMs != null) chart.introUi.blackoutAlpha.coerceIn(0f, 1f) else 0f
+    if (activeBlackStartMs != null && chart.introUi.revealOnSongStart) {
+        val endMs = chart.introUi.revealDelayMs.coerceAtLeast(10.0)
+        blackoutSpans.add(BlackoutSpan(startMs = 0.0, endMs = endMs, alpha = activeBlackAlpha))
+        activeBlackStartMs = null
+        activeBlackAlpha = 0f
+    }
+
+    var activeVigStartMs: Double? = null
+    var activeVigColor: Color = Color(0xFFEF4444)
+
     chart.events.forEachIndexed { globalIdx, ev ->
         val stepIdx = findClosestStepIndex(ev.timeMs)
         steps[stepIdx].events.add(IndexedChartEvent(globalIdx, ev))
+        val kind = classifyChartEvent(ev)
 
-        if (classifyChartEvent(ev) == StepCueKind.Flash) {
+        if (kind == StepCueKind.Flash) {
             val params = parseSemiKv(ev.value2)
             val durSec = params["dur"]?.toDoubleOrNull()
                 ?: params["duration"]?.toDoubleOrNull()
@@ -368,7 +428,88 @@ fun buildChartTimeline(chart: ChartSnapshot): Pair<List<ChartTimelineRow>, Map<I
         }
     }
 
-    if (flashSpans.isNotEmpty()) {
+    // Orden cronológico para rangos continuos de Pantalla Negra y Viñeta Lateral
+    for (ev in chart.events.sortedBy { it.timeMs }) {
+        val kind = classifyChartEvent(ev)
+        if (kind == StepCueKind.UiBlackout) {
+            val params = parseSemiKv(ev.value2)
+            val lower = ev.name.trim().lowercase()
+            val v1Lower = ev.value1.trim().lowercase()
+            val action = params["action"]?.lowercase() ?: when {
+                lower == "hide arrows" || lower == "hide strums" || lower == "ocultar flechas" -> "hide_arrows"
+                lower == "show arrows" || lower == "show strums" || lower == "mostrar flechas" -> "show_arrows"
+                else -> v1Lower.ifBlank { lower }
+            }
+            if (action == "show" || action == "reveal" || action == "show ui" || action == "show hud" ||
+                (params["black"]?.toFloatOrNull()?.let { it <= 0.04f } == true && action != "intro")
+            ) {
+                val startMs = activeBlackStartMs
+                if (startMs != null && ev.timeMs >= startMs) {
+                    blackoutSpans.add(BlackoutSpan(startMs, ev.timeMs, activeBlackAlpha))
+                    activeBlackStartMs = null
+                    activeBlackAlpha = 0f
+                }
+            } else if (action != "hide_arrows" && action != "show_arrows" && action != "toggle_arrows") {
+                val blackVal = params["black"]?.toFloatOrNull() ?: if (action == "hide" || action == "intro") 1f else 0f
+                if (blackVal > 0.04f) {
+                    val onStart = params["onstart"] == "1" || params["onstart"] == "true" || action == "intro"
+                    val explicitEnd = params["endms"]?.toDoubleOrNull() ?: params["end_ms"]?.toDoubleOrNull()
+                    val startMs = if (action == "intro") 0.0 else ev.timeMs
+                    if (explicitEnd != null && explicitEnd > startMs) {
+                        blackoutSpans.add(BlackoutSpan(startMs, explicitEnd, blackVal.coerceIn(0f, 1f)))
+                        activeBlackStartMs = null
+                    } else if (onStart && (params["revealms"]?.toDoubleOrNull() ?: 0.0) > 0.0) {
+                        val revealAt = params["revealms"]?.toDoubleOrNull() ?: 0.0
+                        blackoutSpans.add(BlackoutSpan(0.0, revealAt, blackVal.coerceIn(0f, 1f)))
+                        activeBlackStartMs = null
+                    } else {
+                        if (activeBlackStartMs != null && ev.timeMs > activeBlackStartMs!!) {
+                            blackoutSpans.add(BlackoutSpan(activeBlackStartMs!!, ev.timeMs, activeBlackAlpha))
+                        }
+                        activeBlackStartMs = startMs
+                        activeBlackAlpha = blackVal.coerceIn(0f, 1f)
+                    }
+                }
+            }
+        } else if (kind == StepCueKind.Vignette) {
+            val params = parseSemiKv(ev.value2)
+            val v1Lower = ev.value1.trim().lowercase()
+            val action = params["action"]?.lowercase() ?: v1Lower
+            val off = action == "off" || action == "hide" || action == "clear" || action == "none" ||
+                params["enabled"] == "0" || params["enabled"] == "false" ||
+                (params["alpha"]?.toFloatOrNull()?.let { it <= 0.01f } == true)
+            if (off) {
+                val startMs = activeVigStartMs
+                if (startMs != null && ev.timeMs >= startMs) {
+                    vignetteSpans.add(VignetteSpan(startMs, ev.timeMs, activeVigColor))
+                    activeVigStartMs = null
+                }
+            } else {
+                val rawCol = params["color"] ?: ev.value1.trim().takeIf { it.startsWith("#") } ?: "#EF4444"
+                val col = parseHexColorOrWhite(rawCol)
+                val explicitEnd = params["endms"]?.toDoubleOrNull() ?: params["end_ms"]?.toDoubleOrNull()
+                if (explicitEnd != null && explicitEnd > ev.timeMs) {
+                    vignetteSpans.add(VignetteSpan(ev.timeMs, explicitEnd, col))
+                    activeVigStartMs = null
+                } else {
+                    if (activeVigStartMs != null && ev.timeMs > activeVigStartMs!!) {
+                        vignetteSpans.add(VignetteSpan(activeVigStartMs!!, ev.timeMs, activeVigColor))
+                    }
+                    activeVigStartMs = ev.timeMs
+                    activeVigColor = col
+                }
+            }
+        }
+    }
+
+    if (activeBlackStartMs != null) {
+        blackoutSpans.add(BlackoutSpan(activeBlackStartMs!!, timelineEndMs, activeBlackAlpha))
+    }
+    if (activeVigStartMs != null) {
+        vignetteSpans.add(VignetteSpan(activeVigStartMs!!, timelineEndMs, activeVigColor))
+    }
+
+    if (flashSpans.isNotEmpty() || blackoutSpans.isNotEmpty() || vignetteSpans.isNotEmpty()) {
         for (entry in steps) {
             val activeSpan = flashSpans.lastOrNull {
                 entry.stepTimeMs >= it.startMs - entry.stepMs * 0.45 &&
@@ -376,6 +517,20 @@ fun buildChartTimeline(chart: ChartSnapshot): Pair<List<ChartTimelineRow>, Map<I
             }
             if (activeSpan != null) {
                 entry.activeFlashColor = activeSpan.color
+            }
+            val activeBlack = blackoutSpans.lastOrNull {
+                entry.stepTimeMs >= it.startMs - entry.stepMs * 0.45 &&
+                    entry.stepTimeMs < it.endMs - entry.stepMs * 0.20
+            }
+            if (activeBlack != null) {
+                entry.activeBlackoutAlpha = activeBlack.alpha
+            }
+            val activeVig = vignetteSpans.lastOrNull {
+                entry.stepTimeMs >= it.startMs - entry.stepMs * 0.45 &&
+                    entry.stepTimeMs < it.endMs - entry.stepMs * 0.20
+            }
+            if (activeVig != null) {
+                entry.activeVignetteColor = activeVig.color
             }
         }
     }
@@ -427,7 +582,9 @@ fun buildChartTimeline(chart: ChartSnapshot): Pair<List<ChartTimelineRow>, Map<I
                     sustainPassesByCol = st.sustainByCol,
                     rowEvents = st.events,
                     eventKinds = kinds,
-                    activeFlashColor = st.activeFlashColor
+                    activeFlashColor = st.activeFlashColor,
+                    activeBlackoutAlpha = st.activeBlackoutAlpha,
+                    activeVignetteColor = st.activeVignetteColor
                 )
             )
         }

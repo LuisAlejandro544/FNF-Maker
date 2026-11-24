@@ -41,13 +41,14 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   ├── direct_formats.rs# Parsers directos `spritemap1.json` y TexturePacker Hash/Array centrados por defecto
 │       │       │   ├── animate_model.rs # Árbol de líneas de tiempo, capas, fotogramas y símbolos de `Animation.json`
 │       │       │   └── animate_baker.rs # Rasterización por pose a atlas 4096×4096 empaquetado por estantes + centrado + tests
-│       │       ├── stage.rs             # Escenario 1280×720, sistema multicámara (`Cam 0..3+` con target/FOV/pan), auto-dimensionado (`fit_dimensions_to_*`), anim_offsets y Z-order
+│       │       ├── stage.rs             # Escenario 1280×720, `remove_entity` / `clear_entities`, multicámara (`Cam 0..3+` con target/FOV/pan), auto-dimensionado (`fit_dimensions_to_*`), anim_offsets y Z-order
 │       │       ├── mod_descriptors.rs   # Parsers `.json`/`.xml` de personaje (`characters/*`) y escenario (`stages/*`: Psych/V-Slice/Codename)
 │       │       ├── svg_skin.rs          # Flechas (incl. nota X `default_hurt_arrow_x_svg`), importador `NOTE_assets.png+.xml`, barra, íconos, ratings y Note Splash SVG vía resvg
 │       │       ├── gfx_backend.rs       # Tipos base `RenderBackendKind` (`Canvas2d`/`Gles2`/`Gles3`/`Vulkan`) y `GfxCapabilities`
 │       │       ├── project/             # Modelo `ModProject` y generadores de scripts Lua predeterminados
 │       │       │   ├── mod.rs           # Reexportaciones públicas del módulo `project`
-│       │       │   ├── models.rs        # Estructuras `ModProject`, metadatos, pistas de audio y `render_backend`
+│       │       │   ├── models.rs        # Estructuras `ModProject`, metadatos, pistas de audio, `countdown` y `render_backend`
+│       │       │   ├── countdown.rs     # 4 pasos independientes (`3 · 2 · 1 · ¡YA!`): PNG/WebP/ASTC + XML Sparrow opcional (simple/combinado) y voces/SFX separadas
 │       │       │   ├── lua_helpers.rs   # Utilidades compartidas de formato e interpolación para plantillas Lua
 │       │       │   ├── camera_lua.rs    # Generador `camera_system.lua` V2 (`-- [CAM_RUNTIME_V2]`)
 │       │       │   ├── stage_events_lua.rs # Generador `stage_events.lua` para eventos de escenario y cámara
@@ -63,7 +64,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   ├── pipeline.rs      # Pre-escalado `Lanczos3`, `RGB_565` + `exoquant`, mega-atlas multi-página WebP VP8L, caché `.bfaud`/`.luac` y reporte
 │       │       │   └── tests.rs         # Pruebas unitarias de huellas, invalidación, timeline lifecycle, dithering/cuantización y pre-escalado por viewport
 │       │       ├── disk_cache.rs        # Presupuestos 65%/35% por cuota del sistema, limpieza plana heredada y desalojo LRU en disco
-│       │       └── vanilla.rs           # Contenedor portátil Vanilla (`.mod`) con Zstandard, PNG->WebP lossless, dedup y FNV-1a
+│       │       └── vanilla.rs           # Contenedor portátil Vanilla (`.mod`) con Zstandard, PNG->WebP lossless, `assets/countdown/`, dedup y FNV-1a
 │       │
 │       ├── pulse_audio/                 # Subsistema de audio de baja latencia y DSP 100% Rust puro
 │       │   ├── Cargo.toml
@@ -73,7 +74,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── audio_cache.rs       # Caché binario `.bfaud` (picos de onda + PCM i16) en `cacheDir/audio_cache/` con escritura atómica y LRU
 │       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`) + streaming SPSC 512 KB desde disco
 │       │       ├── adaptive_master.rs   # Adaptador Acústico `f32` (`ebur128`, `realfft`, `biquad`, `rubato`, M/S + crossfeed, Lookahead 4ms + dither TPDF + caché `v2`)
-│       │       ├── mixer.rs             # Mezclador lock-free (`stream_source` lineal sin `tanh()`, `tanh()` solo en multi-pista editor) + reloj + countdown BPM + Game Over
+│       │       ├── mixer.rs             # Mezclador lock-free (`stream_source` lineal sin `tanh()`, `tanh()` solo en multi-pista editor) + reloj + `countdown_cues` separados (`intro3..introGo` / synth) + preview + Game Over
 │       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI + probe hardware, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados sin ataduras
@@ -109,18 +110,19 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   └── gameplay_gfx_ops.rs # JNI de compilación incremental, simulación gameplay `BFGP` v2, debug y probe GPU (`gfx`)
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
-│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
-│                   ├── editor_ops.rs    # Operaciones de editor (`select_stage_camera`, `update_camera_slot`, `add/remove_custom_camera`, `set_section_camera_slot`, `import_stage_config`, `stage_events.lua`)
+│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `CountdownStepSnapshotJson`, `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
+│                   ├── countdown_ops.rs # Importación/limpieza/preview de PNG/ASTC/WebP, Sparrow `.xml` y voces separadas `3 · 2 · 1 · ¡YA!`
+│                   ├── editor_ops.rs    # Operaciones de editor (`remove_stage_entity`, `clear_stage_scene`, `select_stage_camera`, `update_camera_slot`, `add/remove_custom_camera`, `set_section_camera_slot`, `import_stage_config`, `stage_events.lua`)
 │                   ├── gfx_probe.rs     # Sondeo dinámico `dlopen` en Android 32/64b de `libEGL.so`, `libGLESv2.so`, `libGLESv3.so` y `libvulkan.so`
 │                   ├── sprite_ops.rs    # Importación PNG/ASTC/WebP, Sparrow XML, Animate, auto-dimensionado en escenario, `import_character_config` y `set_entity_anim_offset`
-│                   ├── persistence_ops.rs # Guardado/carga (normalización de atlas, ranuras `Cam 0..2` y limpieza de cachés v6), adopción `assets/`, GC, `.bfaud` y Vanilla `.mod`
+│                   ├── persistence_ops.rs # Guardado/carga (normalización de atlas, ranuras `Cam 0..2`, assets countdown y limpieza de cachés v6), adopción `assets/`, GC, `.bfaud` y Vanilla `.mod`
 │                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
-│                       ├── mod.rs         # Coordinador `start/pause/stop/retry_game_over/trigger_test_game_over`, colas ordenadas de timeline y BFGP v2 (`152B`)
+│                       ├── mod.rs         # Coordinador `start/pause/stop/retry_game_over/trigger_test_game_over`, colas ordenadas de timeline y BFGP v2 (`168B`)
 │                       ├── hot_compile_ops.rs # `hot_compile_with_progress_and_viewport` en `compiled_cache/<projectId>/` con cuota y desalojo LRU multi-proyecto
 │                       ├── audio_adapt_ops.rs # Fase independiente post-compilación: sondeo hardware + EBU R128/FFT + plan DSP Biquad/Rubato
-│                       ├── script_sync.rs # `tweens`, timers, `SwitchCameraSlot`/`SetCameraFollowLock`, `flash`, `GameOver`, swaps y drenaje `ScriptCommand`
-│                       ├── simulation.rs  # Simulación por frame (drenaje de colas timeline preload/retire, multicámara + `chart.json`, notas X, Game Over, Botplay/Práctica)
-│                       └── packet_encoder.rs # Serialización JSON y binaria `BFGP` v2 (`152B` + bits 8..15 `page_index` en `e_flags`, bits 9..13 GameOver/Debug + `noteKindCode`)
+│                       ├── script_sync.rs # `tweens`, timers, `SwitchCameraSlot`/`SetCameraFollowLock`/`SetCameraVignette`, `flash`, `GameOver`, swaps y drenaje `ScriptCommand`
+│                       ├── simulation.rs  # Simulación por frame (drenaje de colas timeline preload/retire, multicámara + viñeta lateral + `chart.json`, notas X, Game Over, Botplay/Práctica)
+│                       └── packet_encoder.rs # Serialización JSON y binaria `BFGP` v2 (`168B` + bits 8..15 `page_index`, bits 9..14 GameOver/Debug/`vignetteOverHud`, offsets `152..168` viñeta y `noteKindCode`)
 │
 ├── android/                             # Proyecto Gradle Android (Kotlin + Jetpack Compose + Material 3)
 │   ├── settings.gradle.kts
@@ -141,7 +143,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │           └── kotlin/com/beatforge/studio/
 │               ├── MainActivity.kt      # ComponentActivity + Lobby inicial/Pantalla de carga + OpenDocument/CreateDocument (.json, .mod, NOTE_assets)
 │               ├── CrashReportActivity.kt # Pantalla aislada (:crash) para copiar diagnóstico técnico en teléfono
-│               ├── GameplayFrameState.kt# Decoder binario BFGP v2 (`152B` cabecera: GameOver, Botplay, Práctica, `noteKindCode`, `pageIndex` bits 8..15, flash, preload/retired)
+│               ├── GameplayFrameState.kt# Decoder binario BFGP v2 (`168B` cabecera: GameOver, Botplay, Práctica, `vignetteOverHud`, offsets viñeta `152..168`, `noteKindCode`, `pageIndex`, flash, preload/retired)
 │               ├── NativeEngineBridge.kt# Declaraciones `external fun` 1:1 hacia `libpulse_android.so` (incl. Game Over, Debug, Arrow Atlas y Backend GPU)
 │               ├── SafFileBridge.kt     # Staging temporal de URIs SAF en `cacheDir/import_staging/` y barrido al arranque
 │               ├── StudioModels.kt      # Data classes Kotlin (`NoteSpecialKind`, `EntityLifecycleWindowSnapshot`, `CompileReportSnapshot` con `compiledTexturePages`/`texturePixelFormats`, `ArrowSkinCatalog`)
@@ -165,9 +167,10 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   ├── popups/
 │                   │   ├── ArrowSkinDialog.kt     # Modal para personalizar flechas `.svg` o importar 2 pasos `NOTE_assets.png + .xml` (+ vista Nota X)
 │                   │   ├── CharacterIconsDialog.kt# Modal para íconos normal/perdiendo (auto-split 2-frame) y barra de vida .svg
-│                   │   ├── ChartJsonDetailsDialog.kt # Modal para editar metadatos `chart.json`, `changeBPM` y eventos
-│                   │   ├── ChartStepCueDialog.kt  # Modal en columna `#` (5 pestañas: Swaps/RAM, Flash, Personajes, UI Blackout y Cámara directa del chart)
-│                   │   └── ModFilesGuideDialog.kt # Modal guía: qué archivo va en cada pestaña y en qué carpeta de mod suele estar (incl. `NOTE_assets`)
+│                   │   ├── CountdownAssetsDialog.kt # Modal 3 · 2 · 1 · ¡YA! (imagen/XML por paso + voz/SFX separada + botón Probar)
+│                   │   ├── ChartJsonDetailsDialog.kt # Modal para editar metadatos `chart.json`, `changeBPM`, eventos e intro UI Blackout (hasta 600 s)
+│                   │   ├── ChartStepCueDialog.kt  # Modal en columna `#` (5 pestañas: Swaps/RAM, Flash, Personajes, UI Blackout Inicio→Fin y Cámara + Camera Vignette)
+│                   │   └── ModFilesGuideDialog.kt # Modal guía (10 entradas): qué archivo va en cada pestaña y en qué carpeta de mod suele estar (incl. `NOTE_assets` y cuenta regresiva)
 │                   └── screens/
 │                       ├── HubScreen.kt           # Metadatos del mod, selector `Motor Gráfico (Terreno GPU)`, métricas y accesos directos
 │                       ├── ProjectsScreen.kt      # Lobby principal al arranque + gestión, creación, copia, borrado, `.mod` e insignia GPU
@@ -178,15 +181,15 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   ├── ChartPlayheadState.kt  # Estado `@Stable` a 60 Hz del hilo reproductor + toggle Seguir/Libre sin recomponer filas
 │                       │   ├── ChartToolsPanel.kt     # Panel izquierdo: selector tipo de nota, transporte, salto de sección con insignia `Cam N` y `stage_events.lua`
 │                       │   └── ChartTimelineGrid.kt   # Rejilla DAW continua, dropdown `Auto / Cam N` por sección, cues `#`, scrubber y hilo 60 FPS
-│                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda + toggle del Adaptador Acústico
-│                       ├── SpriteLabScreen.kt     # PNG/ASTC + XML/JSON, slots `Miss` + `Death Start/Loop/Confirm`, `Posición (.json/.xml)`, `Offset Pose X/Y` y visor 1:1
-│                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas (60 FPS) + `Escena .json/.xml` + multicámara
+│                       ├── AudioScreen.kt         # Mezclador multicanal de hasta 3 pistas + forma de onda + toggle del Adaptador Acústico + botón `Voces 3-2-1`
+│                       ├── SpriteLabScreen.kt     # PNG/ASTC + XML/JSON, slots `Miss` + `Death Start/Loop/Confirm`, `Posición (.json/.xml)`, `Offset Pose X/Y`, botón `3-2-1` y visor 1:1
+│                       ├── StageEditorScreen.kt   # Coordinador del editor visual de escenario en 3 columnas (60 FPS) + `Escena .json/.xml` + confirmaciones eliminar/vaciar escena + multicámara
 │                       ├── stage/                 # Subcomponentes modulares del editor de escenario
 │                       │   ├── StageLiveTransformState.kt # Estado en vivo 60Hz aislado para entidades y ranura de cámara activa (`resolveCameraSlotPreviewCenter`)
-│                       │   ├── StageLayersPanel.kt    # Panel izquierdo con capa `Cámara (.lua)` (ranuras + modo), `Escena .json/.xml`, ayuda `?` y `LazyColumn`
-│                       │   ├── StageCanvasPreview.kt  # Lienzo 16:9 con marco activo de cámara, marcos secundarios (`C0..CN`), culling y arrastre táctil
-│                       │   ├── StageCameraInspector.kt# Inspector Multicámara (`Cam 0..3+`, `+ Cam`, borrar `Cam 3+`, pestañas `Ranura & FOV` y `Modo & Chart`, cruceta)
-│                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders y flipX
+│                       │   ├── StageLayersPanel.kt    # Panel izquierdo con capa `Cámara (.lua)` (ranuras + modo), `Escena .json/.xml`, vaciar/eliminar capa, ayuda `?` y `LazyColumn`
+│                       │   ├── StageCanvasPreview.kt  # Lienzo 16:9 con marco activo de cámara + preview de viñeta lateral recortada, marcos secundarios (`C0..CN`), culling y arrastre táctil
+│                       │   ├── StageCameraInspector.kt# Inspector Multicámara (`Cam 0..3+`, `+ Cam`, borrar `Cam 3+`, pestañas `Ranura & FOV`, `Modo & Chart`, `Viñeta` y cruceta)
+│                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders, flipX y `Eliminar capa de la escena`
 │                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS (`camera_system.lua` y `stage_events.lua`) con referencia API
 │                       ├── HotCompileScreen.kt    # Pantalla de carga con barra y círculo determinados (`0%–100%`) + fase en vivo
 │                       ├── AudioAdaptScreen.kt    # Pantalla independiente pre-gameplay: hardware/AAudio, EBU R128 + FFT 5 bandas y plan DSP (Ruta 32f, Amplitud, Crossfeed, Lookahead)
@@ -201,9 +204,9 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── assets/arrows/                   # Flechas SVG originales libres de derechos (`left`, `down`, `up`, `right`, `hurt_x`)
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
-│       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, multicámara, `Lanczos3` viewport scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF, `optimizeSparrowAtlasPlan`, `.mod`, `BFGP` v2
-│       └── engine-tools.test.ts         # 64 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `setCameraVignette`, `tweenCameraVignette`, `clearCameraVignette`, `triggerGameOver`, `noteType`)
+│       ├── engine-tools.ts              # Validación, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
+│       └── engine-tools.test.ts         # 68 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

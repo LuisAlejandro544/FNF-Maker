@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.OpenWith
@@ -91,7 +92,8 @@ fun StageEntityInspector(
         flipX: Boolean,
         commitSave: Boolean
     ) -> Unit,
-    onRequestImportPng: () -> Unit
+    onRequestImportPng: () -> Unit,
+    onRemoveEntity: () -> Unit
 ) {
     var localName by remember(entity.id) { mutableStateOf(entity.displayName) }
     var localScale by remember(entity.id) { mutableFloatStateOf(entity.scale) }
@@ -552,6 +554,33 @@ fun StageEntityInspector(
                     Switch(
                         checked = isLocked,
                         onCheckedChange = { onToggleLock() }
+                    )
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                OutlinedButton(
+                    onClick = onRemoveEntity,
+                    border = BorderStroke(1.dp, StudioColors.AccentCoral.copy(alpha = 0.65f)),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteOutline,
+                        contentDescription = null,
+                        tint = StudioColors.AccentCoral,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "Eliminar capa de la escena",
+                        color = StudioColors.AccentCoral,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }

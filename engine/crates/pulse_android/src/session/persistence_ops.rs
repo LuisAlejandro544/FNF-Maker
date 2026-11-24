@@ -11,7 +11,7 @@ use super::{ActionResultJson, EngineSession, ProjectSummaryJson};
 use pulse_audio::decode_audio_file_cached;
 use pulse_core::astc_loader::load_sprite_image;
 use pulse_core::disk_cache::{cleanup_legacy_flat_compiled_cache, touch_dir_last_used};
-use pulse_core::project::{MAX_AUDIO_TRACKS, ModProject, current_epoch_ms};
+use pulse_core::project::{COUNTDOWN_STEP_COUNT, MAX_AUDIO_TRACKS, ModProject, current_epoch_ms};
 use pulse_core::vanilla::{export_project_vanilla_mod, import_project_vanilla_mod};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ const AUTO_SAVE_THROTTLE_MS: u64 = 250;
 
 fn normalize_loaded_project(proj: &mut ModProject) {
     proj.stage.camera.ensure_default_cameras();
+    proj.countdown.sanitize();
     proj.ensure_camera_script();
     proj.ensure_stage_events_script();
     proj.sync_ui_blackout_script();
@@ -113,6 +114,17 @@ fn collect_project_binary_paths(project: &ModProject, out: &mut HashSet<PathBuf>
             out.insert(normalize_path_key(p));
         }
         if let Some(p) = &ent.icon_losing_path {
+            out.insert(normalize_path_key(p));
+        }
+    }
+    for cd in &project.countdown.slots {
+        if let Some(p) = &cd.image_path {
+            out.insert(normalize_path_key(p));
+        }
+        if let Some(p) = &cd.raw_image_path {
+            out.insert(normalize_path_key(p));
+        }
+        if let Some(p) = &cd.audio_path {
             out.insert(normalize_path_key(p));
         }
     }
@@ -276,7 +288,7 @@ impl EngineSession {
         let mut active_refs = HashSet::new();
         collect_project_binary_paths(&self.project, &mut active_refs);
 
-        for sub in ["audio", "sprites", "icons"] {
+        for sub in ["audio", "sprites", "icons", "countdown"] {
             let dir = self.project_assets_dir().join(sub);
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -406,6 +418,7 @@ impl EngineSession {
         } else {
             self.save_active_project_now();
             self.prune_unreferenced_user_storage();
+            self.reload_project_countdown_cues();
             self.sync_mixer_chart_duration();
         }
     }
@@ -469,6 +482,52 @@ impl EngineSession {
                             .mixer
                             .set_track(slot, Some(Arc::clone(&arc_track)));
                         self.decoded_tracks[slot] = Some(arc_track);
+                    }
+                }
+            }
+        }
+        self.reload_project_countdown_cues();
+    }
+
+    /// Recarga en RAM y en el mezclador lock-free las voces/SFX separadas de cuenta regresiva (`3, 2, 1, ¡YA!`).
+    pub fn reload_project_countdown_cues(&mut self) {
+        self.audio_engine.mixer.clear_countdown_cues();
+        for slot in 0..COUNTDOWN_STEP_COUNT {
+            self.decoded_countdown_cues[slot] = None;
+        }
+        let has_any_cue = self
+            .project
+            .countdown
+            .slots
+            .iter()
+            .any(|cd| cd.audio_path.is_some());
+        if !has_any_cue {
+            return;
+        }
+        self.audio_engine.ensure_started();
+        let target_sr = self
+            .audio_engine
+            .mixer
+            .sample_rate
+            .load(Ordering::Relaxed)
+            .max(8000);
+        let audio_cache_dir = self.audio_cache_dir();
+        let audio_quota = self.cache_budget().audio_cache_bytes;
+
+        for slot in 0..COUNTDOWN_STEP_COUNT {
+            if let Some(path) = &self.project.countdown.slots[slot].audio_path {
+                if path.exists() {
+                    if let Ok(decoded) = decode_audio_file_cached(
+                        path,
+                        target_sr,
+                        Some(&audio_cache_dir),
+                        audio_quota,
+                    ) {
+                        let arc_track = Arc::new(decoded);
+                        self.audio_engine
+                            .mixer
+                            .set_countdown_cue_track(slot, Some(Arc::clone(&arc_track)));
+                        self.decoded_countdown_cues[slot] = Some(arc_track);
                     }
                 }
             }
@@ -625,7 +684,7 @@ impl EngineSession {
             }
         }
         if old_assets_dir.exists() {
-            for sub in ["audio", "sprites", "icons"] {
+            for sub in ["audio", "sprites", "icons", "countdown"] {
                 copy_flat_dir_files(&old_assets_dir.join(sub), &new_assets_dir.join(sub));
             }
         }
@@ -639,6 +698,12 @@ impl EngineSession {
             rewrite_prefix_if_matched(&mut ent.raw_image_path, &old_assets_dir, &new_assets_dir);
             rewrite_prefix_if_matched(&mut ent.icon_normal_path, &old_assets_dir, &new_assets_dir);
             rewrite_prefix_if_matched(&mut ent.icon_losing_path, &old_assets_dir, &new_assets_dir);
+        }
+        for cd in &mut cloned.countdown.slots {
+            rewrite_prefix_if_matched(&mut cd.image_path, &old_tex_dir, &new_tex_dir);
+            rewrite_prefix_if_matched(&mut cd.image_path, &old_assets_dir, &new_assets_dir);
+            rewrite_prefix_if_matched(&mut cd.raw_image_path, &old_assets_dir, &new_assets_dir);
+            rewrite_prefix_if_matched(&mut cd.audio_path, &old_assets_dir, &new_assets_dir);
         }
 
         cloned.id = new_id.clone();

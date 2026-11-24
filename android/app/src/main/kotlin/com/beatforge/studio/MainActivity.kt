@@ -58,6 +58,7 @@ import com.beatforge.studio.ui.components.StudioNavRail
 import com.beatforge.studio.ui.components.StudioOrbitProgressRing
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
 import com.beatforge.studio.ui.popups.CharacterIconsDialog
+import com.beatforge.studio.ui.popups.CountdownAssetsDialog
 import com.beatforge.studio.ui.popups.ModFilesGuideDialog
 import com.beatforge.studio.ui.screens.AudioAdaptScreen
 import com.beatforge.studio.ui.screens.AudioScreen
@@ -414,7 +415,8 @@ private fun BeatForgeRootContent(
                             viewModel.updateAudioTrackConfig(slot, gain, muted, duck)
                         },
                         onRemoveTrack = { viewModel.removeAudioTrack(it) },
-                        onSetAudioAdaptEnabled = { viewModel.setAudioAdaptEnabled(it) }
+                        onSetAudioAdaptEnabled = { viewModel.setAudioAdaptEnabled(it) },
+                        onOpenCountdownDialog = { viewModel.setCountdownAssetsDialogOpen(true) }
                     )
 
                     StudioScreen.SpriteLab -> SpriteLabScreen(
@@ -424,6 +426,7 @@ private fun BeatForgeRootContent(
                         onSelectEntity = { viewModel.selectEntity(it) },
                         onRequestImport = { viewModel.requestImport(it) },
                         onOpenIconsDialog = { viewModel.setCharacterIconsDialogOpen(true) },
+                        onOpenCountdownDialog = { viewModel.setCountdownAssetsDialogOpen(true) },
                         onOpenFilesGuide = { viewModel.setModFilesGuideDialogOpen(true) },
                         onSetBinding = { entityId, kind, prefix ->
                             viewModel.setSparrowBinding(entityId, kind, prefix)
@@ -451,11 +454,16 @@ private fun BeatForgeRootContent(
                             )
                         },
                         onReorderEntity = { id, action -> viewModel.reorderStageEntity(id, action) },
+                        onRemoveEntity = { id -> viewModel.removeStageEntity(id) },
+                        onClearScene = { viewModel.clearStageScene() },
                         onRequestImportPng = { entityId ->
                             viewModel.requestImport(ImportKind.SpritePng(entityId))
                         },
                         onUpdateCamera = { enabled, bx, by, bz, mode, beats, smooth, pan, clampBg, commit ->
                             viewModel.updateStageCamera(enabled, bx, by, bz, mode, beats, smooth, pan, clampBg, commit)
+                        },
+                        onUpdateCameraVignette = { enabled, colorHex, alpha, width, pulse, overHud, commit ->
+                            viewModel.updateStageCameraVignette(enabled, colorHex, alpha, width, pulse, overHud, commit)
                         },
                         onSelectCameraSlot = { slotIdx -> viewModel.selectStageCamera(slotIdx) },
                         onUpdateCameraSlot = { slotIdx, name, kind, entityId, x, y, zoom, smooth, pan, commit ->
@@ -508,6 +516,8 @@ private fun BeatForgeRootContent(
                             healthBarBitmap = state.healthBarBitmap,
                             ratingBitmaps = state.ratingBitmaps,
                             noteSplashBitmap = state.noteSplashBitmap,
+                            countdownSlots = state.snapshot.countdownSlots,
+                            countdownBitmaps = state.countdownBitmaps,
                             fallbackPlayerId = playerEntId,
                             fallbackOpponentId = oppEntId,
                             entityNormalIcons = state.entityNormalIcons,
@@ -621,6 +631,19 @@ private fun BeatForgeRootContent(
     if (state.modFilesGuideDialogOpen) {
         ModFilesGuideDialog(
             onDismiss = { viewModel.setModFilesGuideDialogOpen(false) }
+        )
+    }
+
+    if (state.countdownAssetsDialogOpen) {
+        CountdownAssetsDialog(
+            slots = state.snapshot.countdownSlots,
+            countdownBitmaps = state.countdownBitmaps,
+            onRequestImport = { kind -> viewModel.requestImport(kind) },
+            onClearSprite = { slot -> viewModel.clearCountdownSprite(slot) },
+            onClearAudio = { slot -> viewModel.clearCountdownAudio(slot) },
+            onPreviewAudio = { slot -> viewModel.previewCountdownAudio(slot) },
+            onRestoreDefaults = { viewModel.restoreDefaultCountdownAssets() },
+            onDismiss = { viewModel.setCountdownAssetsDialogOpen(false) }
         )
     }
 }

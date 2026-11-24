@@ -4,6 +4,7 @@
 //! Codename `Camera Movement` y cues `Switch Camera`).
 
 use super::parser::json_as_f64;
+use crate::stage::parse_vignette_color_argb;
 use serde_json::Value;
 
 /// Acción de cámara extraída directamente desde eventos estándar de `chart.json`
@@ -42,6 +43,17 @@ pub enum ParsedChartCameraAction {
     AddZoomBump {
         cam_zoom_add: f32,
         hud_zoom_add: f32,
+    },
+    /// Activa, ajusta o desactiva la viñeta / brillo lateral que sigue a la cámara.
+    SetVignette {
+        enabled: bool,
+        color_argb: Option<u32>,
+        alpha: Option<f32>,
+        width: Option<f32>,
+        pulse: Option<f32>,
+        over_hud: Option<bool>,
+        duration_sec: f32,
+        ease: String,
     },
 }
 
@@ -391,6 +403,139 @@ pub fn parse_chart_camera_event(
                     ease: "sineOut".to_string(),
                 })
             }
+        }
+        "camera vignette"
+        | "side glow"
+        | "vignette"
+        | "camera side glow"
+        | "brillo lateral"
+        | "viñeta camara"
+        | "viñeta cámara"
+        | "viñeta" => {
+            let mut enabled = true;
+            let mut color_argb: Option<u32> = None;
+            let mut alpha: Option<f32> = None;
+            let mut width: Option<f32> = None;
+            let mut pulse: Option<f32> = None;
+            let mut over_hud: Option<bool> = None;
+            let mut duration_sec: f32 = 0.35;
+            let mut ease = "sineOut".to_string();
+
+            let v1_lower = v1.to_ascii_lowercase();
+            if matches!(
+                v1_lower.as_str(),
+                "off" | "hide" | "clear" | "none" | "false" | "0" | "ocultar" | "apagar" | "desaparecer"
+            ) {
+                enabled = false;
+                alpha = Some(0.0);
+            } else if !v1.is_empty() && !v1.contains('=') {
+                color_argb = Some(parse_vignette_color_argb(v1));
+            }
+
+            let v2_pairs = parse_inline_kv_pairs(v2);
+            let v1_pairs = parse_inline_kv_pairs(v1);
+            if v2_pairs.is_empty() && !v2.is_empty() {
+                let v2_lower = v2.to_ascii_lowercase();
+                if matches!(
+                    v2_lower.as_str(),
+                    "off" | "hide" | "clear" | "none" | "false" | "ocultar" | "apagar" | "desaparecer"
+                ) {
+                    enabled = false;
+                    alpha = Some(0.0);
+                } else if let Ok(a) = v2.parse::<f32>() {
+                    if a.is_finite() {
+                        let clamped = a.clamp(0.0, 1.0);
+                        alpha = Some(clamped);
+                        if clamped <= 0.005 {
+                            enabled = false;
+                        }
+                    }
+                }
+            }
+
+            for (k, v) in v1_pairs.into_iter().chain(v2_pairs.into_iter()) {
+                match k.as_str() {
+                    "action" | "mode" | "state" => {
+                        let m = v.to_ascii_lowercase();
+                        if matches!(
+                            m.as_str(),
+                            "off" | "hide" | "clear" | "none" | "false" | "0" | "ocultar" | "apagar" | "desaparecer"
+                        ) {
+                            enabled = false;
+                            alpha = Some(0.0);
+                        } else if matches!(
+                            m.as_str(),
+                            "on" | "show" | "appear" | "true" | "1" | "mostrar" | "aparecer"
+                        ) {
+                            enabled = true;
+                        }
+                    }
+                    "color" | "hex" | "tint" => {
+                        if !v.trim().is_empty() {
+                            color_argb = Some(parse_vignette_color_argb(&v));
+                        }
+                    }
+                    "alpha" | "intensity" | "opacity" | "intensidad" => {
+                        if let Ok(a) = v.parse::<f32>() {
+                            if a.is_finite() {
+                                let clamped = a.clamp(0.0, 1.0);
+                                alpha = Some(clamped);
+                                if clamped <= 0.005 {
+                                    enabled = false;
+                                }
+                            }
+                        }
+                    }
+                    "width" | "size" | "ancho" => {
+                        if let Ok(w) = v.parse::<f32>() {
+                            if w.is_finite() {
+                                width = Some(w.clamp(0.05, 0.50));
+                            }
+                        }
+                    }
+                    "pulse" | "pulso" | "beat" => {
+                        if let Ok(p) = v.parse::<f32>() {
+                            if p.is_finite() {
+                                pulse = Some(p.clamp(0.0, 1.0));
+                            }
+                        }
+                    }
+                    "hud" | "overhud" | "over_hud" => {
+                        over_hud = Some(matches!(
+                            v.to_ascii_lowercase().as_str(),
+                            "1" | "true" | "si" | "sí" | "yes"
+                        ));
+                    }
+                    "dur" | "duration" => {
+                        if let Ok(d) = v.parse::<f32>() {
+                            if d.is_finite() && d >= 0.0 {
+                                duration_sec = d.clamp(0.0, 15.0);
+                            }
+                        }
+                    }
+                    "ease" => {
+                        if !v.trim().is_empty() {
+                            ease = v.trim().to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if !enabled {
+                alpha = Some(0.0);
+            }
+
+            Some(ParsedChartCameraAction::SetVignette {
+                enabled,
+                color_argb,
+                alpha,
+                width,
+                pulse,
+                over_hud,
+                duration_sec,
+                ease,
+            })
         }
         _ => None,
     }

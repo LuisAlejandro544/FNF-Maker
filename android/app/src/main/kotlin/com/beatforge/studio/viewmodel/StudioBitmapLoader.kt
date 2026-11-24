@@ -17,6 +17,7 @@ import android.os.Build
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.beatforge.studio.CountdownStepSnapshot
 import com.beatforge.studio.DeviceTier
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.NativeEngineBridge
@@ -250,6 +251,21 @@ internal class StudioBitmapLoader {
             val cap = editorPreviewMaxSide(tier, hasAtlas, isBackground)
             decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = cap)?.let { loaded ->
                 out[ent.id] = loaded
+            }
+        }
+        return out
+    }
+
+    fun loadCountdownBitmaps(
+        slots: List<CountdownStepSnapshot>,
+        tier: DeviceTier
+    ): Map<Int, LoadedEntityBitmap> {
+        val out = linkedMapOf<Int, LoadedEntityBitmap>()
+        val cap = if (tier == DeviceTier.LowRam32Bit) 1024 else 1536
+        for (slot in slots) {
+            val path = slot.imagePath ?: continue
+            decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = cap)?.let { loaded ->
+                out[slot.slotIndex] = loaded
             }
         }
         return out

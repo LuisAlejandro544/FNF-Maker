@@ -8,10 +8,10 @@
 use crate::decoder::DecodedTrack;
 use crate::streaming::StreamingAudioSource;
 use parking_lot::RwLock;
-use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_core::project::{COUNTDOWN_STEP_COUNT, MAX_AUDIO_TRACKS};
 use std::f32::consts::PI;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 /// Configuración dinámica de ganancia/mute para una pista en tiempo real.
 #[derive(Debug)]
@@ -58,6 +58,9 @@ pub struct AudioMixerState {
     pub max_track_duration_ms_bits: AtomicU64,
     pub chart_duration_ms_bits: AtomicU64,
     pub tracks: RwLock<[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS]>,
+    pub countdown_cues: RwLock<[Option<Arc<DecodedTrack>>; COUNTDOWN_STEP_COUNT]>,
+    pub countdown_preview_slot: AtomicI32,
+    pub countdown_preview_frame: AtomicU64,
     pub stream_source: RwLock<Option<Arc<StreamingAudioSource>>>,
     pub configs: [TrackRuntimeConfig; MAX_AUDIO_TRACKS],
 }
@@ -79,6 +82,9 @@ impl AudioMixerState {
             max_track_duration_ms_bits: AtomicU64::new(0.0_f64.to_bits()),
             chart_duration_ms_bits: AtomicU64::new(0.0_f64.to_bits()),
             tracks: RwLock::new([None, None, None]),
+            countdown_cues: RwLock::new([None, None, None, None]),
+            countdown_preview_slot: AtomicI32::new(-1),
+            countdown_preview_frame: AtomicU64::new(0),
             stream_source: RwLock::new(None),
             configs: [
                 TrackRuntimeConfig::default(),
@@ -106,6 +112,31 @@ impl AudioMixerState {
             }
         }
         self.update_max_track_duration_ms();
+    }
+
+    pub fn set_countdown_cue_track(&self, slot: usize, track: Option<Arc<DecodedTrack>>) {
+        if slot < COUNTDOWN_STEP_COUNT {
+            let mut guard = self.countdown_cues.write();
+            guard[slot] = track;
+        }
+    }
+
+    pub fn clear_countdown_cues(&self) {
+        let mut guard = self.countdown_cues.write();
+        for slot in guard.iter_mut() {
+            *slot = None;
+        }
+        self.countdown_preview_slot.store(-1, Ordering::Release);
+        self.countdown_preview_frame.store(0, Ordering::Release);
+    }
+
+    /// Reproduce un solo paso (`0 = 3`, `1 = 2`, `2 = 1`, `3 = ¡YA!`) mientras el mezclador está pausado.
+    pub fn trigger_countdown_cue_preview(&self, slot: usize) {
+        if slot < COUNTDOWN_STEP_COUNT {
+            self.countdown_preview_frame.store(0, Ordering::Release);
+            self.countdown_preview_slot
+                .store(slot as i32, Ordering::Release);
+        }
     }
 
     pub fn set_stream_source(&self, source: Option<Arc<StreamingAudioSource>>) {
@@ -263,6 +294,56 @@ impl AudioMixerState {
                 self.gameover_sfx_remaining_frames
                     .store(rem_go.saturating_sub(frames_to_mix as u64), Ordering::Release);
             }
+
+            let preview_slot = self.countdown_preview_slot.load(Ordering::Acquire);
+            if (0..COUNTDOWN_STEP_COUNT as i32).contains(&preview_slot) {
+                let slot_idx = preview_slot as usize;
+                let start_frame = self.countdown_preview_frame.load(Ordering::Relaxed) as usize;
+                let custom_track = self
+                    .countdown_cues
+                    .try_read()
+                    .and_then(|guard| guard[slot_idx].clone());
+                if let Some(track) = custom_track {
+                    let total_frames = track.frame_count();
+                    if start_frame < total_frames {
+                        let mix_count = total_requested.min(total_frames - start_frame);
+                        for f in 0..mix_count {
+                            let idx = start_frame + f;
+                            let l = (track.stereo_samples[idx * 2] as f32) / 32768.0;
+                            let r = (track.stereo_samples[idx * 2 + 1] as f32) / 32768.0;
+                            out_interleaved[f * 2] = (out_interleaved[f * 2] + l).tanh();
+                            out_interleaved[f * 2 + 1] = (out_interleaved[f * 2 + 1] + r).tanh();
+                        }
+                        let next_frame = start_frame + mix_count;
+                        self.countdown_preview_frame
+                            .store(next_frame as u64, Ordering::Release);
+                        if next_frame >= total_frames {
+                            self.countdown_preview_slot.store(-1, Ordering::Release);
+                        }
+                    } else {
+                        self.countdown_preview_slot.store(-1, Ordering::Release);
+                    }
+                } else {
+                    let synth_total = (sr * 0.36).round().max(1.0) as usize;
+                    if start_frame < synth_total {
+                        let mix_count = total_requested.min(synth_total - start_frame);
+                        for f in 0..mix_count {
+                            let t = ((start_frame + f) as f32) / sr;
+                            let s = synthesize_countdown_cue(slot_idx as u8, t);
+                            out_interleaved[f * 2] = (out_interleaved[f * 2] + s).tanh();
+                            out_interleaved[f * 2 + 1] = (out_interleaved[f * 2 + 1] + s).tanh();
+                        }
+                        let next_frame = start_frame + mix_count;
+                        self.countdown_preview_frame
+                            .store(next_frame as u64, Ordering::Release);
+                        if next_frame >= synth_total {
+                            self.countdown_preview_slot.store(-1, Ordering::Release);
+                        }
+                    } else {
+                        self.countdown_preview_slot.store(-1, Ordering::Release);
+                    }
+                }
+            }
             return;
         }
         out_interleaved.fill(0.0);
@@ -275,16 +356,35 @@ impl AudioMixerState {
             let beat_frames = self.countdown_beat_frames.load(Ordering::Relaxed).max(1);
             let cd_frames = total_requested.min(rem_cd as usize);
             let elapsed_start = total_cd.saturating_sub(rem_cd);
+            let fade_frames = ((sr * 0.012).round() as u64).max(1).min(beat_frames / 2);
+            let cues_guard = self.countdown_cues.try_read();
 
             for f in 0..cd_frames {
                 let elapsed = elapsed_start + (f as u64);
-                let beat_idx = (elapsed / beat_frames).min(3);
+                let beat_idx = (elapsed / beat_frames).min(3) as usize;
                 let in_beat = elapsed % beat_frames;
-                let t = (in_beat as f32) / sr;
-                let sample = synthesize_countdown_cue(beat_idx as u8, t);
-                let clipped = sample.tanh();
-                out_interleaved[f * 2] = clipped;
-                out_interleaved[f * 2 + 1] = clipped;
+                if let Some(track) = cues_guard.as_ref().and_then(|g| g[beat_idx].as_ref()) {
+                    let idx = in_beat as usize;
+                    if idx < track.frame_count() {
+                        let rem_in_beat = beat_frames.saturating_sub(in_beat);
+                        let edge_fade = if rem_in_beat <= fade_frames {
+                            (rem_in_beat as f32) / (fade_frames as f32)
+                        } else {
+                            1.0
+                        };
+                        let l = ((track.stereo_samples[idx * 2] as f32) / 32768.0) * edge_fade;
+                        let r =
+                            ((track.stereo_samples[idx * 2 + 1] as f32) / 32768.0) * edge_fade;
+                        out_interleaved[f * 2] = l.tanh();
+                        out_interleaved[f * 2 + 1] = r.tanh();
+                    }
+                } else {
+                    let t = (in_beat as f32) / sr;
+                    let sample = synthesize_countdown_cue(beat_idx as u8, t);
+                    let clipped = sample.tanh();
+                    out_interleaved[f * 2] = clipped;
+                    out_interleaved[f * 2 + 1] = clipped;
+                }
             }
 
             let new_rem = rem_cd.saturating_sub(cd_frames as u64);
@@ -586,5 +686,35 @@ mod tests {
         assert!(buf_mix[0] > 0.90 && buf_mix[0] < 0.97);
 
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn custom_countdown_cue_mixes_per_slot_with_synth_fallback_and_preview() {
+        let mixer = AudioMixerState::new(48_000);
+        // Paso 0 ("3") personalizado con señal DC constante (~0.5)
+        let custom_cue = Arc::new(DecodedTrack {
+            sample_rate: 48_000,
+            stereo_samples: vec![16_384_i16; 12_000 * 2], // 250 ms
+            waveform_peaks: Vec::new(),
+        });
+        mixer.set_countdown_cue_track(0, Some(custom_cue));
+
+        // Previsualización pausada debe sonar inmediatamente
+        mixer.pause();
+        mixer.trigger_countdown_cue_preview(0);
+        let mut prev_buf = vec![0.0_f32; 512 * 2];
+        mixer.render_audio_frames(&mut prev_buf);
+        assert!((prev_buf[0] - 0.5_f32.tanh()).abs() < 0.02);
+
+        // Durante gameplay countdown a 120 BPM (500 ms por paso), paso 0 usa custom_cue y paso 1 usa synth fallback
+        mixer.start_countdown(120.0);
+        mixer.play();
+        let mut beat0_buf = vec![0.0_f32; 24_000 * 2];
+        mixer.render_audio_frames(&mut beat0_buf);
+        assert!((beat0_buf[0] - 0.5_f32.tanh()).abs() < 0.02);
+
+        let mut beat1_buf = vec![0.0_f32; 4_800 * 2];
+        mixer.render_audio_frames(&mut beat1_buf);
+        assert!(beat1_buf.iter().any(|s| s.abs() > 0.05));
     }
 }

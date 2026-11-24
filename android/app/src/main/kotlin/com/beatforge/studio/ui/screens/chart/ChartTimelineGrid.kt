@@ -686,6 +686,8 @@ private fun StepNumberCueCell(
 ) {
     val hasEvents = row.rowEvents.isNotEmpty()
     val flashColor = row.activeFlashColor
+    val blackoutActive = row.activeBlackoutAlpha > 0.04f
+    val vignetteColor = row.activeVignetteColor
     val badgeKinds = row.eventKinds
 
     Box(
@@ -698,6 +700,8 @@ private fun StepNumberCueCell(
                 when {
                     hasEvents -> StudioColors.AccentCyan.copy(alpha = 0.16f)
                     flashColor != null -> flashColor.copy(alpha = 0.10f)
+                    blackoutActive -> Color.Black.copy(alpha = 0.42f * row.activeBlackoutAlpha.coerceIn(0.25f, 1f))
+                    vignetteColor != null -> vignetteColor.copy(alpha = 0.08f)
                     else -> Color.Transparent
                 }
             )
@@ -718,6 +722,23 @@ private fun StepNumberCueCell(
                     .width(3.dp)
                     .fillMaxHeight()
                     .background(flashColor.copy(alpha = 0.85f))
+            )
+        } else if (blackoutActive) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(3.dp)
+                    .fillMaxHeight()
+                    .background(StudioColors.AccentCoral.copy(alpha = 0.72f))
+            )
+        }
+        if (vignetteColor != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(2.5.dp)
+                    .fillMaxHeight()
+                    .background(vignetteColor.copy(alpha = 0.85f))
             )
         }
 
@@ -744,6 +765,7 @@ private fun StepNumberCueCell(
                     badgeKinds.take(3).forEach { kind ->
                         val dotColor = when (kind) {
                             StepCueKind.Camera -> StudioColors.AccentCyan
+                            StepCueKind.Vignette -> Color(0xFFF43F5E)
                             StepCueKind.Flash -> StudioColors.AccentAmber
                             StepCueKind.Swap -> StudioColors.AccentEmerald
                             StepCueKind.Character -> StudioColors.AccentPurple

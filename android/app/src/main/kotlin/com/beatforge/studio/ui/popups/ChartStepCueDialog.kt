@@ -2,7 +2,8 @@
 // Propósito: Ventana modal interactiva activada al pulsar cualquier número de paso `#` en
 // el Editor de Chart. Permite programar al vuelo swaps de visibilidad (mostrar/ocultar
 // sprites + reciclaje de RAM), flashes con inicio/fin y capa (escenario o HUD), cambios
-// de personaje activo (Jugador/Enemigo), precargas anticipadas y saltar a `stage_events.lua`.
+// de personaje activo (Jugador/Enemigo), pantalla negra / UI con punto de inicio y punto
+// final (vuelta a color), y control de cámaras + viñeta/brillo lateral que sigue a la cámara.
 
 package com.beatforge.studio.ui.popups
 
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FlashOn
@@ -33,9 +36,12 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -89,6 +95,17 @@ private val FLASH_PRESET_COLORS = listOf(
     "#000000" to "Negro"
 )
 
+private val VIGNETTE_PRESET_COLORS = listOf(
+    "#EF4444" to "Rojo",
+    "#DC2626" to "Carmesí",
+    "#3B82F6" to "Azul",
+    "#06B6D4" to "Cian",
+    "#A855F7" to "Morado",
+    "#F59E0B" to "Ámbar",
+    "#10B981" to "Verde",
+    "#09090B" to "Negro"
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChartStepCueDialog(
@@ -96,6 +113,7 @@ fun ChartStepCueDialog(
     entities: List<StageEntitySnapshot>,
     chartEvents: List<ChartEventSnapshot>,
     stageCamera: StageCameraSnapshot,
+    allStepRows: List<ChartTimelineRow.StepRow> = emptyList(),
     onAddChartEvent: (timeMs: Double, name: String, value1: String, value2: String) -> Unit,
     onRemoveChartEvent: (globalIndex: Int) -> Unit,
     onMovePlayheadHere: (Double) -> Unit,
@@ -104,6 +122,15 @@ fun ChartStepCueDialog(
     onDismiss: () -> Unit
 ) {
     var activeTab by remember { mutableIntStateOf(0) } // 0=Escena/Visibilidad, 1=Flash, 2=Personajes/Precarga, 3=UI/Negro, 4=Cámara
+
+    val futureSteps = remember(allStepRows, stepRow.globalStepIndex) {
+        allStepRows.filter { it.globalStepIndex > stepRow.globalStepIndex }
+    }
+    val defaultEndStepGlobalIdx = remember(futureSteps, stepRow.globalStepIndex) {
+        futureSteps.firstOrNull { it.globalStepIndex >= stepRow.globalStepIndex + 8 }?.globalStepIndex
+            ?: futureSteps.lastOrNull()?.globalStepIndex
+            ?: stepRow.globalStepIndex
+    }
 
     val stageStateAtStep = remember(
         entities,
@@ -145,16 +172,22 @@ fun ChartStepCueDialog(
         mutableStateMapOf<String, Boolean>()
     }
 
-    // Tab 3: UI / Pantalla en Negro
-    var uiPresetAction by remember { mutableStateOf("intro") } // "intro", "hide", "arrows_hide", "show", "toggle"
+    // Tab 3: UI / Pantalla en Negro (Punto de Inicio + Punto Final donde vuelve a su color)
+    var uiPresetAction by remember { mutableStateOf(if (stepRow.stepTimeMs <= 120.0) "intro" else "hide") }
+    var uiStartAtZero by remember(stepRow.globalStepIndex) { mutableStateOf(stepRow.stepTimeMs <= 120.0) }
+    var uiEndMode by remember(stepRow.globalStepIndex) {
+        mutableStateOf(if (stepRow.stepTimeMs <= 120.0) "on_ya" else "step")
+    } // "none", "on_ya", "step"
+    var uiEndStepGlobalIdx by remember(stepRow.globalStepIndex) { mutableIntStateOf(defaultEndStepGlobalIdx) }
+    var uiEndMenuExpanded by remember { mutableStateOf(false) }
     var uiBlackAlpha by remember { mutableFloatStateOf(1.0f) }
     var uiHideHud by remember { mutableStateOf(true) }
     var uiHideArrows by remember { mutableStateOf(true) }
-    var uiRevealOnStart by remember { mutableStateOf(true) }
-    var uiFadeSec by remember { mutableFloatStateOf(0.65f) }
+    var uiFadeSec by remember { mutableFloatStateOf(0.50f) }
+    var uiRestoreFadeSec by remember { mutableFloatStateOf(0.65f) }
     var uiIntroDelayMs by remember { mutableFloatStateOf(0.0f) }
 
-    // Tab 4: Eventos de Cámara en chart.json
+    // Tab 4: Eventos de Cámara + Viñeta Lateral en chart.json
     val cameraSlots = stageCamera.resolvedCameras()
     var camTargetSlot by remember { mutableIntStateOf(stageCamera.activeCameraIndex.coerceIn(0, (cameraSlots.size - 1).coerceAtLeast(0))) }
     var camOverrideZoom by remember { mutableStateOf(false) }
@@ -165,6 +198,16 @@ fun ChartStepCueDialog(
     var camFollowPosY by remember { mutableStateOf(stageCamera.baseY.roundToInt().toString()) }
     var camZoomOnly by remember { mutableFloatStateOf(1.20f) }
     var camZoomSteps by remember { mutableIntStateOf(4) }
+
+    var vigMode by remember { mutableStateOf("on") } // "on", "range", "off"
+    var vigColorHex by remember { mutableStateOf(stageCamera.vignetteColor.ifBlank { "#EF4444" }) }
+    var vigAlpha by remember { mutableFloatStateOf(stageCamera.vignetteAlpha.coerceIn(0.15f, 1.0f)) }
+    var vigWidth by remember { mutableFloatStateOf(stageCamera.vignetteWidth.coerceIn(0.05f, 0.50f)) }
+    var vigPulse by remember { mutableFloatStateOf(stageCamera.vignettePulse.coerceIn(0.0f, 1.0f)) }
+    var vigOverHud by remember { mutableStateOf(stageCamera.vignetteOverHud) }
+    var vigFadeSec by remember { mutableFloatStateOf(0.35f) }
+    var vigEndStepGlobalIdx by remember(stepRow.globalStepIndex) { mutableIntStateOf(defaultEndStepGlobalIdx) }
+    var vigEndMenuExpanded by remember { mutableStateOf(false) }
 
     val secNum = stepRow.section.index + 1
     val secTimeText = String.format(Locale.US, "%.2fs", stepRow.stepTimeMs / 1000.0)
@@ -762,7 +805,7 @@ fun ChartStepCueDialog(
 
                     3 -> {
                         Text(
-                            text = "Controla pantalla negra y visibilidad del HUD y flechas sin depender de programar desde cero. La intro negra oculta todo al arrancar dejando visible '3, 2, 1, ¡YA!' y aparece suave después.",
+                            text = "Configura dónde empieza a ponerse en negro / ocultar UI y en qué punto exacto termina y vuelve a su color normal.",
                             color = StudioColors.TextMuted,
                             fontSize = 10.sp,
                             lineHeight = 13.sp
@@ -770,32 +813,19 @@ fun ChartStepCueDialog(
 
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
                             ActionChip(
-                                label = "Intro Negra",
-                                selected = uiPresetAction == "intro",
+                                label = "Poner en Negro",
+                                selected = uiPresetAction == "hide" || uiPresetAction == "intro",
                                 color = StudioColors.AccentCoral,
                                 onClick = {
-                                    uiPresetAction = "intro"
-                                    uiBlackAlpha = 1.0f
-                                    uiHideHud = true
-                                    uiHideArrows = true
-                                    uiRevealOnStart = true
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            ActionChip(
-                                label = "Ocultar Todo",
-                                selected = uiPresetAction == "hide",
-                                color = StudioColors.AccentAmber,
-                                onClick = {
-                                    uiPresetAction = "hide"
+                                    uiPresetAction = if (uiStartAtZero) "intro" else "hide"
                                     uiBlackAlpha = 1.0f
                                     uiHideHud = true
                                     uiHideArrows = true
                                 },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1.1f)
                             )
                             ActionChip(
-                                label = "Mostrar Todo",
+                                label = "Volver a Color",
                                 selected = uiPresetAction == "show",
                                 color = StudioColors.AccentEmerald,
                                 onClick = {
@@ -804,13 +834,10 @@ fun ChartStepCueDialog(
                                     uiHideHud = false
                                     uiHideArrows = false
                                 },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1.0f)
                             )
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
                             ActionChip(
-                                label = "Solo Flechas Ocultas",
+                                label = "Solo Flechas",
                                 selected = uiPresetAction == "arrows_hide",
                                 color = StudioColors.AccentPurple,
                                 onClick = {
@@ -818,37 +845,73 @@ fun ChartStepCueDialog(
                                     uiBlackAlpha = 0.0f
                                     uiHideHud = false
                                     uiHideArrows = true
+                                    if (uiEndMode == "on_ya") uiEndMode = "step"
                                 },
-                                modifier = Modifier.weight(1.2f)
+                                modifier = Modifier.weight(0.95f)
                             )
                             ActionChip(
-                                label = "Alternar UI",
+                                label = "Alternar",
                                 selected = uiPresetAction == "toggle",
                                 color = StudioColors.AccentCyan,
                                 onClick = { uiPresetAction = "toggle" },
-                                modifier = Modifier.weight(0.9f)
+                                modifier = Modifier.weight(0.8f)
                             )
                         }
 
-                        if (uiPresetAction != "show") {
-                            Text(
-                                text = "Oscuridad de pantalla negra: ${(uiBlackAlpha * 100).roundToInt()}%",
-                                color = StudioColors.TextPrimary,
-                                fontSize = 11.sp
-                            )
-                            Slider(
-                                value = uiBlackAlpha,
-                                onValueChange = { uiBlackAlpha = it },
-                                valueRange = 0.0f..1.0f
-                            )
+                        if (uiPresetAction != "show" && uiPresetAction != "toggle") {
+                            if (uiPresetAction != "arrows_hide") {
+                                Text(
+                                    text = "1. Punto de Inicio:",
+                                    color = StudioColors.AccentCoral,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                    ActionChip(
+                                        label = "En Paso #${stepRow.stepInSec} ($secTimeText)",
+                                        selected = !uiStartAtZero,
+                                        color = StudioColors.AccentCoral,
+                                        onClick = {
+                                            uiStartAtZero = false
+                                            uiPresetAction = "hide"
+                                            if (uiEndMode == "on_ya") {
+                                                uiEndMode = if (futureSteps.isNotEmpty()) "step" else "none"
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    ActionChip(
+                                        label = "Inicio 0:00 (3-2-1-¡YA!)",
+                                        selected = uiStartAtZero,
+                                        color = StudioColors.AccentAmber,
+                                        onClick = {
+                                            uiStartAtZero = true
+                                            uiPresetAction = "intro"
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Ocultar barra de vida y puntaje (HUD)", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                Switch(checked = uiHideHud, onCheckedChange = { uiHideHud = it })
+                            if (uiPresetAction != "arrows_hide") {
+                                Text(
+                                    text = "Oscuridad de pantalla negra: ${(uiBlackAlpha * 100).roundToInt()}%",
+                                    color = StudioColors.TextPrimary,
+                                    fontSize = 11.sp
+                                )
+                                Slider(
+                                    value = uiBlackAlpha,
+                                    onValueChange = { uiBlackAlpha = it },
+                                    valueRange = 0.0f..1.0f
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Ocultar barra de vida y puntaje (HUD)", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                    Switch(checked = uiHideHud, onCheckedChange = { uiHideHud = it })
+                                }
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -858,18 +921,119 @@ fun ChartStepCueDialog(
                                 Text("Ocultar flechas y notas", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
                                 Switch(checked = uiHideArrows, onCheckedChange = { uiHideArrows = it })
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Revelar tras '3, 2, 1, ¡YA!' (onStart)", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                Switch(checked = uiRevealOnStart, onCheckedChange = { uiRevealOnStart = it })
+
+                            HorizontalDivider(color = StudioColors.BorderSubtle)
+                            Text(
+                                text = "2. Punto Final (vuelve a su color y muestra UI):",
+                                color = StudioColors.AccentEmerald,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                ActionChip(
+                                    label = "Sin fin (Manual)",
+                                    selected = uiEndMode == "none",
+                                    color = StudioColors.TextMuted,
+                                    onClick = { uiEndMode = "none" },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (uiStartAtZero && uiPresetAction != "arrows_hide") {
+                                    ActionChip(
+                                        label = "Tras '¡YA!'",
+                                        selected = uiEndMode == "on_ya",
+                                        color = StudioColors.AccentAmber,
+                                        onClick = { uiEndMode = "on_ya" },
+                                        modifier = Modifier.weight(0.95f)
+                                    )
+                                }
+                                if (futureSteps.isNotEmpty()) {
+                                    ActionChip(
+                                        label = "Elegir Paso Fin",
+                                        selected = uiEndMode == "step",
+                                        color = StudioColors.AccentEmerald,
+                                        onClick = { uiEndMode = "step" },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+
+                            if (uiEndMode == "on_ya" && uiStartAtZero) {
+                                Text(
+                                    text = "Esperar tras '¡YA!' antes de volver al color:",
+                                    color = StudioColors.AccentAmber,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                    listOf(0.0f to "Al ¡YA!", 500.0f to "+0.5s", 1000.0f to "+1s", 3000.0f to "+3s").forEach { (ms, label) ->
+                                        ActionChip(
+                                            label = label,
+                                            selected = kotlin.math.abs(uiIntroDelayMs - ms) < 10f,
+                                            color = StudioColors.AccentAmber,
+                                            onClick = { uiIntroDelayMs = ms },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            } else if (uiEndMode == "step" && futureSteps.isNotEmpty()) {
+                                val selectedUiEndStep = futureSteps.firstOrNull { it.globalStepIndex == uiEndStepGlobalIdx }
+                                    ?: futureSteps.last()
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                                    listOf(4, 8, 16, 32).forEach { offset ->
+                                        val targetIdx = stepRow.globalStepIndex + offset
+                                        val candidate = futureSteps.firstOrNull { it.globalStepIndex == targetIdx }
+                                            ?: futureSteps.last()
+                                        ActionChip(
+                                            label = "+${offset}p",
+                                            selected = selectedUiEndStep.globalStepIndex == candidate.globalStepIndex,
+                                            color = StudioColors.AccentEmerald,
+                                            onClick = { uiEndStepGlobalIdx = candidate.globalStepIndex },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    val endTimeTxt = String.format(Locale.US, "%.2fs", selectedUiEndStep.stepTimeMs / 1000.0)
+                                    OutlinedButton(
+                                        onClick = { uiEndMenuExpanded = true },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Vuelve a color en: Sec ${selectedUiEndStep.section.index + 1} · Paso #${selectedUiEndStep.stepInSec} ($endTimeTxt)",
+                                            fontSize = 11.sp,
+                                            color = StudioColors.AccentEmerald,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Icon(Icons.Rounded.ArrowDropDown, contentDescription = null, tint = StudioColors.AccentEmerald)
+                                    }
+                                    DropdownMenu(
+                                        expanded = uiEndMenuExpanded,
+                                        onDismissRequest = { uiEndMenuExpanded = false },
+                                        modifier = Modifier.heightIn(max = 240.dp)
+                                    ) {
+                                        futureSteps.forEach { target ->
+                                            val tStr = String.format(Locale.US, "%.2fs", target.stepTimeMs / 1000.0)
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = "Sec ${target.section.index + 1} · Paso #${target.stepInSec} ($tStr)",
+                                                        fontSize = 11.sp
+                                                    )
+                                                },
+                                                onClick = {
+                                                    uiEndStepGlobalIdx = target.globalStepIndex
+                                                    uiEndMenuExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
 
                         Text(
-                            text = "Duración del desvanecimiento (fade): ${String.format(Locale.US, "%.2fs", uiFadeSec)}",
+                            text = "Fade al iniciar: ${String.format(Locale.US, "%.2fs", uiFadeSec)}",
                             color = StudioColors.TextPrimary,
                             fontSize = 11.sp
                         )
@@ -885,20 +1049,19 @@ fun ChartStepCueDialog(
                             }
                         }
 
-                        if (uiPresetAction == "intro" || (uiPresetAction != "show" && uiRevealOnStart)) {
+                        if (uiPresetAction != "show" && uiPresetAction != "toggle" && uiEndMode != "none") {
                             Text(
-                                text = "Esperar tras '¡YA!' antes de aparecer:",
-                                color = StudioColors.AccentAmber,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
+                                text = "Fade al volver al color: ${String.format(Locale.US, "%.2fs", uiRestoreFadeSec)}",
+                                color = StudioColors.AccentEmerald,
+                                fontSize = 11.sp
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                                listOf(0.0f to "Al ¡YA!", 500.0f to "+0.5s", 1000.0f to "+1.0s", 2000.0f to "+2.0s").forEach { (ms, label) ->
+                                listOf(0.0f to "Corte", 0.35f to "0.35s", 0.65f to "0.65s", 1.2f to "1.2s", 2.5f to "2.5s").forEach { (sec, label) ->
                                     ActionChip(
                                         label = label,
-                                        selected = kotlin.math.abs(uiIntroDelayMs - ms) < 10f,
-                                        color = StudioColors.AccentAmber,
-                                        onClick = { uiIntroDelayMs = ms },
+                                        selected = kotlin.math.abs(uiRestoreFadeSec - sec) < 0.05f,
+                                        color = StudioColors.AccentEmerald,
+                                        onClick = { uiRestoreFadeSec = sec },
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
@@ -918,34 +1081,76 @@ fun ChartStepCueDialog(
                                     uiHideArrows -> 0.0f
                                     else -> 1.0f
                                 }
-                                val effectiveAction = if (uiPresetAction == "arrows_hide") "hide" else uiPresetAction
+
+                                val endStepTarget = if (uiPresetAction != "show" && uiPresetAction != "toggle" && uiEndMode == "step") {
+                                    futureSteps.firstOrNull { it.globalStepIndex == uiEndStepGlobalIdx }
+                                        ?: futureSteps.lastOrNull()
+                                } else {
+                                    null
+                                }
+
+                                val startTimeMs = if (uiStartAtZero && uiPresetAction == "intro") 0.0 else stepRow.stepTimeMs
+                                val effectiveAction = when {
+                                    uiPresetAction == "arrows_hide" -> "hide"
+                                    uiStartAtZero -> "intro"
+                                    else -> uiPresetAction
+                                }
                                 val effectiveEventName = if (uiPresetAction == "arrows_hide") "Hide Arrows" else "UI Blackout"
-                                val revealFlag = if (uiPresetAction == "intro") true else uiRevealOnStart
-                                val v2 = String.format(
-                                    Locale.US,
-                                    "black=%.2f;hud=%.2f;arrows=%.2f;dur=%.2f;revealMs=%.0f;onStart=%d",
-                                    targetBlack,
-                                    targetHud,
-                                    targetArrows,
-                                    uiFadeSec,
-                                    if (revealFlag) uiIntroDelayMs else 0.0f,
-                                    if (revealFlag) 1 else 0
+                                val revealOnSongStartFlag = uiStartAtZero && uiEndMode == "on_ya"
+                                val revealDelayVal = if (revealOnSongStartFlag) uiIntroDelayMs else 0.0f
+
+                                val kvParts = mutableListOf(
+                                    String.format(Locale.US, "black=%.2f", targetBlack),
+                                    String.format(Locale.US, "hud=%.2f", targetHud),
+                                    String.format(Locale.US, "arrows=%.2f", targetArrows),
+                                    String.format(Locale.US, "dur=%.2f", uiFadeSec),
+                                    String.format(Locale.US, "revealMs=%.0f", revealDelayVal),
+                                    "onStart=${if (revealOnSongStartFlag) 1 else 0}"
                                 )
-                                onAddChartEvent(stepRow.stepTimeMs, effectiveEventName, effectiveAction, v2)
+                                if (endStepTarget != null) {
+                                    kvParts.add(String.format(Locale.US, "endMs=%.2f", endStepTarget.stepTimeMs))
+                                    kvParts.add(String.format(Locale.US, "fadeOut=%.2f", uiRestoreFadeSec))
+                                }
+
+                                onAddChartEvent(startTimeMs, effectiveEventName, effectiveAction, kvParts.joinToString(";"))
+
+                                if (endStepTarget != null) {
+                                    if (uiPresetAction == "arrows_hide") {
+                                        onAddChartEvent(
+                                            endStepTarget.stepTimeMs,
+                                            "Show Arrows",
+                                            "show",
+                                            String.format(Locale.US, "arrows=1.00;dur=%.2f", uiRestoreFadeSec)
+                                        )
+                                    } else {
+                                        onAddChartEvent(
+                                            endStepTarget.stepTimeMs,
+                                            "UI Blackout",
+                                            "show",
+                                            String.format(Locale.US, "black=0.00;hud=1.00;arrows=1.00;dur=%.2f", uiRestoreFadeSec)
+                                        )
+                                    }
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = StudioColors.AccentCoral,
-                                contentColor = Color.White
+                                containerColor = if (uiPresetAction == "show") StudioColors.AccentEmerald else StudioColors.AccentCoral,
+                                contentColor = if (uiPresetAction == "show") Color(0xFF042117) else Color.White
                             ),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Rounded.VisibilityOff, null, modifier = Modifier.size(16.dp))
+                            Icon(
+                                if (uiPresetAction == "show") Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                null,
+                                modifier = Modifier.size(16.dp)
+                            )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                text = when (uiPresetAction) {
-                                    "intro" -> "Guardar Intro Pantalla en Negro"
-                                    "arrows_hide" -> "Ocultar Flechas en Paso #${stepRow.stepInSec}"
-                                    else -> "Aplicar Evento UI / Negro en Paso #${stepRow.stepInSec}"
+                                text = when {
+                                    uiPresetAction == "show" -> "Volver a Color en Paso #${stepRow.stepInSec}"
+                                    uiPresetAction == "arrows_hide" -> "Guardar Ocultar Flechas"
+                                    uiEndMode == "step" && futureSteps.isNotEmpty() -> "Guardar Inicio → Fin (Vuelve a Color)"
+                                    uiStartAtZero -> "Guardar Pantalla Negra desde 0:00"
+                                    else -> "Aplicar Pantalla Negra / UI en Paso #${stepRow.stepInSec}"
                                 },
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
@@ -1236,6 +1441,233 @@ fun ChartStepCueDialog(
                                 color = StudioColors.AccentCoral,
                                 onClick = { onAddChartEvent(stepRow.stepTimeMs, "Add Camera Zoom", "0.08", "0.04") },
                                 modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        HorizontalDivider(color = StudioColors.BorderSubtle)
+                        Text("5. Brillo / Viñeta Lateral de Cámara (Camera Vignette):", color = StudioColors.AccentCoral, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Degradado atmosférico en los laterales que sigue a la cámara. Puedes hacer que aparezca en este paso, desaparezca, o dure hasta un paso final.",
+                            color = StudioColors.TextMuted,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp
+                        )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            ActionChip(
+                                label = "Aparecer",
+                                selected = vigMode == "on",
+                                color = StudioColors.AccentCoral,
+                                onClick = { vigMode = "on" },
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (futureSteps.isNotEmpty()) {
+                                ActionChip(
+                                    label = "Inicio → Fin",
+                                    selected = vigMode == "range",
+                                    color = StudioColors.AccentAmber,
+                                    onClick = { vigMode = "range" },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            ActionChip(
+                                label = "Desaparecer",
+                                selected = vigMode == "off",
+                                color = StudioColors.AccentCyan,
+                                onClick = { vigMode = "off" },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        if (vigMode != "off") {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                VIGNETTE_PRESET_COLORS.forEach { (hex, _) ->
+                                    val swatch = parseHexColorOrWhite(hex)
+                                    val isSel = vigColorHex.equals(hex, ignoreCase = true)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .background(swatch)
+                                            .border(
+                                                width = if (isSel) 2.5.dp else 1.dp,
+                                                color = if (isSel) StudioColors.AccentCyan else StudioColors.BorderSubtle,
+                                                shape = CircleShape
+                                            )
+                                            .clickable { vigColorHex = hex }
+                                    )
+                                }
+                            }
+                            OutlinedTextField(
+                                value = vigColorHex,
+                                onValueChange = { vigColorHex = it },
+                                label = { Text("Color Hex (ej. #EF4444)", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Text(
+                                text = "Intensidad lateral: ${(vigAlpha * 100).roundToInt()}% · Ancho: ${(vigWidth * 100).roundToInt()}%",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 11.sp
+                            )
+                            Slider(
+                                value = vigAlpha,
+                                onValueChange = { vigAlpha = it },
+                                valueRange = 0.10f..1.0f
+                            )
+                            Slider(
+                                value = vigWidth,
+                                onValueChange = { vigWidth = it },
+                                valueRange = 0.05f..0.50f
+                            )
+
+                            Text(
+                                text = "Pulso con Beat/Shake: ${(vigPulse * 100).roundToInt()}%",
+                                color = StudioColors.TextPrimary,
+                                fontSize = 11.sp
+                            )
+                            Slider(
+                                value = vigPulse,
+                                onValueChange = { vigPulse = it },
+                                valueRange = 0.0f..1.0f
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Dibujar sobre HUD y flechas", color = StudioColors.TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Switch(checked = vigOverHud, onCheckedChange = { vigOverHud = it })
+                            }
+                        }
+
+                        Text(
+                            text = "Transición (fade): ${String.format(Locale.US, "%.2fs", vigFadeSec)}",
+                            color = StudioColors.TextPrimary,
+                            fontSize = 11.sp
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            listOf(0.0f to "Corte", 0.25f to "0.25s", 0.45f to "0.45s", 1.0f to "1.0s").forEach { (sec, label) ->
+                                ActionChip(
+                                    label = label,
+                                    selected = kotlin.math.abs(vigFadeSec - sec) < 0.05f,
+                                    color = StudioColors.AccentCoral,
+                                    onClick = { vigFadeSec = sec },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        if (vigMode == "range" && futureSteps.isNotEmpty()) {
+                            val selectedVigEndStep = futureSteps.firstOrNull { it.globalStepIndex == vigEndStepGlobalIdx }
+                                ?: futureSteps.last()
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                                listOf(4, 8, 16, 32).forEach { offset ->
+                                    val targetIdx = stepRow.globalStepIndex + offset
+                                    val candidate = futureSteps.firstOrNull { it.globalStepIndex == targetIdx }
+                                        ?: futureSteps.last()
+                                    ActionChip(
+                                        label = "+${offset}p",
+                                        selected = selectedVigEndStep.globalStepIndex == candidate.globalStepIndex,
+                                        color = StudioColors.AccentAmber,
+                                        onClick = { vigEndStepGlobalIdx = candidate.globalStepIndex },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                val vigEndTxt = String.format(Locale.US, "%.2fs", selectedVigEndStep.stepTimeMs / 1000.0)
+                                OutlinedButton(
+                                    onClick = { vigEndMenuExpanded = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "Desaparece en: Sec ${selectedVigEndStep.section.index + 1} · Paso #${selectedVigEndStep.stepInSec} ($vigEndTxt)",
+                                        fontSize = 11.sp,
+                                        color = StudioColors.AccentAmber,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Icon(Icons.Rounded.ArrowDropDown, contentDescription = null, tint = StudioColors.AccentAmber)
+                                }
+                                DropdownMenu(
+                                    expanded = vigEndMenuExpanded,
+                                    onDismissRequest = { vigEndMenuExpanded = false },
+                                    modifier = Modifier.heightIn(max = 240.dp)
+                                ) {
+                                    futureSteps.forEach { target ->
+                                        val tStr = String.format(Locale.US, "%.2fs", target.stepTimeMs / 1000.0)
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Sec ${target.section.index + 1} · Paso #${target.stepInSec} ($tStr)",
+                                                    fontSize = 11.sp
+                                                )
+                                            },
+                                            onClick = {
+                                                vigEndStepGlobalIdx = target.globalStepIndex
+                                                vigEndMenuExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                if (vigMode == "off") {
+                                    val v2 = String.format(Locale.US, "action=off;alpha=0.00;dur=%.2f", vigFadeSec)
+                                    onAddChartEvent(stepRow.stepTimeMs, "Camera Vignette", "off", v2)
+                                } else {
+                                    val cleanHex = vigColorHex.trim().ifBlank { "#EF4444" }
+                                    val endStepTarget = if (vigMode == "range" && futureSteps.isNotEmpty()) {
+                                        futureSteps.firstOrNull { it.globalStepIndex == vigEndStepGlobalIdx }
+                                            ?: futureSteps.last()
+                                    } else {
+                                        null
+                                    }
+                                    val kvParts = mutableListOf(
+                                        "action=on",
+                                        "color=$cleanHex",
+                                        String.format(Locale.US, "alpha=%.2f", vigAlpha),
+                                        String.format(Locale.US, "width=%.2f", vigWidth),
+                                        String.format(Locale.US, "pulse=%.2f", vigPulse),
+                                        "hud=${if (vigOverHud) 1 else 0}",
+                                        String.format(Locale.US, "dur=%.2f", vigFadeSec)
+                                    )
+                                    if (endStepTarget != null) {
+                                        kvParts.add(String.format(Locale.US, "endMs=%.2f", endStepTarget.stepTimeMs))
+                                    }
+                                    onAddChartEvent(stepRow.stepTimeMs, "Camera Vignette", cleanHex, kvParts.joinToString(";"))
+                                    if (endStepTarget != null) {
+                                        val offV2 = String.format(Locale.US, "action=off;alpha=0.00;dur=%.2f", vigFadeSec)
+                                        onAddChartEvent(endStepTarget.stepTimeMs, "Camera Vignette", "off", offV2)
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (vigMode == "off") StudioColors.AccentCyan else StudioColors.AccentCoral,
+                                contentColor = if (vigMode == "off") Color(0xFF041C24) else Color.White
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.Videocam, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = when (vigMode) {
+                                    "off" -> "Desaparecer Viñeta en Paso #${stepRow.stepInSec}"
+                                    "range" -> "Aplicar Viñeta (Inicio → Fin)"
+                                    else -> "Aparecer Viñeta en Paso #${stepRow.stepInSec}"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
                             )
                         }
                     }

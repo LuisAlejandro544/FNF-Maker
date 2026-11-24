@@ -134,13 +134,16 @@ pub fn parse_color_argb(raw: &str) -> u32 {
     let s = raw.trim();
     match s.to_ascii_lowercase().as_str() {
         "red" | "rojo" => return 0xFFEF4444,
+        "crimson" | "carmesi" | "carmesí" => return 0xFFDC2626,
         "green" | "verde" => return 0xFF10B981,
         "blue" | "azul" => return 0xFF3B82F6,
-        "cyan" | "cian" => return 0xFF22D3EE,
-        "pink" | "rosa" => return 0xFFF472B6,
+        "cyan" | "cian" => return 0xFF06B6D4,
+        "purple" | "morado" | "violet" | "violeta" => return 0xFFA855F7,
+        "amber" | "ambar" | "ámbar" | "orange" | "naranja" => return 0xFFF59E0B,
+        "pink" | "rosa" | "magenta" => return 0xFFEC4899,
         "yellow" | "amarillo" => return 0xFFFACC15,
         "white" | "blanco" => return 0xFFFFFFFF,
-        "black" | "negro" => return 0xFF000000,
+        "black" | "negro" => return 0xFF09090B,
         _ => {}
     }
     let hex = s
@@ -177,6 +180,27 @@ pub enum ScriptCommand {
     SetCameraFollowLock { x: f32, y: f32 },
     ClearCameraFollowLock,
     SetCameraClamp { enabled: bool },
+    SetCameraVignette {
+        color_argb: u32,
+        alpha: f32,
+        width: f32,
+        pulse: f32,
+        over_hud: bool,
+    },
+    TweenCameraVignette {
+        tag: String,
+        target_alpha: f32,
+        duration_sec: f32,
+        ease: String,
+        color_argb: Option<u32>,
+        target_width: Option<f32>,
+        pulse: Option<f32>,
+        over_hud: Option<bool>,
+    },
+    ClearCameraVignette {
+        duration_sec: f32,
+        ease: String,
+    },
     SetEntityProp {
         entity_id: String,
         prop: String,
@@ -345,6 +369,7 @@ pub struct ScriptHostState {
     pub arrows_visible: Mutex<bool>,
     pub arrows_opacity: Mutex<f32>,
     pub screen_blackout_alpha: Mutex<f32>,
+    pub camera_vignette_alpha: Mutex<f32>,
     pub game_over: Mutex<bool>,
     pub entity_positions: Mutex<HashMap<String, (f32, f32)>>,
     pub entity_props: Mutex<HashMap<String, EntityPropSnapshot>>,
@@ -380,6 +405,7 @@ impl Default for ScriptHostState {
             arrows_visible: Mutex::new(true),
             arrows_opacity: Mutex::new(1.0),
             screen_blackout_alpha: Mutex::new(0.0),
+            camera_vignette_alpha: Mutex::new(0.0),
             game_over: Mutex::new(false),
             entity_positions: Mutex::new(HashMap::new()),
             entity_props: Mutex::new(HashMap::new()),

@@ -94,7 +94,7 @@ fun ChartJsonDetailsDialog(
     var introHideHud by remember(introCfg) { mutableStateOf(introCfg.hideHud) }
     var introHideArrows by remember(introCfg) { mutableStateOf(introCfg.hideArrows) }
     var introRevealOnSongStart by remember(introCfg) { mutableStateOf(introCfg.revealOnSongStart) }
-    var introRevealDelayMs by remember(introCfg) { mutableFloatStateOf(introCfg.revealDelayMs.toFloat().coerceIn(0f, 15000f)) }
+    var introRevealDelayMs by remember(introCfg) { mutableFloatStateOf(introCfg.revealDelayMs.toFloat().coerceIn(0f, 600_000f)) }
     var introFadeSec by remember(introCfg) { mutableFloatStateOf(introCfg.fadeSec.coerceIn(0f, 10f)) }
 
     var evName by remember { mutableStateOf("Add Camera Zoom") }
@@ -257,24 +257,32 @@ fun ChartJsonDetailsDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Revelar al terminar '3, 2, 1, ¡YA!'", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = introRevealOnSongStart, onCheckedChange = { introRevealOnSongStart = it })
+                    Switch(checked = introRevealOnSongStart, onCheckedChange = { introRevealOnStart -> introRevealOnSongStart = introRevealOnStart })
                 }
 
                 if (introRevealOnSongStart) {
+                    val delaySecTotal = introRevealDelayMs / 1000.0
+                    val delayLabel = if (delaySecTotal >= 60.0) {
+                        val mins = (delaySecTotal / 60.0).toInt()
+                        val rem = delaySecTotal - mins * 60.0
+                        String.format(Locale.US, "%dm %04.1fs", mins, rem)
+                    } else {
+                        String.format(Locale.US, "%.1fs", delaySecTotal)
+                    }
                     Text(
-                        text = "Espera al ¡YA!: ${(introRevealDelayMs / 1000.0).let { String.format(Locale.US, "%.1fs", it) }} · Fade: ${String.format(Locale.US, "%.2fs", introFadeSec)}",
+                        text = "Espera al ¡YA!: $delayLabel · Fade vuelta a color: ${String.format(Locale.US, "%.2fs", introFadeSec)}",
                         color = StudioColors.TextMuted,
                         fontSize = 10.sp
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                        listOf(0.0f to "0s", 500.0f to "+0.5s", 1000.0f to "+1s", 2000.0f to "+2s").forEach { (ms, label) ->
+                        listOf(0.0f to "0s", 1000.0f to "+1s", 4000.0f to "+4s", 10000.0f to "+10s", 30000.0f to "+30s").forEach { (ms, label) ->
                             OutlinedButton(
                                 onClick = { introRevealDelayMs = ms },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                                 border = if (abs(introRevealDelayMs - ms) < 15f) BorderStroke(1.5.dp, StudioColors.AccentAmber) else null,
                                 modifier = Modifier.weight(1f).height(28.dp)
                             ) {
-                                Text(label, fontSize = 10.sp, maxLines = 1, softWrap = false)
+                                Text(label, fontSize = 9.sp, maxLines = 1, softWrap = false)
                             }
                         }
                     }

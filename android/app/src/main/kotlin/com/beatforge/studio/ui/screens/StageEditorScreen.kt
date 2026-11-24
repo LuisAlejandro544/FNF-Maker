@@ -14,8 +14,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.beatforge.studio.CAMERA_SELECTION_ID
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.ProjectSnapshot
+import com.beatforge.studio.StageEntitySnapshot
 import com.beatforge.studio.ui.screens.stage.StageCameraInspector
 import com.beatforge.studio.ui.screens.stage.StageCanvasPreview
 import com.beatforge.studio.ui.screens.stage.StageEntityInspector
@@ -60,6 +66,8 @@ fun StageEditorScreen(
         commitSave: Boolean
     ) -> Unit,
     onReorderEntity: (entityId: String, action: String) -> Unit,
+    onRemoveEntity: (entityId: String) -> Unit,
+    onClearScene: () -> Unit,
     onRequestImportPng: (entityId: String) -> Unit,
     onUpdateCamera: (
         enabled: Boolean,
@@ -71,6 +79,15 @@ fun StageEditorScreen(
         smoothSpeed: Float,
         panStrength: Float,
         clampToBackground: Boolean,
+        commitSave: Boolean
+    ) -> Unit,
+    onUpdateCameraVignette: (
+        enabled: Boolean,
+        colorHex: String,
+        alpha: Float,
+        width: Float,
+        pulse: Float,
+        overHud: Boolean,
         commitSave: Boolean
     ) -> Unit,
     onSelectCameraSlot: (slotIndex: Int) -> Unit,
@@ -111,6 +128,8 @@ fun StageEditorScreen(
     var showGrid by remember { mutableStateOf(true) }
     var wideView by remember { mutableStateOf(false) }
     var lockedEntityIds by remember { mutableStateOf(emptySet<String>()) }
+    var pendingDeleteEntity by remember { mutableStateOf<StageEntitySnapshot?>(null) }
+    var confirmClearScene by remember { mutableStateOf(false) }
     val liveTransform = remember { StageLiveTransformState() }
 
     fun toggleLock(id: String) {
@@ -187,6 +206,12 @@ fun StageEditorScreen(
                 )
             },
             onReorderEntity = onReorderEntity,
+            onRemoveEntity = { ent -> pendingDeleteEntity = ent },
+            onClearScene = {
+                if (entities.isNotEmpty()) {
+                    confirmClearScene = true
+                }
+            },
             modifier = Modifier.weight(0.24f)
         )
 
@@ -228,6 +253,7 @@ fun StageEditorScreen(
                     liveTransform = liveTransform,
                     onStepChange = { stepPx = it },
                     onUpdateCamera = onUpdateCamera,
+                    onUpdateCameraVignette = onUpdateCameraVignette,
                     onSelectCameraSlot = onSelectCameraSlot,
                     onUpdateCameraSlot = onUpdateCameraSlot,
                     onAddCustomCamera = onAddCustomCamera,
@@ -236,7 +262,11 @@ fun StageEditorScreen(
                 )
             } else if (selected == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Selecciona una capa", color = StudioColors.TextMuted, fontSize = 12.sp)
+                    Text(
+                        text = if (entities.isEmpty()) "Escena vacía · Usa + Objeto" else "Selecciona una capa",
+                        color = StudioColors.TextMuted,
+                        fontSize = 12.sp
+                    )
                 }
             } else {
                 StageEntityInspector(
@@ -247,9 +277,90 @@ fun StageEditorScreen(
                     onStepChange = { stepPx = it },
                     onToggleLock = { toggleLock(selected.id) },
                     onUpdate = onUpdateEntity,
-                    onRequestImportPng = { onRequestImportPng(selected.id) }
+                    onRequestImportPng = { onRequestImportPng(selected.id) },
+                    onRemoveEntity = { pendingDeleteEntity = selected }
                 )
             }
         }
+    }
+
+    pendingDeleteEntity?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteEntity = null },
+            containerColor = StudioColors.BgPanel,
+            title = {
+                Text(
+                    text = "¿Eliminar capa de la escena?",
+                    color = StudioColors.TextPrimary,
+                    fontSize = 15.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Se quitará \"${target.displayName}\" (${target.roleLabel}) de la escena actual y se limpiará cualquier enfoque directo de cámara a esta capa.",
+                    color = StudioColors.TextMuted,
+                    fontSize = 12.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDeleteEntity = null
+                        onRemoveEntity(target.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.AccentCoral,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Eliminar", fontSize = 12.sp)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { pendingDeleteEntity = null }) {
+                    Text("Cancelar", color = StudioColors.TextPrimary, fontSize = 12.sp)
+                }
+            }
+        )
+    }
+
+    if (confirmClearScene) {
+        AlertDialog(
+            onDismissRequest = { confirmClearScene = false },
+            containerColor = StudioColors.BgPanel,
+            title = {
+                Text(
+                    text = "¿Vaciar toda la escena?",
+                    color = StudioColors.TextPrimary,
+                    fontSize = 15.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Se eliminarán las ${entities.size} capas de la escena actual para que puedas armarla desde cero. Las pistas de audio, chart y scripts se conservarán intactos.",
+                    color = StudioColors.TextMuted,
+                    fontSize = 12.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmClearScene = false
+                        onClearScene()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.AccentCoral,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Vaciar escena", fontSize = 12.sp)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { confirmClearScene = false }) {
+                    Text("Cancelar", color = StudioColors.TextPrimary, fontSize = 12.sp)
+                }
+            }
+        )
     }
 }

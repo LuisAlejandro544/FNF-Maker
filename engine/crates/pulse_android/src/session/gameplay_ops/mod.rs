@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
 pub const BINARY_FRAME_MAGIC: u32 = 0x4246_4750; // "BFGP"
-pub const BINARY_HEADER_SIZE: usize = 152;
+pub const BINARY_HEADER_SIZE: usize = 168;
 pub const BINARY_ENTITY_SIZE: usize = 64;
 pub const BINARY_NOTE_SIZE: usize = 28;
 pub const BINARY_STRUM_SIZE: usize = 20;
@@ -496,6 +496,16 @@ mod tests {
         assert!(written_second > 0 && written_second <= written);
         let flags_second = u32::from_le_bytes(buf[4..8].try_into().unwrap());
         assert_eq!(flags_second & (1 << 5), 0);
+
+        let _ = session.update_stage_camera_vignette(true, "#3B82F6", 0.68, 0.28, 0.40, true, false);
+        let written_vig = session.step_gameplay_binary(0.016, 0, 0, &mut buf);
+        assert!(written_vig >= BINARY_HEADER_SIZE as i32);
+        let flags_vig = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        assert_ne!(flags_vig & (1 << 14), 0);
+        let vig_color = u32::from_le_bytes(buf[152..156].try_into().unwrap());
+        let vig_alpha = f32::from_le_bytes(buf[156..160].try_into().unwrap());
+        assert_eq!(vig_color, 0xFF3B82F6);
+        assert!((vig_alpha - 0.68).abs() < 0.01);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

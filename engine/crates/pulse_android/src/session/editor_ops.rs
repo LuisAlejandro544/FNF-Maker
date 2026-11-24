@@ -337,7 +337,16 @@ impl EngineSession {
     }
 
     pub fn add_stage_entity(&mut self, name: &str, role_key: &str) -> String {
-        let idx = self.project.stage.entities.len() + 1;
+        let mut idx = self.project.stage.entities.len() + 1;
+        while self
+            .project
+            .stage
+            .entities
+            .iter()
+            .any(|e| e.id == format!("asset_{}", idx))
+        {
+            idx += 1;
+        }
         let id = format!("asset_{}", idx);
         let role = parse_role_key(role_key);
         let clean_name = if name.trim().is_empty() {
@@ -351,6 +360,52 @@ impl EngineSession {
         self.invalidate_compiled_bundle();
         self.save_active_project_now();
         self.ok_response("Nuevo objeto añadido al escenario")
+    }
+
+    /// Elimina una capa/entidad de la escena actual, limpia sus assets si no se reutilizan,
+    /// desvincula cualquier cámara que la estuviera siguiendo y guarda el proyecto.
+    pub fn remove_stage_entity(&mut self, entity_id: &str) -> String {
+        let Some(removed) = self.project.stage.remove_entity(entity_id) else {
+            return self.err_response("Capa u objeto de escena no encontrado");
+        };
+
+        let candidate_paths = [
+            removed.raw_image_path,
+            removed.image_path,
+            removed.icon_normal_path,
+            removed.icon_losing_path,
+        ];
+        for path_opt in &candidate_paths {
+            self.remove_managed_asset_if_unreferenced(path_opt.as_deref());
+        }
+
+        self.sync_camera_lua_script();
+        self.invalidate_compiled_bundle();
+        self.save_active_project_now();
+        self.ok_response(format!("Capa '{}' eliminada de la escena", removed.display_name))
+    }
+
+    /// Elimina todas las capas actuales de la escena y limpia sus texturas/íconos no referenciados.
+    pub fn clear_stage_scene(&mut self) -> String {
+        let removed_all = self.project.stage.clear_entities();
+        if removed_all.is_empty() {
+            return self.ok_response("La escena ya estaba vacía");
+        }
+        let removed_count = removed_all.len();
+        for removed in &removed_all {
+            self.remove_managed_asset_if_unreferenced(removed.raw_image_path.as_deref());
+            self.remove_managed_asset_if_unreferenced(removed.image_path.as_deref());
+            self.remove_managed_asset_if_unreferenced(removed.icon_normal_path.as_deref());
+            self.remove_managed_asset_if_unreferenced(removed.icon_losing_path.as_deref());
+        }
+
+        self.sync_camera_lua_script();
+        self.invalidate_compiled_bundle();
+        self.save_active_project_now();
+        self.ok_response(format!(
+            "Escena vaciada ({} capas eliminadas)",
+            removed_count
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -464,6 +519,37 @@ impl EngineSession {
             self.ok_response("Cámara y camera_system.lua actualizados")
         } else {
             "{\"ok\":true,\"message\":\"Cámara actualizada\",\"data\":null}".to_string()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_stage_camera_vignette(
+        &mut self,
+        enabled: bool,
+        color_hex: &str,
+        alpha: f32,
+        width: f32,
+        pulse: f32,
+        over_hud: bool,
+        commit_save: bool,
+    ) -> String {
+        let mut cfg = self.project.stage.camera.clone();
+        cfg.vignette_enabled = enabled;
+        cfg.vignette_color = color_hex.to_string();
+        cfg.vignette_alpha = alpha;
+        cfg.vignette_width = width;
+        cfg.vignette_pulse = pulse;
+        cfg.vignette_over_hud = over_hud;
+        self.project.stage.apply_camera_config(cfg);
+        if commit_save {
+            self.sync_camera_lua_script();
+            self.invalidate_compiled_bundle();
+        }
+        self.mark_dirty_and_maybe_save(commit_save);
+        if commit_save {
+            self.ok_response("Viñeta lateral de cámara guardada")
+        } else {
+            "{\"ok\":true,\"message\":\"Viñeta lateral actualizada\",\"data\":null}".to_string()
         }
     }
 

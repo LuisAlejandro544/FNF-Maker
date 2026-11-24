@@ -198,6 +198,7 @@ internal class StudioGameplayCoordinator(
             val hurtX = bitmapLoader.loadHurtArrowXBitmap()
             val hudAssets = bitmapLoader.loadHudSvgAssets()
             val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(snap.stageEntities)
+            val cdBmps = bitmapLoader.loadCountdownBitmaps(snap.countdownSlots, tier)
 
             uiState.update {
                 it.copy(
@@ -241,6 +242,7 @@ internal class StudioGameplayCoordinator(
                     healthBarBitmap = hudAssets.healthBar,
                     ratingBitmaps = hudAssets.ratings,
                     noteSplashBitmap = hudAssets.noteSplash,
+                    countdownBitmaps = cdBmps,
                     defaultPlayerNormalIcon = hudAssets.playerNormal,
                     defaultPlayerLosingIcon = hudAssets.playerLosing,
                     defaultOpponentNormalIcon = hudAssets.opponentNormal,
@@ -536,11 +538,16 @@ internal class StudioGameplayCoordinator(
                 nextSnap.stageEntities,
                 uiState.value.selectedTier
             )
+            val restoredCountdownBitmaps = bitmapLoader.loadCountdownBitmaps(
+                nextSnap.countdownSlots,
+                uiState.value.selectedTier
+            )
             uiState.update {
                 it.copy(
                     currentScreen = target,
                     snapshot = nextSnap,
-                    entityBitmaps = restoredEditorBitmaps
+                    entityBitmaps = restoredEditorBitmaps,
+                    countdownBitmaps = restoredCountdownBitmaps
                 )
             }
         }

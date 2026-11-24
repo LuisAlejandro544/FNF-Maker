@@ -93,6 +93,9 @@ fun ChartScreen(
 
     val rows = timelineData.first
     val sectionPositions = timelineData.second
+    val allStepRows = remember(rows) {
+        rows.filterIsInstance<ChartTimelineRow.StepRow>()
+    }
     val chartDurationMs = remember(chart.sections, chart.bpm) {
         computeChartTotalDurationMs(chart)
     }
@@ -105,7 +108,7 @@ fun ChartScreen(
 
     val activeSection = chart.sections.getOrNull(selectedSectionIdx) ?: chart.sections.firstOrNull()
     val activeCueStepRow = activeCueGlobalStep?.let { stepIdx ->
-        rows.firstOrNull { it is ChartTimelineRow.StepRow && it.globalStepIndex == stepIdx } as? ChartTimelineRow.StepRow
+        allStepRows.firstOrNull { it.globalStepIndex == stepIdx }
     }
 
     // Sincronización inicial o al editar el chart mientras está en pausa (lock-free)
@@ -314,6 +317,7 @@ fun ChartScreen(
             entities = snapshot.stageEntities,
             chartEvents = chart.events,
             stageCamera = snapshot.stageCamera,
+            allStepRows = allStepRows,
             onAddChartEvent = onAddChartEvent,
             onRemoveChartEvent = onRemoveChartEvent,
             onMovePlayheadHere = seekPlayheadToStepMs,

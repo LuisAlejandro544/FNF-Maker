@@ -178,3 +178,39 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeReadAu
         0
     }
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportCountdownAudio<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    slot: jint,
+    path: JString<'local>,
+) -> JString<'local> {
+    let p = PathBuf::from(read_str(&mut env, &path));
+    let json = session()
+        .lock()
+        .import_countdown_audio(slot.max(0) as usize, p);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeClearCountdownAudio<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    slot: jint,
+) -> JString<'local> {
+    let json = session().lock().clear_countdown_audio(slot.max(0) as usize);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativePreviewCountdownAudio<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    slot: jint,
+) -> JString<'local> {
+    let json = session()
+        .lock()
+        .preview_countdown_audio(slot.max(0) as usize);
+    to_jstr(&mut env, &json)
+}

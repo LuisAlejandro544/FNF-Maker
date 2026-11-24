@@ -59,6 +59,25 @@ declare function tweenCameraZoom(tag: string, targetZoom: number, durationSec: n
 declare function flashCamera(colorHex?: string, durationSec?: number, alpha?: number): void;
 declare function flashHud(colorHex?: string, durationSec?: number, alpha?: number): void;
 declare function flashEffect(colorHex?: string, durationSec?: number, alpha?: number, overHud?: boolean): void;
+declare function setCameraVignette(
+  colorHex?: string,
+  alpha?: number,
+  width?: number,
+  pulse?: number,
+  overHud?: boolean
+): void;
+declare function tweenCameraVignette(
+  tag: string,
+  targetAlpha: number,
+  durationSec: number,
+  ease?: EaseName,
+  colorHex?: string,
+  width?: number,
+  pulse?: number,
+  overHud?: boolean
+): void;
+declare function clearCameraVignette(durationSec?: number, ease?: EaseName): void;
+declare function getCameraVignetteAlpha(): number;
 
 // Entidades, Swaps de Escenario, Memoria RAM y Animaciones
 declare function preloadEntity(entityId: string): void;

@@ -6,7 +6,7 @@ use super::{EngineSession, anim_kind_key, control_mode_to_key, lang_to_key, role
 use pulse_audio::AudioAdaptationReport;
 use pulse_core::frame_memory::{FrameBumpArena, FrameVisibleNote, NoteSlidingWindow};
 use pulse_core::hot_compile::{CompiledBundle, EntityLifecycleWindow};
-use pulse_core::project::MAX_AUDIO_TRACKS;
+use pulse_core::project::{COUNTDOWN_STEP_COUNT, MAX_AUDIO_TRACKS, countdown_step_label};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::NoteSpecialKind;
 use pulse_scripting::ModScriptRuntime;
@@ -64,6 +64,12 @@ pub struct StageCameraSnapshotJson {
     pub pan_strength: f32,
     pub active_camera_index: usize,
     pub clamp_to_background: bool,
+    pub vignette_enabled: bool,
+    pub vignette_color: String,
+    pub vignette_alpha: f32,
+    pub vignette_width: f32,
+    pub vignette_pulse: f32,
+    pub vignette_over_hud: bool,
     pub cameras: Vec<StageCameraSlotSnapshotJson>,
 }
 
@@ -87,8 +93,23 @@ pub struct ProjectSnapshotJson {
     pub health_bar_svg_path: Option<String>,
     pub preferred_render_backend: String,
     pub audio_adapt_enabled: bool,
+    pub countdown_slots: Vec<CountdownStepSnapshotJson>,
     pub last_compile_report: Option<CompileReportJson>,
     pub last_audio_adapt_report: Option<AudioAdaptationReport>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CountdownStepSnapshotJson {
+    pub slot_index: usize,
+    pub label: String,
+    pub image_path: Option<String>,
+    pub image_name: Option<String>,
+    pub xml_name: Option<String>,
+    pub frames: Vec<SparrowFrameJson>,
+    pub fps: f32,
+    pub audio_name: Option<String>,
+    pub audio_duration_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -362,6 +383,11 @@ pub struct GameplayStepJson {
     pub flash_color_argb: u32,
     pub flash_alpha: f32,
     pub flash_over_hud: bool,
+    pub vignette_color_argb: u32,
+    pub vignette_alpha: f32,
+    pub vignette_width: f32,
+    pub vignette_pulse: f32,
+    pub vignette_over_hud: bool,
     pub active_player_idx: i32,
     pub active_opponent_idx: i32,
     pub paused: bool,
@@ -425,6 +451,8 @@ pub enum TweenTarget {
     HudProp { prop: String },
     ArrowsProp { prop: String },
     ScreenBlackout,
+    CameraVignetteAlpha,
+    CameraVignetteWidth,
 }
 
 #[derive(Clone)]
@@ -723,8 +751,58 @@ impl EngineSession {
             pan_strength: cam_cfg.pan_strength,
             active_camera_index: cam_cfg.active_camera_index,
             clamp_to_background: cam_cfg.clamp_to_background,
+            vignette_enabled: cam_cfg.vignette_enabled,
+            vignette_color: cam_cfg.vignette_color.clone(),
+            vignette_alpha: cam_cfg.vignette_alpha,
+            vignette_width: cam_cfg.vignette_width,
+            vignette_pulse: cam_cfg.vignette_pulse,
+            vignette_over_hud: cam_cfg.vignette_over_hud,
             cameras,
         };
+
+        let countdown_slots: Vec<CountdownStepSnapshotJson> = (0..COUNTDOWN_STEP_COUNT)
+            .map(|slot| {
+                let cd = &self.project.countdown.slots[slot];
+                let decoded_audio = self.decoded_countdown_cues[slot].as_ref();
+                let frames = cd
+                    .frames
+                    .iter()
+                    .map(|f| SparrowFrameJson {
+                        found: true,
+                        raw_name: f.raw_name.clone(),
+                        x: f.x,
+                        y: f.y,
+                        width: f.width,
+                        height: f.height,
+                        frame_x: f.frame_x,
+                        frame_y: f.frame_y,
+                        frame_width: f.frame_width,
+                        frame_height: f.frame_height,
+                        rotated: f.rotated,
+                        page_index: f.page_index,
+                    })
+                    .collect();
+                CountdownStepSnapshotJson {
+                    slot_index: slot,
+                    label: countdown_step_label(slot).to_string(),
+                    image_path: cd
+                        .image_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    image_name: cd.image_name.clone(),
+                    xml_name: cd
+                        .xml_path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string()),
+                    frames,
+                    fps: cd.fps,
+                    audio_name: cd.audio_name.clone(),
+                    audio_duration_ms: decoded_audio.map(|d| d.duration_ms()).unwrap_or(0.0),
+                }
+            })
+            .collect();
 
         ProjectSnapshotJson {
             id: self.project.id.clone(),
@@ -823,6 +901,7 @@ impl EngineSession {
                 .map(|p| p.to_string_lossy().into_owned()),
             preferred_render_backend: self.project.preferred_render_backend.as_key().to_string(),
             audio_adapt_enabled: self.project.audio_adapt_enabled,
+            countdown_slots,
             last_compile_report,
             last_audio_adapt_report: self.last_audio_adapt_report.clone(),
         }

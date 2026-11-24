@@ -3,7 +3,7 @@
 //! sistema multicámara, manipulación/animación de entidades del escenario y modcharts (strums).
 
 use super::JsVmError;
-use crate::bridge::{ScriptCommand, ScriptHostState};
+use crate::bridge::{ScriptCommand, ScriptHostState, parse_color_argb};
 use rquickjs::{Ctx, Function, Object};
 use std::sync::Arc;
 
@@ -133,6 +133,112 @@ pub(super) fn register_world_bindings<'js>(
         let h = Arc::clone(host);
         bind_js!("setCameraClamp", move |enabled: bool| {
             h.push_command(ScriptCommand::SetCameraClamp { enabled });
+        });
+    }
+    {
+        let h = Arc::clone(host);
+        bind_js!(
+            "__nativeSetCameraVignette",
+            move |color_hex: String, alpha: f32, width: f32, pulse: f32, over_hud: bool| {
+                let a = if alpha.is_finite() { alpha.clamp(0.0, 1.0) } else { 0.58 };
+                let w = if width.is_finite() { width.clamp(0.05, 0.50) } else { 0.24 };
+                let p = if pulse.is_finite() { pulse.clamp(0.0, 1.0) } else { 0.35 };
+                *h.camera_vignette_alpha.lock() = a;
+                h.push_command(ScriptCommand::SetCameraVignette {
+                    color_argb: parse_color_argb(&color_hex),
+                    alpha: a,
+                    width: w,
+                    pulse: p,
+                    over_hud,
+                });
+            }
+        );
+        let _: rquickjs::Value = ctx
+            .eval(
+                "globalThis.setCameraVignette = function(colorHex, alpha, width, pulse, overHud) { __nativeSetCameraVignette(String(colorHex||'#EF4444'), (typeof alpha==='number'&&isFinite(alpha))?alpha:0.58, (typeof width==='number'&&isFinite(width))?width:0.24, (typeof pulse==='number'&&isFinite(pulse))?pulse:0.35, !!overHud); };",
+            )
+            .map_err(|e| JsVmError::Eval(e.to_string()))?;
+    }
+    {
+        let h = Arc::clone(host);
+        bind_js!(
+            "__nativeTweenCameraVignette",
+            move |tag: String, target_alpha: f32, dur: f32, ease: String, color_hex: String, extra: String| {
+                let a = if target_alpha.is_finite() {
+                    target_alpha.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let d = if dur.is_finite() { dur.max(0.0) } else { 0.4 };
+                let color_argb = if color_hex.trim().is_empty() {
+                    None
+                } else {
+                    Some(parse_color_argb(&color_hex))
+                };
+                let mut parts = extra.split(';');
+                let target_width = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .map(|v| v.clamp(0.05, 0.50));
+                let pulse = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .map(|v| v.clamp(0.0, 1.0));
+                let over_hud = parts.next().and_then(|s| match s.trim() {
+                    "1" | "true" => Some(true),
+                    "0" | "false" => Some(false),
+                    _ => None,
+                });
+                h.push_command(ScriptCommand::TweenCameraVignette {
+                    tag,
+                    target_alpha: a,
+                    duration_sec: d,
+                    ease: if ease.trim().is_empty() {
+                        "sineOut".to_string()
+                    } else {
+                        ease
+                    },
+                    color_argb,
+                    target_width,
+                    pulse,
+                    over_hud,
+                });
+            }
+        );
+        let _: rquickjs::Value = ctx
+            .eval(
+                "globalThis.tweenCameraVignette = function(tag, alpha, dur, ease, colorHex, width, pulse, overHud) { var w=(typeof width==='number'&&isFinite(width))?String(width):''; var p=(typeof pulse==='number'&&isFinite(pulse))?String(pulse):''; var h=(typeof overHud==='boolean')?(overHud?'1':'0'):''; __nativeTweenCameraVignette(String(tag||'cam_vignette'), Number(alpha||0), (typeof dur==='number'&&isFinite(dur))?dur:0.4, ease||'sineOut', colorHex?String(colorHex):'', w+';'+p+';'+h); };",
+            )
+            .map_err(|e| JsVmError::Eval(e.to_string()))?;
+    }
+    {
+        let h = Arc::clone(host);
+        bind_js!("__nativeClearCameraVignette", move |dur: f32, ease: String| {
+            let d = if dur.is_finite() { dur.max(0.0) } else { 0.35 };
+            if d <= 0.01 {
+                *h.camera_vignette_alpha.lock() = 0.0;
+            }
+            h.push_command(ScriptCommand::ClearCameraVignette {
+                duration_sec: d,
+                ease: if ease.trim().is_empty() {
+                    "sineOut".to_string()
+                } else {
+                    ease
+                },
+            });
+        });
+        let _: rquickjs::Value = ctx
+            .eval(
+                "globalThis.clearCameraVignette = function(dur, ease) { __nativeClearCameraVignette((typeof dur==='number'&&isFinite(dur))?dur:0.35, ease||'sineOut'); };",
+            )
+            .map_err(|e| JsVmError::Eval(e.to_string()))?;
+    }
+    {
+        let h = Arc::clone(host);
+        bind_js!("getCameraVignetteAlpha", move || -> f32 {
+            *h.camera_vignette_alpha.lock()
         });
     }
 

@@ -252,6 +252,83 @@ fn apply_chart_camera_action(
             stage.camera_zoom = (stage.camera_zoom + cam_zoom_add).clamp(0.35, 2.5);
             session.hud_zoom = (session.hud_zoom + hud_zoom_add).clamp(0.35, 2.5);
         }
+        ParsedChartCameraAction::SetVignette {
+            enabled,
+            color_argb,
+            alpha,
+            width,
+            pulse,
+            over_hud,
+            duration_sec,
+            ease,
+        } => {
+            session.active_tweens.retain(|t| {
+                !matches!(
+                    t.target,
+                    TweenTarget::CameraVignetteAlpha | TweenTarget::CameraVignetteWidth
+                )
+            });
+            if !enabled {
+                if duration_sec <= 0.01 {
+                    stage.vignette_alpha = 0.0;
+                } else {
+                    session.active_tweens.push(ActiveTweenState {
+                        tag: "__chart_cam_vig_alpha".to_string(),
+                        target: TweenTarget::CameraVignetteAlpha,
+                        start_val: stage.vignette_alpha,
+                        end_val: 0.0,
+                        elapsed_sec: 0.0,
+                        duration_sec: duration_sec.max(0.001),
+                        ease,
+                    });
+                }
+            } else {
+                if let Some(c) = color_argb {
+                    stage.vignette_color_argb = c;
+                }
+                if let Some(p) = pulse {
+                    stage.vignette_pulse = p.clamp(0.0, 1.0);
+                }
+                if let Some(oh) = over_hud {
+                    stage.vignette_over_hud = oh;
+                }
+                let target_alpha = alpha
+                    .unwrap_or_else(|| {
+                        if stage.camera.vignette_alpha > 0.01 {
+                            stage.camera.vignette_alpha
+                        } else {
+                            0.58
+                        }
+                    })
+                    .clamp(0.0, 1.0);
+                let target_width = width.unwrap_or(stage.vignette_width).clamp(0.05, 0.50);
+                if duration_sec <= 0.01 {
+                    stage.vignette_alpha = target_alpha;
+                    stage.vignette_width = target_width;
+                } else {
+                    session.active_tweens.push(ActiveTweenState {
+                        tag: "__chart_cam_vig_alpha".to_string(),
+                        target: TweenTarget::CameraVignetteAlpha,
+                        start_val: stage.vignette_alpha,
+                        end_val: target_alpha,
+                        elapsed_sec: 0.0,
+                        duration_sec: duration_sec.max(0.001),
+                        ease: ease.clone(),
+                    });
+                    if (target_width - stage.vignette_width).abs() > 0.002 {
+                        session.active_tweens.push(ActiveTweenState {
+                            tag: "__chart_cam_vig_width".to_string(),
+                            target: TweenTarget::CameraVignetteWidth,
+                            start_val: stage.vignette_width,
+                            end_val: target_width,
+                            elapsed_sec: 0.0,
+                            duration_sec: duration_sec.max(0.001),
+                            ease,
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 

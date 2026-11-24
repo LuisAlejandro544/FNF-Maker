@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Button
@@ -36,6 +37,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -64,7 +66,8 @@ fun AudioScreen(
     onToggleAudioPreview: () -> Unit,
     onUpdateTrackConfig: (slot: Int, gain: Float, muted: Boolean, duckOnMiss: Boolean) -> Unit,
     onRemoveTrack: (slot: Int) -> Unit,
-    onSetAudioAdaptEnabled: (Boolean) -> Unit
+    onSetAudioAdaptEnabled: (Boolean) -> Unit,
+    onOpenCountdownDialog: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -112,6 +115,32 @@ fun AudioScreen(
                 }
 
                 Spacer(Modifier.width(10.dp))
+
+                OutlinedButton(
+                    onClick = onOpenCountdownDialog,
+                    shape = RoundedCornerShape(9.dp),
+                    border = BorderStroke(1.dp, StudioColors.AccentAmber.copy(alpha = 0.55f)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.height(38.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Timer,
+                        contentDescription = null,
+                        tint = StudioColors.AccentAmber,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "Voces 3-2-1",
+                        color = StudioColors.AccentAmber,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                Spacer(Modifier.width(8.dp))
 
                 Button(
                     onClick = onToggleAudioPreview,

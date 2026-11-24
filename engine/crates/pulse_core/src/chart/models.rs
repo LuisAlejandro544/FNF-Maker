@@ -217,7 +217,7 @@ impl ChartIntroUiConfig {
             1.0
         };
         self.reveal_delay_ms = if self.reveal_delay_ms.is_finite() {
-            self.reveal_delay_ms.clamp(0.0, 60_000.0)
+            self.reveal_delay_ms.clamp(0.0, 600_000.0)
         } else {
             0.0
         };

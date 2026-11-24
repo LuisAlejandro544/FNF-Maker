@@ -3,6 +3,7 @@
 //! manteniendo sincronizados los parámetros del bloque `-- [CAM_CFG_START]..-- [CAM_CFG_END]`
 //! con `StageCameraConfig` sin sobrescribir la lógica Lua personalizada del usuario.
 
+use super::lua_helpers::lua_escape_str;
 use crate::stage::{CameraFollowMode, StageCameraConfig};
 
 const CAM_CFG_START_MARKER: &str = "-- [CAM_CFG_START]";
@@ -43,6 +44,12 @@ local CAM_SMOOTH = {:.2}\n\
 local CAM_PAN_STRENGTH = {:.2}\n\
 local CAM_ACTIVE_INDEX = {}\n\
 local CAM_CLAMP_BG = {}\n\
+local CAM_VIGNETTE_ENABLED = {}\n\
+local CAM_VIGNETTE_COLOR = {}\n\
+local CAM_VIGNETTE_ALPHA = {:.2}\n\
+local CAM_VIGNETTE_WIDTH = {:.2}\n\
+local CAM_VIGNETTE_PULSE = {:.2}\n\
+local CAM_VIGNETTE_OVER_HUD = {}\n\
 local CAM_COUNT = {}\n\
 {}\n\
 {}",
@@ -57,6 +64,12 @@ local CAM_COUNT = {}\n\
         normalized.pan_strength,
         normalized.active_camera_index,
         if normalized.clamp_to_background { "true" } else { "false" },
+        if normalized.vignette_enabled { "true" } else { "false" },
+        lua_escape_str(&normalized.vignette_color),
+        normalized.vignette_alpha.clamp(0.0, 1.0),
+        normalized.vignette_width.clamp(0.05, 0.50),
+        normalized.vignette_pulse.clamp(0.0, 1.0),
+        if normalized.vignette_over_hud { "true" } else { "false" },
         normalized.cameras.len(),
         slots_summary.join("\n"),
         CAM_CFG_END_MARKER
@@ -88,6 +101,9 @@ local CAM_COUNT = {}\n\
 {}\n\n\
 local CAM_SCRIPT_OVERRIDE = false\n\n\
 function onCreate()\n\
+    if CAM_VIGNETTE_ENABLED then\n\
+        setCameraVignette(CAM_VIGNETTE_COLOR, CAM_VIGNETTE_ALPHA, CAM_VIGNETTE_WIDTH, CAM_VIGNETTE_PULSE, CAM_VIGNETTE_OVER_HUD)\n\
+    end\n\
     if not CAM_ENABLED then\n\
         setCameraPos(CAM_BASE_X, CAM_BASE_Y)\n\
         setCameraBaseZoom(CAM_BASE_ZOOM)\n\
@@ -191,9 +207,78 @@ pub fn parse_camera_config_from_lua(source: &str, current: &StageCameraConfig) -
                     next.clamp_to_background = false;
                 }
             }
+            "CAM_VIGNETTE_ENABLED" => {
+                if val.eq_ignore_ascii_case("true") {
+                    next.vignette_enabled = true;
+                } else if val.eq_ignore_ascii_case("false") {
+                    next.vignette_enabled = false;
+                }
+            }
+            "CAM_VIGNETTE_COLOR" => {
+                let clean = val.trim_matches('"').trim_matches('\'').trim();
+                if !clean.is_empty() {
+                    next.vignette_color = clean.to_string();
+                }
+            }
+            "CAM_VIGNETTE_ALPHA" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.vignette_alpha = v.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            "CAM_VIGNETTE_WIDTH" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.vignette_width = v.clamp(0.05, 0.50);
+                    }
+                }
+            }
+            "CAM_VIGNETTE_PULSE" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    if v.is_finite() {
+                        next.vignette_pulse = v.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            "CAM_VIGNETTE_OVER_HUD" => {
+                if val.eq_ignore_ascii_case("true") {
+                    next.vignette_over_hud = true;
+                } else if val.eq_ignore_ascii_case("false") {
+                    next.vignette_over_hud = false;
+                }
+            }
             _ => {}
         }
     }
     next.sync_slot0_from_base();
     next
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_lua_round_trips_vignette_parameters() {
+        let mut cfg = StageCameraConfig::default();
+        cfg.vignette_enabled = true;
+        cfg.vignette_color = "#3B82F6".to_string();
+        cfg.vignette_alpha = 0.74;
+        cfg.vignette_width = 0.32;
+        cfg.vignette_pulse = 0.55;
+        cfg.vignette_over_hud = true;
+
+        let lua_src = render_camera_lua_script(&cfg, None);
+        assert!(lua_src.contains("CAM_VIGNETTE_ENABLED = true"));
+        assert!(lua_src.contains("setCameraVignette("));
+
+        let parsed = parse_camera_config_from_lua(&lua_src, &StageCameraConfig::default());
+        assert!(parsed.vignette_enabled);
+        assert_eq!(parsed.vignette_color, "#3B82F6");
+        assert!((parsed.vignette_alpha - 0.74).abs() < 0.01);
+        assert!((parsed.vignette_width - 0.32).abs() < 0.01);
+        assert!((parsed.vignette_pulse - 0.55).abs() < 0.01);
+        assert!(parsed.vignette_over_hud);
+    }
 }

@@ -58,10 +58,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -814,6 +816,55 @@ fun StageCanvasPreview(
                             size = Size(camBoxW, camBoxH)
                         )
                     }
+                    if (stageCamera.vignetteEnabled && stageCamera.vignetteAlpha > 0.01f && camBoxW > 4f && camBoxH > 4f) {
+                        val vigColor = parseStageHexColorOrDefault(stageCamera.vignetteColor)
+                        val vigAlpha = stageCamera.vignetteAlpha.coerceIn(0f, 1f)
+                        val vigSideW = (camBoxW * stageCamera.vignetteWidth.coerceIn(0.05f, 0.50f)).coerceAtLeast(2f)
+                        val vigVertH = (camBoxH * 0.14f).coerceAtLeast(2f)
+                        clipRect(
+                            left = camLeft,
+                            top = camTop,
+                            right = camLeft + camBoxW,
+                            bottom = camTop + camBoxH
+                        ) {
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(vigColor.copy(alpha = vigAlpha), Color.Transparent),
+                                    startX = camLeft,
+                                    endX = camLeft + vigSideW
+                                ),
+                                topLeft = Offset(camLeft, camTop),
+                                size = Size(vigSideW, camBoxH)
+                            )
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(Color.Transparent, vigColor.copy(alpha = vigAlpha)),
+                                    startX = camLeft + camBoxW - vigSideW,
+                                    endX = camLeft + camBoxW
+                                ),
+                                topLeft = Offset(camLeft + camBoxW - vigSideW, camTop),
+                                size = Size(vigSideW, camBoxH)
+                            )
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(vigColor.copy(alpha = vigAlpha * 0.28f), Color.Transparent),
+                                    startY = camTop,
+                                    endY = camTop + vigVertH
+                                ),
+                                topLeft = Offset(camLeft, camTop),
+                                size = Size(camBoxW, vigVertH)
+                            )
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(Color.Transparent, vigColor.copy(alpha = vigAlpha * 0.28f)),
+                                    startY = camTop + camBoxH - vigVertH,
+                                    endY = camTop + camBoxH
+                                ),
+                                topLeft = Offset(camLeft, camTop + camBoxH - vigVertH),
+                                size = Size(camBoxW, vigVertH)
+                            )
+                        }
+                    }
                     drawRect(
                         color = camColor,
                         topLeft = Offset(camLeft, camTop),
@@ -1074,5 +1125,18 @@ private fun QuickActionChip(
             maxLines = 1,
             softWrap = false
         )
+    }
+}
+
+private fun parseStageHexColorOrDefault(raw: String, fallback: Color = Color(0xFFEF4444)): Color {
+    val clean = raw.trim().removePrefix("#")
+    return try {
+        when (clean.length) {
+            6 -> Color((0xFF000000L or clean.toLong(16)).toInt())
+            8 -> Color(clean.toLong(16).toInt())
+            else -> fallback
+        }
+    } catch (_: Throwable) {
+        fallback
     }
 }

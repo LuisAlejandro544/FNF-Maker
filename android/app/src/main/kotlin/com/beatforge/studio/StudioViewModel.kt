@@ -175,6 +175,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(modFilesGuideDialogOpen = open) }
     }
 
+    fun setCountdownAssetsDialogOpen(open: Boolean) {
+        _uiState.update { it.copy(countdownAssetsDialogOpen = open) }
+    }
+
+    fun clearCountdownSprite(slot: Int) = editorDelegate.clearCountdownSprite(slot)
+
+    fun clearCountdownAudio(slot: Int) = editorDelegate.clearCountdownAudio(slot)
+
+    fun previewCountdownAudio(slot: Int) = editorDelegate.previewCountdownAudio(slot)
+
+    fun restoreDefaultCountdownAssets() = editorDelegate.restoreDefaultCountdownAssets()
+
     fun clearCharacterIcons(entityId: String) = editorDelegate.clearCharacterIcons(entityId)
 
     fun restoreDefaultHealthBarSvg() = editorDelegate.restoreDefaultHealthBarSvg()
@@ -312,6 +324,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun reorderStageEntity(entityId: String, action: String) =
         editorDelegate.reorderStageEntity(entityId, action)
 
+    fun removeStageEntity(entityId: String) =
+        editorDelegate.removeStageEntity(entityId)
+
+    fun clearStageScene() =
+        editorDelegate.clearStageScene()
+
     fun updateStageCamera(
         enabled: Boolean,
         baseX: Float,
@@ -325,6 +343,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         commitSave: Boolean = true
     ) = editorDelegate.updateStageCamera(
         enabled, baseX, baseY, baseZoom, followMode, followIntervalBeats, smoothSpeed, panStrength, clampToBackground, commitSave
+    )
+
+    fun updateStageCameraVignette(
+        enabled: Boolean,
+        colorHex: String,
+        alpha: Float,
+        width: Float,
+        pulse: Float,
+        overHud: Boolean,
+        commitSave: Boolean = true
+    ) = editorDelegate.updateStageCameraVignette(
+        enabled, colorHex, alpha, width, pulse, overHud, commitSave
     )
 
     fun selectStageCamera(slotIndex: Int) = editorDelegate.selectStageCamera(slotIndex)

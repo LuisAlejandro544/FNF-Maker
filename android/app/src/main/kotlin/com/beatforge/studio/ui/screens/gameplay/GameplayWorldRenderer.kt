@@ -11,6 +11,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.FilterQuality
@@ -303,6 +304,63 @@ internal fun DrawScope.drawGameplaySceneLayer(
             size = size
         )
     }
+}
+
+/**
+ * Dibuja la viñeta / brillo lateral que sigue el encuadre de la cámara durante gameplay,
+ * modulando intensidad y anchura con el pulso del beat (`beatPhase`) y el `cameraShake`.
+ */
+internal fun DrawScope.drawCameraSideVignette(frameState: GameplayFrameState) {
+    val baseAlpha = frameState.vignetteAlpha.coerceIn(0f, 1f)
+    if (baseAlpha <= 0.004f || size.width <= 4f || size.height <= 4f) return
+
+    val pulseAmount = frameState.vignettePulse.coerceIn(0f, 1f)
+    val beatCurve = (1f - frameState.beatPhase.coerceIn(0f, 1f)).let { it * it }
+    val shakeBoost = (frameState.cameraShake / 12f).coerceIn(0f, 0.45f)
+
+    val effAlpha = (baseAlpha * (1f + pulseAmount * (beatCurve * 0.42f + shakeBoost * 0.35f))).coerceIn(0f, 1f)
+    val baseWidthFrac = frameState.vignetteWidth.coerceIn(0.04f, 0.50f)
+    val effEdgeW = (size.width * (baseWidthFrac * (1f + pulseAmount * beatCurve * 0.14f)).coerceIn(0.04f, 0.52f))
+        .coerceAtLeast(2f)
+    val topBandH = (size.height * 0.14f).coerceAtLeast(2f)
+    val edgeColor = Color(frameState.vignetteColorArgb)
+
+    drawRect(
+        brush = Brush.horizontalGradient(
+            colors = listOf(edgeColor.copy(alpha = effAlpha), Color.Transparent),
+            startX = 0f,
+            endX = effEdgeW
+        ),
+        topLeft = Offset.Zero,
+        size = Size(effEdgeW, size.height)
+    )
+    drawRect(
+        brush = Brush.horizontalGradient(
+            colors = listOf(Color.Transparent, edgeColor.copy(alpha = effAlpha)),
+            startX = size.width - effEdgeW,
+            endX = size.width
+        ),
+        topLeft = Offset(size.width - effEdgeW, 0f),
+        size = Size(effEdgeW, size.height)
+    )
+    drawRect(
+        brush = Brush.verticalGradient(
+            colors = listOf(edgeColor.copy(alpha = effAlpha * 0.28f), Color.Transparent),
+            startY = 0f,
+            endY = topBandH
+        ),
+        topLeft = Offset.Zero,
+        size = Size(size.width, topBandH)
+    )
+    drawRect(
+        brush = Brush.verticalGradient(
+            colors = listOf(Color.Transparent, edgeColor.copy(alpha = effAlpha * 0.28f)),
+            startY = size.height - topBandH,
+            endY = size.height
+        ),
+        topLeft = Offset(0f, size.height - topBandH),
+        size = Size(size.width, topBandH)
+    )
 }
 
 internal fun DrawScope.drawClassicHitboxColumns(

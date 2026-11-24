@@ -637,6 +637,72 @@ pub fn export_project_vanilla_mod(
         }
     }
 
+    // 2b. Recursos de cuenta regresiva ("3", "2", "1", "¡YA!"): imagen, XML opcional y voz/SFX
+    for (slot_idx, cd) in cloned.countdown.slots.iter_mut().enumerate() {
+        let slot_stem = format!("countdown_step_{}", slot_idx + 1);
+        let skip_redundant_astc_decoded = cd
+            .raw_image_path
+            .as_ref()
+            .is_some_and(|p| p.is_file() && is_astc_path(p));
+
+        if let Some(raw_p) = cd.raw_image_path.clone() {
+            if raw_p.is_file() {
+                let is_astc = is_astc_path(&raw_p);
+                let rel = stage_binary_asset(
+                    &raw_p,
+                    "assets/countdown",
+                    &slot_stem,
+                    "countdown_sprite",
+                    !is_astc,
+                )?;
+                cd.raw_image_path = Some(PathBuf::from(rel));
+            } else {
+                cd.raw_image_path = None;
+            }
+        }
+
+        if skip_redundant_astc_decoded {
+            cd.image_path = None;
+        } else if let Some(img_p) = cd.image_path.clone() {
+            if img_p.is_file() {
+                let is_astc = is_astc_path(&img_p);
+                let rel = stage_binary_asset(
+                    &img_p,
+                    "assets/countdown",
+                    &format!("{}_img", slot_stem),
+                    "countdown_sprite",
+                    !is_astc,
+                )?;
+                cd.image_path = Some(PathBuf::from(rel));
+            } else {
+                cd.image_path = None;
+            }
+        }
+
+        if let Some(xml_p) = cd.xml_path.clone() {
+            let clean_name = xml_p
+                .file_name()
+                .map(|n| PathBuf::from(n))
+                .unwrap_or_else(|| PathBuf::from(format!("{}.xml", slot_stem)));
+            cd.xml_path = Some(clean_name);
+        }
+
+        if let Some(aud_p) = cd.audio_path.clone() {
+            if aud_p.is_file() {
+                let rel = stage_binary_asset(
+                    &aud_p,
+                    "assets/countdown",
+                    &format!("{}_voice", slot_stem),
+                    "countdown_audio",
+                    false,
+                )?;
+                cd.audio_path = Some(PathBuf::from(rel));
+            } else {
+                cd.audio_path = None;
+            }
+        }
+    }
+
     // 3. Serializar `project.json` compacto al principio del stream de blobs
     let project_json_bytes = serde_json::to_vec(&cloned)
         .map_err(|e| format!("Error serializando proyecto para Vanilla: {}", e))?;
@@ -1062,6 +1128,25 @@ pub fn import_project_vanilla_mod(
         }
     }
 
+    for (slot_idx, cd) in proj.countdown.slots.iter_mut().enumerate() {
+        remap_imported_rel_path(&mut cd.raw_image_path, &staging_dir)?;
+        remap_imported_rel_path(&mut cd.image_path, &staging_dir)?;
+        remap_imported_rel_path(&mut cd.audio_path, &staging_dir)?;
+
+        if cd.image_path.is_none() {
+            if let Some(raw_p) = cd.raw_image_path.as_ref() {
+                if raw_p.is_file() && is_astc_path(raw_p) {
+                    let decoded = load_sprite_image(raw_p)?;
+                    let dec_dir = staging_dir.join("textures").join("decoded_textures");
+                    let out_webp = dec_dir.join(format!("countdown_{}.webp", slot_idx));
+                    save_lossless_webp(&decoded, &out_webp)?;
+                    cd.image_path = Some(out_webp);
+                    decoded_astc_count += 1;
+                }
+            }
+        }
+    }
+
     // Reemplazar prefijo `staging_dir` -> `target_project_dir` antes de grabar `project.json`
     let swap_prefix = |slot: &mut Option<PathBuf>| {
         if let Some(cur) = slot.as_ref() {
@@ -1078,6 +1163,11 @@ pub fn import_project_vanilla_mod(
         swap_prefix(&mut ent.image_path);
         swap_prefix(&mut ent.icon_normal_path);
         swap_prefix(&mut ent.icon_losing_path);
+    }
+    for cd in &mut proj.countdown.slots {
+        swap_prefix(&mut cd.raw_image_path);
+        swap_prefix(&mut cd.image_path);
+        swap_prefix(&mut cd.audio_path);
     }
 
     proj.ensure_camera_script();
@@ -1161,17 +1251,22 @@ mod tests {
 
         let mut proj = ModProject::new_blank("proj_src", "Test Vanilla Mod", "Tester");
         proj.assign_audio_track(0, wav_path).unwrap();
-        proj.assign_audio_track(1, ogg_path).unwrap();
+        proj.assign_audio_track(1, ogg_path.clone()).unwrap();
         if let Some(bg) = proj.stage.entities.first_mut() {
             bg.raw_image_path = Some(png_path.clone());
-            bg.image_path = Some(png_path);
+            bg.image_path = Some(png_path.clone());
         }
+        proj.countdown.slots[0].raw_image_path = Some(png_path.clone());
+        proj.countdown.slots[0].image_path = Some(png_path);
+        proj.countdown.slots[0].image_name = Some("three.png".to_string());
+        proj.countdown.slots[0].audio_path = Some(ogg_path);
+        proj.countdown.slots[0].audio_name = Some("intro3.ogg".to_string());
 
         let mod_file = tmp_root.join("test_vanilla_mod.mod");
         let report = export_project_vanilla_mod(&proj, &mod_file, true).expect("exportación Vanilla");
         assert!(mod_file.is_file());
         assert!(report.archive_bytes < report.source_bytes);
-        assert_eq!(report.deduplicated_assets, 1); // raw_image_path == image_path deduplicado
+        assert!(report.deduplicated_assets >= 2); // raw_image_path == image_path y countdown deduplicados
 
         let inspected = inspect_vanilla_mod(&mod_file).expect("inspección rápida");
         assert_eq!(inspected.container_name, "Vanilla");
@@ -1184,6 +1279,8 @@ mod tests {
         assert_eq!(imported.project.name, "Test Vanilla Mod");
         assert!(imported.project.audio_tracks[0].file_path.as_ref().unwrap().is_file());
         assert!(imported.project.audio_tracks[1].file_path.as_ref().unwrap().is_file());
+        assert!(imported.project.countdown.slots[0].image_path.as_ref().unwrap().is_file());
+        assert!(imported.project.countdown.slots[0].audio_path.as_ref().unwrap().is_file());
 
         let imported_bg = imported.project.stage.entities[0]
             .image_path

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -95,6 +96,7 @@ fun SpriteLabScreen(
     onSelectEntity: (String) -> Unit,
     onRequestImport: (ImportKind) -> Unit,
     onOpenIconsDialog: () -> Unit,
+    onOpenCountdownDialog: () -> Unit,
     onOpenFilesGuide: () -> Unit,
     onSetBinding: (entityId: String, animKind: String, prefix: String) -> Unit,
     onSetAnimOffset: (entityId: String, animKind: String, offsetX: Float, offsetY: Float) -> Unit,
@@ -160,7 +162,7 @@ fun SpriteLabScreen(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -171,6 +173,27 @@ fun SpriteLabScreen(
                         maxLines = 1,
                         modifier = Modifier.weight(1f)
                     )
+                    OutlinedButton(
+                        onClick = onOpenCountdownDialog,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.Timer,
+                            contentDescription = null,
+                            tint = StudioColors.AccentAmber,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "3-2-1",
+                            color = StudioColors.AccentAmber,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                     OutlinedButton(
                         onClick = onOpenFilesGuide,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),

@@ -240,6 +240,17 @@ object NativeEngineBridge {
     ): String
 
     @JvmStatic
+    external fun nativeUpdateStageCameraVignette(
+        enabled: Boolean,
+        colorHex: String,
+        alpha: Float,
+        width: Float,
+        pulse: Float,
+        overHud: Boolean,
+        commitSave: Boolean
+    ): String
+
+    @JvmStatic
     external fun nativeSelectStageCamera(slotIndex: Int): String
 
     @JvmStatic
@@ -396,4 +407,31 @@ object NativeEngineBridge {
 
     @JvmStatic
     external fun nativeSetPreferredRenderBackend(backendKey: String): String
+
+    @JvmStatic
+    external fun nativeRemoveStageEntity(entityId: String): String
+
+    @JvmStatic
+    external fun nativeClearStageScene(): String
+
+    @JvmStatic
+    external fun nativeImportCountdownSpriteImage(slot: Int, path: String): String
+
+    @JvmStatic
+    external fun nativeImportCountdownSpriteXml(slot: Int, path: String): String
+
+    @JvmStatic
+    external fun nativeClearCountdownSprite(slot: Int): String
+
+    @JvmStatic
+    external fun nativeImportCountdownAudio(slot: Int, path: String): String
+
+    @JvmStatic
+    external fun nativeClearCountdownAudio(slot: Int): String
+
+    @JvmStatic
+    external fun nativePreviewCountdownAudio(slot: Int): String
+
+    @JvmStatic
+    external fun nativeRestoreDefaultCountdownAssets(): String
 }

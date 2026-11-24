@@ -335,7 +335,7 @@ function parseChartIntroUi(
     ],
     -0.001,
   );
-  const revealDelayMs = rawDelay !== null ? Math.min(60000, Math.max(0, rawDelay)) : 0;
+  const revealDelayMs = rawDelay !== null ? Math.min(600000, Math.max(0, rawDelay)) : 0;
 
   const rawFade = firstValidNumber(
     [
@@ -1151,6 +1151,10 @@ const NECESSARY_ENGINE_APIS = [
   'flashCamera',
   'flashHud',
   'flashEffect',
+  'setCameraVignette',
+  'tweenCameraVignette',
+  'clearCameraVignette',
+  'getCameraVignetteAlpha',
   'preloadEntity',
   'retireEntity',
   'swapEntity',
@@ -1549,7 +1553,7 @@ export function resolveMobileTouchLanes(params: {
 }
 
 export const BINARY_GAMEPLAY_MAGIC = 0x42464750; // "BFGP"
-export const BINARY_GAMEPLAY_HEADER_BYTES = 152;
+export const BINARY_GAMEPLAY_HEADER_BYTES = 168;
 export const BINARY_GAMEPLAY_ENTITY_BYTES = 64;
 export const BINARY_GAMEPLAY_NOTE_BYTES = 28;
 export const BINARY_GAMEPLAY_STRUM_BYTES = 20;
@@ -1620,6 +1624,7 @@ export interface DecodedBinaryGameplayFrame {
   hasHudStrings: boolean;
   hudVisible: boolean;
   flashOverHud: boolean;
+  vignetteOverHud: boolean;
   arrowsVisible: boolean;
   arrowsOpacity: number;
   screenBlackoutAlpha: number;
@@ -1637,6 +1642,10 @@ export interface DecodedBinaryGameplayFrame {
   beatPhase: number;
   flashColorArgb: number;
   flashAlpha: number;
+  vignetteColorArgb: number;
+  vignetteAlpha: number;
+  vignetteWidth: number;
+  vignettePulse: number;
   activePlayerIdx: number;
   activeOpponentIdx: number;
   cameraZoom: number;
@@ -1718,6 +1727,10 @@ export function decodeBinaryGameplayFrame(
   const noteCount = view.getUint16(146, true);
   const strumCount = view.getUint16(148, true);
   const dynCount = view.getUint16(150, true);
+  const vignetteColorArgb = view.getUint32(152, true);
+  const vignetteAlpha = view.getFloat32(156, true);
+  const vignetteWidth = view.getFloat32(160, true);
+  const vignettePulse = view.getFloat32(164, true);
 
   let cursor = BINARY_GAMEPLAY_HEADER_BYTES;
   const requiredMin =
@@ -1860,6 +1873,7 @@ export function decodeBinaryGameplayFrame(
     hasHudStrings,
     hudVisible: (flags & (1 << 6)) !== 0,
     flashOverHud: (flags & (1 << 7)) !== 0,
+    vignetteOverHud: (flags & (1 << 14)) !== 0,
     arrowsVisible: (flags & (1 << 8)) === 0,
     arrowsOpacity: 1 - (((flags >>> 24) & 0xff) / 255),
     screenBlackoutAlpha: ((flags >>> 16) & 0xff) / 255,
@@ -1877,6 +1891,10 @@ export function decodeBinaryGameplayFrame(
     beatPhase,
     flashColorArgb,
     flashAlpha,
+    vignetteColorArgb,
+    vignetteAlpha,
+    vignetteWidth,
+    vignettePulse,
     activePlayerIdx,
     activeOpponentIdx,
     cameraZoom,
@@ -1998,6 +2016,12 @@ export interface StageCameraConfigSpec {
   panStrength: number;
   activeCameraIndex?: number;
   clampToBackground?: boolean;
+  vignetteEnabled?: boolean;
+  vignetteColor?: string;
+  vignetteAlpha?: number;
+  vignetteWidth?: number;
+  vignettePulse?: number;
+  vignetteOverHud?: boolean;
   cameras?: StageCameraSlotSpec[];
 }
 
@@ -2311,6 +2335,17 @@ export type ParsedChartCameraAction =
       kind: 'add_zoom_bump';
       camZoomAdd: number;
       hudZoomAdd: number;
+    }
+  | {
+      kind: 'set_vignette';
+      enabled: boolean;
+      colorHex: string | null;
+      alpha: number | null;
+      width: number | null;
+      pulse: number | null;
+      overHud: boolean | null;
+      durationSec: number;
+      ease: string;
     };
 
 /**
@@ -2652,6 +2687,101 @@ export function parseChartCameraEvent(params: {
     };
   }
 
+  if (
+    lower === 'camera vignette' ||
+    lower === 'side glow' ||
+    lower === 'vignette' ||
+    lower === 'camera side glow' ||
+    lower === 'brillo lateral' ||
+    lower === 'viñeta camara' ||
+    lower === 'viñeta cámara' ||
+    lower === 'viñeta'
+  ) {
+    let enabled = true;
+    let colorHex: string | null = null;
+    let alpha: number | null = null;
+    let width: number | null = null;
+    let pulse: number | null = null;
+    let overHud: boolean | null = null;
+    let durationSec = 0.35;
+    let ease = 'sineOut';
+
+    const offSet = new Set(['off', 'hide', 'clear', 'none', 'false', '0', 'ocultar', 'apagar', 'desaparecer']);
+    const onSet = new Set(['on', 'show', 'appear', 'true', '1', 'mostrar', 'aparecer']);
+    const v1Lower = v1.toLowerCase();
+    if (offSet.has(v1Lower)) {
+      enabled = false;
+      alpha = 0;
+    } else if (v1 && !v1.includes('=')) {
+      colorHex = v1.startsWith('#') ? v1 : `#${v1}`;
+    }
+
+    const v1Pairs = parseKv(v1);
+    const v2Pairs = parseKv(v2);
+    if (v2Pairs.length === 0 && v2) {
+      const v2Lower = v2.toLowerCase();
+      if (offSet.has(v2Lower)) {
+        enabled = false;
+        alpha = 0;
+      } else {
+        const num = Number(v2);
+        if (Number.isFinite(num)) {
+          const clamped = Math.min(1, Math.max(0, num));
+          alpha = clamped;
+          if (clamped <= 0.005) enabled = false;
+        }
+      }
+    }
+
+    for (const [k, v] of [...v1Pairs, ...v2Pairs]) {
+      if (k === 'action' || k === 'mode' || k === 'state') {
+        const m = v.toLowerCase();
+        if (offSet.has(m)) {
+          enabled = false;
+          alpha = 0;
+        } else if (onSet.has(m)) {
+          enabled = true;
+        }
+      } else if ((k === 'color' || k === 'hex' || k === 'tint') && v) {
+        colorHex = v.startsWith('#') ? v : `#${v}`;
+      } else if (k === 'alpha' || k === 'intensity' || k === 'opacity' || k === 'intensidad') {
+        const a = Number(v);
+        if (Number.isFinite(a)) {
+          const clamped = Math.min(1, Math.max(0, a));
+          alpha = clamped;
+          if (clamped <= 0.005) enabled = false;
+        }
+      } else if (k === 'width' || k === 'size' || k === 'ancho') {
+        const w = Number(v);
+        if (Number.isFinite(w)) width = Math.min(0.5, Math.max(0.05, w));
+      } else if (k === 'pulse' || k === 'pulso' || k === 'beat') {
+        const p = Number(v);
+        if (Number.isFinite(p)) pulse = Math.min(1, Math.max(0, p));
+      } else if (k === 'hud' || k === 'overhud' || k === 'over_hud') {
+        const m = v.toLowerCase();
+        overHud = m === '1' || m === 'true' || m === 'si' || m === 'sí' || m === 'yes';
+      } else if (k === 'dur' || k === 'duration') {
+        const d = Number(v);
+        if (Number.isFinite(d) && d >= 0) durationSec = Math.min(15, d);
+      } else if (k === 'ease' && v) {
+        ease = v;
+      }
+    }
+
+    if (!enabled) alpha = 0;
+    return {
+      kind: 'set_vignette',
+      enabled,
+      colorHex,
+      alpha,
+      width,
+      pulse,
+      overHud,
+      durationSec,
+      ease,
+    };
+  }
+
   return null;
 }
 
@@ -2664,6 +2794,12 @@ export function renderCameraLuaConfigBlock(cfg: StageCameraConfigSpec): string {
       ? cfg.cameras
       : defaultStageCameraSlots(cfg.baseX, cfg.baseY, cfg.baseZoom, cfg.smoothSpeed);
   const activeIdx = Math.max(0, Math.min(slots.length - 1, Math.round(cfg.activeCameraIndex ?? 0)));
+  const vigEnabled = cfg.vignetteEnabled ?? false;
+  const vigColor = (cfg.vignetteColor ?? '#EF4444').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const vigAlpha = Math.min(1, Math.max(0, Number.isFinite(cfg.vignetteAlpha) ? (cfg.vignetteAlpha as number) : 0.58));
+  const vigWidth = Math.min(0.5, Math.max(0.05, Number.isFinite(cfg.vignetteWidth) ? (cfg.vignetteWidth as number) : 0.24));
+  const vigPulse = Math.min(1, Math.max(0, Number.isFinite(cfg.vignettePulse) ? (cfg.vignettePulse as number) : 0.35));
+  const vigOverHud = cfg.vignetteOverHud ?? false;
   const slotLines = slots.map(
     (s) =>
       `--   Cam ${s.index}: ${s.name} (target=${s.targetKind}, x=${s.x.toFixed(0)}, y=${s.y.toFixed(0)}, zoom=${s.zoom.toFixed(2)})`,
@@ -2680,6 +2816,12 @@ export function renderCameraLuaConfigBlock(cfg: StageCameraConfigSpec): string {
     `local CAM_PAN_STRENGTH = ${cfg.panStrength.toFixed(2)}`,
     `local CAM_ACTIVE_INDEX = ${activeIdx}`,
     `local CAM_CLAMP_BG = ${cfg.clampToBackground !== false ? 'true' : 'false'}`,
+    `local CAM_VIGNETTE_ENABLED = ${vigEnabled ? 'true' : 'false'}`,
+    `local CAM_VIGNETTE_COLOR = "${vigColor}"`,
+    `local CAM_VIGNETTE_ALPHA = ${vigAlpha.toFixed(2)}`,
+    `local CAM_VIGNETTE_WIDTH = ${vigWidth.toFixed(2)}`,
+    `local CAM_VIGNETTE_PULSE = ${vigPulse.toFixed(2)}`,
+    `local CAM_VIGNETTE_OVER_HUD = ${vigOverHud ? 'true' : 'false'}`,
     `local CAM_COUNT = ${slots.length}`,
     ...slotLines,
     '-- [CAM_CFG_END]',
@@ -2742,6 +2884,24 @@ export function parseCameraConfigFromLua(
     } else if (key === 'CAM_CLAMP_BG') {
       if (/^true$/i.test(val)) next.clampToBackground = true;
       else if (/^false$/i.test(val)) next.clampToBackground = false;
+    } else if (key === 'CAM_VIGNETTE_ENABLED') {
+      if (/^true$/i.test(val)) next.vignetteEnabled = true;
+      else if (/^false$/i.test(val)) next.vignetteEnabled = false;
+    } else if (key === 'CAM_VIGNETTE_COLOR') {
+      const clean = val.replace(/^['"]|['"]$/g, '').trim();
+      if (clean) next.vignetteColor = clean;
+    } else if (key === 'CAM_VIGNETTE_ALPHA') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.vignetteAlpha = Math.min(1, Math.max(0, n));
+    } else if (key === 'CAM_VIGNETTE_WIDTH') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.vignetteWidth = Math.min(0.5, Math.max(0.05, n));
+    } else if (key === 'CAM_VIGNETTE_PULSE') {
+      const n = Number(val);
+      if (Number.isFinite(n)) next.vignettePulse = Math.min(1, Math.max(0, n));
+    } else if (key === 'CAM_VIGNETTE_OVER_HUD') {
+      if (/^true$/i.test(val)) next.vignetteOverHud = true;
+      else if (/^false$/i.test(val)) next.vignetteOverHud = false;
     }
   }
   if (next.cameras && next.cameras.length > 0) {
@@ -4123,6 +4283,8 @@ export interface UiBlackoutCueSpec {
   durationSec: number;
   revealDelayMs: number;
   revealOnSongStart: boolean;
+  endMs: number | null;
+  fadeOutSec: number | null;
   ease: string;
 }
 
@@ -4200,6 +4362,8 @@ export function buildUiBlackoutEventParams(params: {
   durationSec?: number;
   revealDelayMs?: number;
   revealOnSongStart?: boolean;
+  endMs?: number | null;
+  fadeOutSec?: number | null;
   ease?: string;
 }): { name: string; value1: string; value2: string } {
   const action = params.action;
@@ -4212,7 +4376,7 @@ export function buildUiBlackoutEventParams(params: {
   const dur = Math.min(25, Math.max(0, Number.isFinite(params.durationSec) ? (params.durationSec as number) : 0.65));
   const revealMs =
     action === 'intro'
-      ? Math.min(60000, Math.max(0, Number.isFinite(params.revealDelayMs) ? (params.revealDelayMs as number) : 0))
+      ? Math.min(600000, Math.max(0, Number.isFinite(params.revealDelayMs) ? (params.revealDelayMs as number) : 0))
       : 0;
   const onStart = params.revealOnSongStart ?? true;
   const ease = params.ease?.trim();
@@ -4224,6 +4388,12 @@ export function buildUiBlackoutEventParams(params: {
     `revealMs=${Math.round(revealMs)}`,
     `onStart=${onStart ? 1 : 0}`,
   ];
+  if (typeof params.endMs === 'number' && Number.isFinite(params.endMs) && params.endMs > 0) {
+    parts.push(`endMs=${Math.min(600000, params.endMs).toFixed(2)}`);
+    if (typeof params.fadeOutSec === 'number' && Number.isFinite(params.fadeOutSec) && params.fadeOutSec >= 0) {
+      parts.push(`fadeOut=${Math.min(25, params.fadeOutSec).toFixed(2)}`);
+    }
+  }
   if (ease) {
     parts.push(`ease=${ease}`);
   }
@@ -4257,6 +4427,8 @@ export function parseUiBlackoutEvent(ev: {
       durationSec: 0.6,
       revealDelayMs: 0,
       revealOnSongStart: true,
+      endMs: null,
+      fadeOutSec: null,
       ease: 'sineInOut',
     };
   }
@@ -4325,6 +4497,8 @@ export function parseUiBlackoutEvent(ev: {
   let durationSec = action === 'hide' && timeMs <= 120 ? 0 : 0.6;
   let revealDelayMs = 0;
   let revealOnSongStart = true;
+  let endMs: number | null = null;
+  let fadeOutSec: number | null = null;
   let ease = 'sineInOut';
 
   if (lowerName === 'screen fade' || lowerName === 'camera fade') {
@@ -4401,9 +4575,15 @@ export function parseUiBlackoutEvent(ev: {
       } else if (k === 'dur' || k === 'duration') {
         const num = Number(v);
         if (Number.isFinite(num) && num >= 0) durationSec = Math.min(25, num);
+      } else if (k === 'enddur' || k === 'end_dur' || k === 'fadeout' || k === 'outdur') {
+        const num = Number(v);
+        if (Number.isFinite(num) && num >= 0) fadeOutSec = Math.min(25, num);
+      } else if (k === 'endms' || k === 'end_ms') {
+        const num = Number(v);
+        if (Number.isFinite(num) && num > 0) endMs = Math.min(600000, num);
       } else if (k === 'revealms' || k === 'reveal_ms' || k === 'delayms') {
         const num = Number(v);
-        if (Number.isFinite(num) && num >= 0) revealDelayMs = Math.min(60000, num);
+        if (Number.isFinite(num) && num >= 0) revealDelayMs = Math.min(600000, num);
       } else if (k === 'onstart' || k === 'on_start') {
         const b = parseOptionalBoolFlag(v);
         if (b !== null) revealOnSongStart = b;
@@ -4431,7 +4611,9 @@ export function parseUiBlackoutEvent(ev: {
     arrowsAlpha,
     durationSec: action === 'intro' && durationSec <= 0.01 ? 0.65 : durationSec,
     revealDelayMs,
-    revealOnSongStart: isIntroBlackout ? revealOnSongStart || revealDelayMs > 0 : false,
+    revealOnSongStart: isIntroBlackout && endMs === null ? revealOnSongStart || revealDelayMs > 0 : false,
+    endMs,
+    fadeOutSec,
     ease,
   };
 }
@@ -7022,4 +7204,182 @@ export function extractArrowSkinTailColor(
     splashRgb: [splashGray, splashGray, splashGray],
   };
 }
+
+export interface StageCleanupResult {
+  removed: boolean;
+  entities: StageEntitySpec[];
+  cameras: StageCameraSlotSpec[];
+}
+
+/**
+ * Espejo puro de `StageScene::remove_entity`: elimina una entidad/capa del escenario
+ * y limpia cualquier ranura de cámara (`targetKind === 'entity'`) que apuntara a ella
+ * convirtiéndola de forma segura a modo `'fixed'`.
+ */
+export function removeStageEntityAndCleanCameras(
+  entities: ReadonlyArray<StageEntitySpec>,
+  cameras: ReadonlyArray<StageCameraSlotSpec>,
+  entityId: string,
+): StageCleanupResult {
+  const exists = entities.some((e) => e.id === entityId);
+  if (!exists) {
+    return {
+      removed: false,
+      entities: entities.map((e) => ({ ...e })),
+      cameras: cameras.map((c) => ({ ...c })),
+    };
+  }
+
+  const nextEntities = entities
+    .filter((e) => e.id !== entityId)
+    .map((e) => ({ ...e }));
+
+  const nextCameras = cameras.map((slot) => {
+    if (slot.targetEntityId === entityId) {
+      return {
+        ...slot,
+        targetEntityId: null,
+        targetKind: slot.targetKind === 'entity' ? ('fixed' as const) : slot.targetKind,
+        panStrength: slot.targetKind === 'entity' ? 0 : slot.panStrength,
+      };
+    }
+    return { ...slot };
+  });
+
+  return {
+    removed: true,
+    entities: nextEntities,
+    cameras: nextCameras,
+  };
+}
+
+/**
+ * Espejo puro de `StageScene::clear_entities`: vacía todas las capas de la escena
+ * y restablece todas las cámaras que apuntaban a entidades hacia `'fixed'`.
+ */
+export function clearStageEntitiesAndCleanCameras(
+  cameras: ReadonlyArray<StageCameraSlotSpec>,
+): { entities: StageEntitySpec[]; cameras: StageCameraSlotSpec[] } {
+  return {
+    entities: [],
+    cameras: cameras.map((slot) => ({
+      ...slot,
+      targetEntityId: null,
+      targetKind: slot.targetKind === 'entity' ? ('fixed' as const) : slot.targetKind,
+      panStrength: slot.targetKind === 'entity' ? 0 : slot.panStrength,
+    })),
+  };
+}
+
+export interface CountdownXmlFrameEntry {
+  rawName: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Espejo puro de `pulse_core::project::countdown::parse_countdown_sparrow_xml`:
+ * filtra fotogramas de un XML Sparrow combinado para el paso indicado (`0=3`, `1=2/ready`,
+ * `2=1/set`, `3=go/ya`) o devuelve todos los frames de un XML individual ordenados naturalmente.
+ */
+export function selectCountdownXmlFramesForSlot<T extends { rawName: string }>(
+  frames: ReadonlyArray<T>,
+  slotIndex: number,
+): T[] {
+  if (frames.length === 0) return [];
+
+  const groups = new Map<string, T[]>();
+  for (const frame of frames) {
+    const prefix = stripTrailingFrameDigits(frame.rawName) || frame.rawName;
+    const list = groups.get(prefix);
+    if (list) {
+      list.push(frame);
+    } else {
+      groups.set(prefix, [frame]);
+    }
+  }
+
+  const keywordsBySlot: Record<number, string[]> = {
+    0: ['three', 'tres', 'intro3', 'count3', '3'],
+    1: ['ready', 'two', 'dos', 'listos', 'intro2', 'count2', '2'],
+    2: ['set', 'one', 'uno', 'casi', 'intro1', 'count1', '1'],
+    3: ['go', 'ya', 'start', 'introgo', 'countgo'],
+  };
+  const keywords = keywordsBySlot[Math.max(0, Math.min(3, Math.trunc(slotIndex)))] ?? keywordsBySlot[3];
+
+  if (groups.size > 1) {
+    const matched: T[] = [];
+    for (const [prefix, groupFrames] of groups.entries()) {
+      const lower = prefix.toLowerCase();
+      const matches = keywords.some((kw) => {
+        if (kw.length === 1) {
+          return (
+            lower === kw ||
+            lower.endsWith(kw) ||
+            lower.includes(`_${kw}`) ||
+            lower.includes(` ${kw}`) ||
+            lower.includes(`-${kw}`)
+          );
+        }
+        return lower.includes(kw);
+      });
+      if (matches) {
+        matched.push(...groupFrames);
+      }
+    }
+    if (matched.length > 0) {
+      return [...matched].sort((a, b) => compareNaturalFrameNames(a.rawName, b.rawName));
+    }
+  }
+
+  return [...frames].sort((a, b) => compareNaturalFrameNames(a.rawName, b.rawName));
+}
+
+/**
+ * Espejo puro de `CountdownStepAsset::frame_at_progress`: asigna el progreso `0..1` del beat
+ * de cuenta regresiva al fotograma XML correspondiente sin desbordamientos.
+ */
+export function resolveCountdownFrameAtProgress<T>(
+  frames: ReadonlyArray<T>,
+  progress: number,
+): { index: number; frame: T } | null {
+  if (frames.length === 0) return null;
+  const clamped = Number.isFinite(progress) ? Math.min(0.9999, Math.max(0, progress)) : 0;
+  const index = Math.min(frames.length - 1, Math.floor(clamped * frames.length));
+  return { index, frame: frames[index] };
+}
+
+export interface CountdownAudioSlotDescriptor {
+  slotIndex: number;
+  hasCustomAudio: boolean;
+  audioName?: string | null;
+}
+
+/**
+ * Espejo puro de la resolución por paso en `AudioMixer::render_audio_frames`:
+ * reproduce el clip de voz/SFX personalizado del slot si fue cargado, o cae de forma
+ * independiente al sintetizador lock-free de cuenta regresiva (`synth_fallback`).
+ */
+export function resolveCountdownAudioPlaybackSlot(
+  slots: ReadonlyArray<CountdownAudioSlotDescriptor>,
+  slotIndex: number,
+): { mode: 'custom' | 'synth_fallback'; slotIndex: number; audioName: string | null } {
+  const safeIdx = Math.max(0, Math.min(3, Math.trunc(slotIndex)));
+  const slot = slots.find((s) => s.slotIndex === safeIdx) ?? slots[safeIdx];
+  if (slot?.hasCustomAudio) {
+    return {
+      mode: 'custom',
+      slotIndex: safeIdx,
+      audioName: slot.audioName ?? null,
+    };
+  }
+  return {
+    mode: 'synth_fallback',
+    slotIndex: safeIdx,
+    audioName: null,
+  };
+}
+
 

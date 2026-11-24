@@ -121,6 +121,26 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAddSta
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRemoveStageEntity<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    entity_id: JString<'local>,
+) -> JString<'local> {
+    let eid = read_str(&mut env, &entity_id);
+    let json = session().lock().remove_stage_entity(&eid);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeClearStageScene<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+) -> JString<'local> {
+    let json = session().lock().clear_stage_scene();
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateStageEntity<'local>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,
@@ -198,6 +218,33 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdate
         smooth_speed,
         pan_strength,
         clamp_to_background != 0,
+        commit_save != 0,
+    );
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdateStageCameraVignette<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    enabled: jboolean,
+    color_hex: JString<'local>,
+    alpha: jfloat,
+    width: jfloat,
+    pulse: jfloat,
+    over_hud: jboolean,
+    commit_save: jboolean,
+) -> JString<'local> {
+    let color_s = read_str(&mut env, &color_hex);
+    let json = session().lock().update_stage_camera_vignette(
+        enabled != 0,
+        &color_s,
+        alpha,
+        width,
+        pulse,
+        over_hud != 0,
         commit_save != 0,
     );
     to_jstr(&mut env, &json)
@@ -286,5 +333,54 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRemove
     let json = session()
         .lock()
         .remove_custom_camera(slot_index.max(0) as usize);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportCountdownSpriteImage<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    slot: jint,
+    path: JString<'local>,
+) -> JString<'local> {
+    let p = PathBuf::from(read_str(&mut env, &path));
+    let json = session()
+        .lock()
+        .import_countdown_image(slot.max(0) as usize, p);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeImportCountdownSpriteXml<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    slot: jint,
+    path: JString<'local>,
+) -> JString<'local> {
+    let p = PathBuf::from(read_str(&mut env, &path));
+    let json = session()
+        .lock()
+        .import_countdown_xml(slot.max(0) as usize, p);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeClearCountdownSprite<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    slot: jint,
+) -> JString<'local> {
+    let json = session()
+        .lock()
+        .clear_countdown_sprite(slot.max(0) as usize);
+    to_jstr(&mut env, &json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeRestoreDefaultCountdownAssets<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+) -> JString<'local> {
+    let json = session().lock().restore_default_countdown_assets();
     to_jstr(&mut env, &json)
 }

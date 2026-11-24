@@ -114,6 +114,11 @@ import {
   shouldQuantizePaletteWithExoquant,
   ditherPixelGridToRgb565,
   planMultiPageSparrowSplit,
+  removeStageEntityAndCleanCameras,
+  clearStageEntitiesAndCleanCameras,
+  selectCountdownXmlFramesForSlot,
+  resolveCountdownFrameAtProgress,
+  resolveCountdownAudioPlaybackSlot,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -700,9 +705,13 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   const buf = new Uint8Array(totalBytes);
   const view = new DataView(buf.buffer);
 
-  // Header 152B (BFGP v2 con flash + personajes activos)
+  // Header 168B (BFGP v2 con flash, viñeta lateral + personajes activos)
   view.setUint32(0, BINARY_GAMEPLAY_MAGIC, true);
-  view.setUint32(4, 1 | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7), true); // + flashOverHud
+  view.setUint32(
+    4,
+    (1 | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 14)) >>> 0,
+    true,
+  ); // + flashOverHud + vignetteOverHud
   view.setUint32(8, 7, true); // hudRevision
   view.setUint32(12, 0b0010_0000_0101 | (1 << 16) | (3 << 20), true); // player=5, opp=2, rating=1(Sick), splashLane=3
   view.setInt32(16, 3, true); // countdownStage
@@ -737,6 +746,10 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   view.setUint16(146, 1, true); // noteCount
   view.setUint16(148, 8, true); // strumCount
   view.setUint16(150, 1, true); // dynCount
+  view.setUint32(152, 0xff3b82f6, true); // vignetteColorArgb
+  view.setFloat32(156, 0.68, true); // vignetteAlpha
+  view.setFloat32(160, 0.28, true); // vignetteWidth
+  view.setFloat32(164, 0.45, true); // vignettePulse
 
   // Entity 64B
   let off = BINARY_GAMEPLAY_HEADER_BYTES;
@@ -807,6 +820,11 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   assert.equal(decoded.flashOverHud, true);
   assert.equal(decoded.flashColorArgb, 0xffef4444);
   assert.ok(Math.abs(decoded.flashAlpha - 0.65) < 0.01);
+  assert.equal(decoded.vignetteOverHud, true);
+  assert.equal(decoded.vignetteColorArgb, 0xff3b82f6);
+  assert.ok(Math.abs(decoded.vignetteAlpha - 0.68) < 0.01);
+  assert.ok(Math.abs(decoded.vignetteWidth - 0.28) < 0.01);
+  assert.ok(Math.abs(decoded.vignettePulse - 0.45) < 0.01);
   assert.equal(decoded.activePlayerIdx, 2);
   assert.equal(decoded.activeOpponentIdx, 1);
   assert.equal(decoded.controlMode, 'classic_hitbox');
@@ -2812,4 +2830,323 @@ test('quantizeF32ToI16Tpdf and applyMixerOutputStagePolicy keep linear compiled 
   }
   assert.ok(Math.abs(sum / ditheredZeros.length) < 0.08);
 });
+
+test('Camera Vignette events, camera_system.lua vignette sync and loop optimizer preservation work end-to-end', () => {
+  const appearEv = parseChartCameraEvent({
+    name: 'Camera Vignette',
+    value1: 'action=appear;color=#EF4444;alpha=0.72;width=0.30;pulse=0.60;hud=1',
+    value2: 'dur=0.45;ease=cubicOut',
+  });
+  assert.deepEqual(appearEv, {
+    kind: 'set_vignette',
+    enabled: true,
+    colorHex: '#EF4444',
+    alpha: 0.72,
+    width: 0.3,
+    pulse: 0.6,
+    overHud: true,
+    durationSec: 0.45,
+    ease: 'cubicOut',
+  });
+
+  const disappearEv = parseChartCameraEvent({
+    name: 'Camera Vignette',
+    value1: 'off',
+    value2: 'dur=0.50;ease=sineIn',
+  });
+  assert.deepEqual(disappearEv, {
+    kind: 'set_vignette',
+    enabled: false,
+    colorHex: null,
+    alpha: 0,
+    width: null,
+    pulse: null,
+    overHud: null,
+    durationSec: 0.5,
+    ease: 'sineIn',
+  });
+
+  const baseCfg = {
+    enabled: true,
+    baseX: 640,
+    baseY: 360,
+    baseZoom: 1.0,
+    followMode: 'sections' as const,
+    followIntervalBeats: 4,
+    smoothSpeed: 6.0,
+    panStrength: 0.72,
+    vignetteEnabled: true,
+    vignetteColor: '#A855F7',
+    vignetteAlpha: 0.85,
+    vignetteWidth: 0.34,
+    vignettePulse: 0.55,
+    vignetteOverHud: true,
+  };
+  const luaBlock = renderCameraLuaConfigBlock(baseCfg);
+  assert.ok(luaBlock.includes('local CAM_VIGNETTE_ENABLED = true'));
+  assert.ok(luaBlock.includes('local CAM_VIGNETTE_COLOR = "#A855F7"'));
+  assert.ok(luaBlock.includes('local CAM_VIGNETTE_OVER_HUD = true'));
+
+  const parsedCfg = parseCameraConfigFromLua(luaBlock, {
+    ...baseCfg,
+    vignetteEnabled: false,
+    vignetteColor: '#000000',
+    vignetteAlpha: 0.1,
+    vignetteWidth: 0.1,
+    vignettePulse: 0,
+    vignetteOverHud: false,
+  });
+  assert.equal(parsedCfg.vignetteEnabled, true);
+  assert.equal(parsedCfg.vignetteColor, '#A855F7');
+  assert.ok(Math.abs((parsedCfg.vignetteAlpha ?? 0) - 0.85) < 0.01);
+  assert.ok(Math.abs((parsedCfg.vignetteWidth ?? 0) - 0.34) < 0.01);
+  assert.ok(Math.abs((parsedCfg.vignettePulse ?? 0) - 0.55) < 0.01);
+  assert.equal(parsedCfg.vignetteOverHud, true);
+
+  const luaOpt = optimizeScriptLoops(
+    'lua',
+    `function onStepHit(step)
+       for i = 1, 2 do
+         setCameraVignette('#EF4444', 0.75, 0.28, 0.5, false)
+         tweenCameraVignette('vig', '#3B82F6', 0.9, 0.35, 0.8, true, 0.6, 'sineOut')
+         clearCameraVignette(0.4, 'sineIn')
+       end
+     end`,
+  );
+  assert.equal(luaOpt.discardedLoops, 0);
+  assert.ok(luaOpt.optimizedSource.includes('tweenCameraVignette'));
+  assert.ok(luaOpt.optimizedSource.includes('clearCameraVignette'));
+});
+
+test('UI Blackout supports explicit Start -> End step range, fade-out restoration, and 600s intro revealDelayMs', () => {
+  const rangeBuilt = buildUiBlackoutEventParams({
+    action: 'hide',
+    blackAlpha: 1,
+    hideHud: true,
+    hideArrows: true,
+    durationSec: 0.4,
+    endMs: 18500,
+    fadeOutSec: 0.75,
+    ease: 'sineOut',
+  });
+  const rangeParsed = parseUiBlackoutEvent({ timeMs: 6000, ...rangeBuilt });
+  assert.equal(rangeParsed.isUiBlackoutEvent, true);
+  assert.equal(rangeParsed.action, 'hide');
+  assert.equal(rangeParsed.blackAlpha, 1);
+  assert.equal(rangeParsed.hudAlpha, 0);
+  assert.equal(rangeParsed.arrowsAlpha, 0);
+  assert.equal(rangeParsed.durationSec, 0.4);
+  assert.equal(rangeParsed.endMs, 18500);
+  assert.equal(rangeParsed.fadeOutSec, 0.75);
+  assert.equal(rangeParsed.ease, 'sineOut');
+
+  const introRangeBuilt = buildUiBlackoutEventParams({
+    action: 'intro',
+    blackAlpha: 1,
+    hideHud: true,
+    hideArrows: true,
+    durationSec: 0.9,
+    revealOnSongStart: false,
+    revealDelayMs: 420000,
+    endMs: 32000,
+    fadeOutSec: 0.95,
+  });
+  const introRangeParsed = parseUiBlackoutEvent({ timeMs: 0, ...introRangeBuilt });
+  assert.equal(introRangeParsed.isIntroBlackout, true);
+  assert.equal(introRangeParsed.revealOnSongStart, false);
+  assert.equal(introRangeParsed.revealDelayMs, 420000);
+  assert.equal(introRangeParsed.endMs, 32000);
+  assert.equal(introRangeParsed.fadeOutSec, 0.95);
+
+  const longIntroChart = parseChartJson(
+    JSON.stringify({
+      song: {
+        song: 'Long Blackout Intro',
+        bpm: 128,
+        speed: 2.1,
+        uiBlackout: {
+          startBlackout: true,
+          blackoutAlpha: 1,
+          hideHud: true,
+          hideArrows: true,
+          revealOnSongStart: false,
+          revealDelayMs: 600000,
+          fadeSec: 1.2,
+        },
+        notes: [{ mustHitSection: true, sectionNotes: [[500, 0, 0]] }],
+      },
+    }),
+  );
+  assert.equal(longIntroChart.introUi?.revealDelayMs, 600000);
+  const reserialized = parseChartJson(serializeChartJson(longIntroChart));
+  assert.equal(reserialized.introUi?.revealDelayMs, 600000);
+});
+
+test('removeStageEntityAndCleanCameras and clearStageEntitiesAndCleanCameras safely decouple entity camera slots', () => {
+  const entities = [
+    {
+      id: 'stage_bg',
+      role: 'background' as const,
+      x: 640,
+      y: 360,
+      width: 1280,
+      height: 720,
+      scale: 1,
+      opacity: 1,
+      visible: true,
+      zIndex: 0,
+    },
+    {
+      id: 'prop_boss',
+      role: 'decoration' as const,
+      x: 920,
+      y: 380,
+      width: 240,
+      height: 260,
+      scale: 1,
+      opacity: 1,
+      visible: true,
+      zIndex: 2,
+    },
+    {
+      id: 'player_main',
+      role: 'player' as const,
+      x: 960,
+      y: 440,
+      width: 280,
+      height: 380,
+      scale: 1,
+      opacity: 1,
+      visible: true,
+      zIndex: 5,
+    },
+  ];
+  const cameras = [
+    {
+      index: 0,
+      name: 'Cam 0',
+      targetKind: 'fixed' as const,
+      targetEntityId: null,
+      x: 640,
+      y: 360,
+      zoom: 1,
+      smoothSpeed: 6,
+      panStrength: 0,
+    },
+    {
+      index: 3,
+      name: 'Cam 3',
+      targetKind: 'entity' as const,
+      targetEntityId: 'prop_boss',
+      x: 920,
+      y: 380,
+      zoom: 1.2,
+      smoothSpeed: 7,
+      panStrength: 0.75,
+    },
+    {
+      index: 4,
+      name: 'Cam 4',
+      targetKind: 'entity' as const,
+      targetEntityId: 'player_main',
+      x: 960,
+      y: 440,
+      zoom: 1.1,
+      smoothSpeed: 6,
+      panStrength: 0.65,
+    },
+  ];
+
+  const missing = removeStageEntityAndCleanCameras(entities, cameras, 'non_existent');
+  assert.equal(missing.removed, false);
+  assert.equal(missing.entities.length, 3);
+
+  const afterRemove = removeStageEntityAndCleanCameras(entities, cameras, 'prop_boss');
+  assert.equal(afterRemove.removed, true);
+  assert.deepEqual(
+    afterRemove.entities.map((e) => e.id),
+    ['stage_bg', 'player_main'],
+  );
+  assert.equal(afterRemove.cameras[1].targetKind, 'fixed');
+  assert.equal(afterRemove.cameras[1].targetEntityId, null);
+  assert.equal(afterRemove.cameras[1].panStrength, 0);
+  assert.equal(afterRemove.cameras[2].targetKind, 'entity');
+  assert.equal(afterRemove.cameras[2].targetEntityId, 'player_main');
+
+  const afterClear = clearStageEntitiesAndCleanCameras(afterRemove.cameras);
+  assert.equal(afterClear.entities.length, 0);
+  assert.equal(afterClear.cameras[1].targetKind, 'fixed');
+  assert.equal(afterClear.cameras[2].targetKind, 'fixed');
+  assert.equal(afterClear.cameras[2].targetEntityId, null);
+  assert.equal(afterClear.cameras[2].panStrength, 0);
+});
+
+test('selectCountdownXmlFramesForSlot, resolveCountdownFrameAtProgress and resolveCountdownAudioPlaybackSlot handle separate/combined XMLs and per-slot audio fallback', () => {
+  const combinedXmlFrames = [
+    { rawName: 'ready0010', x: 100, y: 0, width: 100, height: 60 },
+    { rawName: 'ready0002', x: 0, y: 0, width: 100, height: 60 },
+    { rawName: 'set0001', x: 200, y: 0, width: 100, height: 60 },
+    { rawName: 'set0002', x: 300, y: 0, width: 100, height: 60 },
+    { rawName: 'go0001', x: 400, y: 0, width: 120, height: 80 },
+    { rawName: 'intro3_0001', x: 520, y: 0, width: 90, height: 90 },
+  ];
+
+  const slot0Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 0);
+  assert.deepEqual(slot0Frames.map((f) => f.rawName), ['intro3_0001']);
+
+  const slot1Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 1);
+  assert.deepEqual(slot1Frames.map((f) => f.rawName), ['ready0002', 'ready0010']);
+
+  const slot2Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 2);
+  assert.deepEqual(slot2Frames.map((f) => f.rawName), ['set0001', 'set0002']);
+
+  const slot3Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 3);
+  assert.deepEqual(slot3Frames.map((f) => f.rawName), ['go0001']);
+
+  const singleStepFrames = [
+    { rawName: 'custom_anim_10', x: 10, y: 0, width: 50, height: 50 },
+    { rawName: 'custom_anim_2', x: 20, y: 0, width: 50, height: 50 },
+    { rawName: 'custom_anim_1', x: 0, y: 0, width: 50, height: 50 },
+  ];
+  const sortedSingle = selectCountdownXmlFramesForSlot(singleStepFrames, 1);
+  assert.deepEqual(sortedSingle.map((f) => f.rawName), [
+    'custom_anim_1',
+    'custom_anim_2',
+    'custom_anim_10',
+  ]);
+
+  assert.equal(resolveCountdownFrameAtProgress([], 0.5), null);
+  assert.equal(resolveCountdownFrameAtProgress(sortedSingle, 0.0)?.frame.rawName, 'custom_anim_1');
+  assert.equal(resolveCountdownFrameAtProgress(sortedSingle, 0.45)?.frame.rawName, 'custom_anim_2');
+  assert.equal(resolveCountdownFrameAtProgress(sortedSingle, 1.0)?.frame.rawName, 'custom_anim_10');
+
+  const audioSlots = [
+    { slotIndex: 0, hasCustomAudio: true, audioName: 'intro3.ogg' },
+    { slotIndex: 1, hasCustomAudio: false, audioName: null },
+    { slotIndex: 2, hasCustomAudio: true, audioName: 'intro1.wav' },
+    { slotIndex: 3, hasCustomAudio: false, audioName: null },
+  ];
+  assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 0), {
+    mode: 'custom',
+    slotIndex: 0,
+    audioName: 'intro3.ogg',
+  });
+  assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 1), {
+    mode: 'synth_fallback',
+    slotIndex: 1,
+    audioName: null,
+  });
+  assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 2), {
+    mode: 'custom',
+    slotIndex: 2,
+    audioName: 'intro1.wav',
+  });
+  assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 3), {
+    mode: 'synth_fallback',
+    slotIndex: 3,
+    audioName: null,
+  });
+});
+
+
 

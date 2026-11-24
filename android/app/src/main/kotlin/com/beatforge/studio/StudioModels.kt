@@ -84,6 +84,9 @@ sealed class ImportKind(val tag: String, val mimeTypes: Array<String>) {
         arrayOf("image/png", "image/*", "*/*")
     )
     data object HealthBarSvg : ImportKind("health_bar_svg", arrayOf("image/svg+xml", "*/*"))
+    data class CountdownImage(val slot: Int) : ImportKind("cd_img_$slot", arrayOf("image/png", "image/webp", "image/*", "application/octet-stream", "*/*"))
+    data class CountdownXml(val slot: Int) : ImportKind("cd_xml_$slot", arrayOf("text/xml", "application/xml", "text/plain", "*/*"))
+    data class CountdownAudio(val slot: Int) : ImportKind("cd_aud_$slot", arrayOf("audio/*", "application/ogg", "*/*"))
     data object ModPackage : ImportKind("mod_pkg", arrayOf("*/*"))
 }
 
@@ -372,6 +375,12 @@ data class StageCameraSnapshot(
     val panStrength: Float = 0.72f,
     val activeCameraIndex: Int = 0,
     val clampToBackground: Boolean = true,
+    val vignetteEnabled: Boolean = false,
+    val vignetteColor: String = "#EF4444",
+    val vignetteAlpha: Float = 0.58f,
+    val vignetteWidth: Float = 0.24f,
+    val vignettePulse: Float = 0.35f,
+    val vignetteOverHud: Boolean = false,
     val cameras: List<StageCameraSlotSnapshot> = defaultStageCameraSlots()
 ) {
     fun resolvedCameras(): List<StageCameraSlotSnapshot> =
@@ -384,6 +393,18 @@ data class StageCameraSnapshot(
             ?: list.first()
     }
 }
+
+data class CountdownStepSnapshot(
+    val slotIndex: Int = 0,
+    val label: String = "",
+    val imagePath: String? = null,
+    val imageName: String? = null,
+    val xmlName: String? = null,
+    val frames: List<SparrowFrameInfo> = emptyList(),
+    val fps: Float = 24f,
+    val audioName: String? = null,
+    val audioDurationMs: Double = 0.0
+)
 
 data class ProjectSnapshot(
     val id: String = "",
@@ -401,6 +422,7 @@ data class ProjectSnapshot(
     val customArrowPaths: Map<String, String> = emptyMap(),
     val hasCustomPngArrowSkin: Boolean = false,
     val healthBarSvgPath: String? = null,
+    val countdownSlots: List<CountdownStepSnapshot> = emptyList(),
     val preferredRenderBackend: String = "canvas2d",
     val audioAdaptEnabled: Boolean = true,
     val lastCompileReport: CompileReportSnapshot? = null,
@@ -527,6 +549,11 @@ data class GameplayStep(
     val flashColorArgb: Long = 0xFFFFFFFFL,
     val flashAlpha: Float = 0f,
     val flashOverHud: Boolean = false,
+    val vignetteColorArgb: Long = 0xFFEF4444L,
+    val vignetteAlpha: Float = 0f,
+    val vignetteWidth: Float = 0.24f,
+    val vignettePulse: Float = 0.35f,
+    val vignetteOverHud: Boolean = false,
     val activePlayerIdx: Int = -1,
     val activeOpponentIdx: Int = -1,
     val paused: Boolean = false,
@@ -874,10 +901,43 @@ object StudioJsonParser {
                 activeCameraIndex = camObj.optInt("activeCameraIndex", 0)
                     .coerceIn(0, (parsedSlots.size - 1).coerceAtLeast(0)),
                 clampToBackground = camObj.optBoolean("clampToBackground", true),
+                vignetteEnabled = camObj.optBoolean("vignetteEnabled", false),
+                vignetteColor = camObj.optString("vignetteColor", "#EF4444").ifBlank { "#EF4444" },
+                vignetteAlpha = camObj.optDouble("vignetteAlpha", 0.58).toFloat().coerceIn(0f, 1f),
+                vignetteWidth = camObj.optDouble("vignetteWidth", 0.24).toFloat().coerceIn(0.05f, 0.50f),
+                vignettePulse = camObj.optDouble("vignettePulse", 0.35).toFloat().coerceIn(0f, 1f),
+                vignetteOverHud = camObj.optBoolean("vignetteOverHud", false),
                 cameras = parsedSlots
             )
         } else {
             StageCameraSnapshot()
+        }
+
+        val cdArr = obj.optJSONArray("countdownSlots") ?: JSONArray()
+        val countdownSlots = buildList(cdArr.length()) {
+            for (i in 0 until cdArr.length()) {
+                val c = cdArr.optJSONObject(i) ?: continue
+                val framesArr = c.optJSONArray("frames") ?: JSONArray()
+                val frames = buildList(framesArr.length()) {
+                    for (j in 0 until framesArr.length()) {
+                        val f = framesArr.optJSONObject(j) ?: continue
+                        add(parseSparrowFrameObject(f))
+                    }
+                }
+                add(
+                    CountdownStepSnapshot(
+                        slotIndex = c.optInt("slotIndex", i),
+                        label = c.optString("label", ""),
+                        imagePath = optNullableString(c, "imagePath"),
+                        imageName = optNullableString(c, "imageName"),
+                        xmlName = optNullableString(c, "xmlName"),
+                        frames = frames,
+                        fps = c.optDouble("fps", 24.0).toFloat().coerceIn(4f, 60f),
+                        audioName = optNullableString(c, "audioName"),
+                        audioDurationMs = c.optDouble("audioDurationMs", 0.0)
+                    )
+                )
+            }
         }
 
         val audioAdaptReportObj = obj.optJSONObject("lastAudioAdaptReport")
@@ -899,6 +959,7 @@ object StudioJsonParser {
             customArrowPaths = stringMap(obj.optJSONObject("customArrowPaths")),
             hasCustomPngArrowSkin = obj.optBoolean("hasCustomPngArrowSkin", false),
             healthBarSvgPath = optNullableString(obj, "healthBarSvgPath"),
+            countdownSlots = countdownSlots,
             preferredRenderBackend = obj.optString("preferredRenderBackend", "canvas2d"),
             audioAdaptEnabled = obj.optBoolean("audioAdaptEnabled", true),
             lastCompileReport = compileReport,
@@ -1153,6 +1214,11 @@ object StudioJsonParser {
                 flashColorArgb = obj.optLong("flashColorArgb", 0xFFFFFFFFL),
                 flashAlpha = obj.optDouble("flashAlpha", 0.0).toFloat(),
                 flashOverHud = obj.optBoolean("flashOverHud", false),
+                vignetteColorArgb = obj.optLong("vignetteColorArgb", 0xFFEF4444L),
+                vignetteAlpha = obj.optDouble("vignetteAlpha", 0.0).toFloat(),
+                vignetteWidth = obj.optDouble("vignetteWidth", 0.24).toFloat(),
+                vignettePulse = obj.optDouble("vignettePulse", 0.35).toFloat(),
+                vignetteOverHud = obj.optBoolean("vignetteOverHud", false),
                 activePlayerIdx = obj.optInt("activePlayerIdx", -1),
                 activeOpponentIdx = obj.optInt("activeOpponentIdx", -1),
                 paused = obj.optBoolean("paused", false),

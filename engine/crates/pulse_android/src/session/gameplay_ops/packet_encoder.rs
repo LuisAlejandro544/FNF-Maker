@@ -211,6 +211,11 @@ impl EngineSession {
                 flash_color_argb: 0xFFFFFFFF,
                 flash_alpha: 0.0,
                 flash_over_hud: false,
+                vignette_color_argb: self.project.stage.vignette_color_argb,
+                vignette_alpha: 0.0,
+                vignette_width: self.project.stage.vignette_width,
+                vignette_pulse: self.project.stage.vignette_pulse,
+                vignette_over_hud: self.project.stage.vignette_over_hud,
                 active_player_idx: -1,
                 active_opponent_idx: -1,
                 paused: false,
@@ -394,6 +399,11 @@ impl EngineSession {
             flash_color_argb: session.flash_color_argb,
             flash_alpha: session.flash_alpha,
             flash_over_hud: session.flash_over_hud,
+            vignette_color_argb: self.project.stage.vignette_color_argb,
+            vignette_alpha: self.project.stage.vignette_alpha,
+            vignette_width: self.project.stage.vignette_width,
+            vignette_pulse: self.project.stage.vignette_pulse,
+            vignette_over_hud: self.project.stage.vignette_over_hud,
             active_player_idx,
             active_opponent_idx,
             paused: session.paused,
@@ -434,8 +444,12 @@ impl EngineSession {
                 return -(BINARY_HEADER_SIZE as i32);
             }
             let mut w = BinWriter::new(out_buf);
+            let mut init_flags: u32 = 1 << 6; // inactive, hud_visible
+            if self.project.stage.vignette_over_hud {
+                init_flags |= 1 << 14;
+            }
             w.write_u32(BINARY_FRAME_MAGIC);
-            w.write_u32(1 << 6); // inactive, hud_visible
+            w.write_u32(init_flags);
             w.write_u32(0); // hud_revision
             w.write_u32(0); // masks
             w.write_i32(-1); // countdown_stage
@@ -470,6 +484,10 @@ impl EngineSession {
             w.write_u16(0); // note_count
             w.write_u16(0); // strum_count
             w.write_u16(0); // dynamic_count
+            w.write_u32(self.project.stage.vignette_color_argb);
+            w.write_f32(0.0); // vignette_alpha
+            w.write_f32(self.project.stage.vignette_width);
+            w.write_f32(self.project.stage.vignette_pulse);
             debug_assert_eq!(w.pos, BINARY_HEADER_SIZE);
             return BINARY_HEADER_SIZE as i32;
         };
@@ -603,6 +621,9 @@ impl EngineSession {
         if session.practice_mode {
             flags |= 1 << 13;
         }
+        if self.project.stage.vignette_over_hud {
+            flags |= 1 << 14;
+        }
         let blackout_u8 = (session.screen_blackout_alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
         let arrows_inv_u8 =
             ((1.0 - session.arrows_opacity.clamp(0.0, 1.0)) * 255.0).round() as u32;
@@ -651,6 +672,11 @@ impl EngineSession {
         w.write_u16(note_count as u16);
         w.write_u16(strum_count as u16);
         w.write_u16(dynamic_count as u16);
+        w.write_u32(self.project.stage.vignette_color_argb);
+        w.write_f32(self.project.stage.vignette_alpha);
+        w.write_f32(self.project.stage.vignette_width);
+        w.write_f32(self.project.stage.vignette_pulse);
+        debug_assert_eq!(w.pos, BINARY_HEADER_SIZE);
 
         for ent in session.bundle.active_entities.iter().take(entity_count) {
             let (render_x, render_y, render_scale, frame) =

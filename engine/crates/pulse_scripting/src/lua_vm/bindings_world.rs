@@ -2,7 +2,7 @@
 //! Propósito: Registra en los globales de Lua 5.4 los bindings de registro (`log`),
 //! cámara multicámara, propiedades/animación de entidades del escenario y strums (modcharts).
 
-use crate::bridge::{ScriptCommand, ScriptHostState};
+use crate::bridge::{ScriptCommand, ScriptHostState, parse_color_argb};
 use mlua::{Lua, Result, Table};
 use std::sync::Arc;
 
@@ -148,6 +148,88 @@ pub(super) fn register_world_bindings(
                 h.push_command(ScriptCommand::SetCameraClamp { enabled });
                 Ok(())
             })?,
+        )?;
+    }
+    {
+        let h = Arc::clone(host);
+        globals.set(
+            "setCameraVignette",
+            lua.create_function(
+                move |_, (color_hex, alpha, width, pulse, over_hud): (String, Option<f32>, Option<f32>, Option<f32>, Option<bool>)| {
+                    let a = alpha.filter(|v| v.is_finite()).unwrap_or(0.58).clamp(0.0, 1.0);
+                    let w = width.filter(|v| v.is_finite()).unwrap_or(0.24).clamp(0.05, 0.50);
+                    let p = pulse.filter(|v| v.is_finite()).unwrap_or(0.35).clamp(0.0, 1.0);
+                    *h.camera_vignette_alpha.lock() = a;
+                    h.push_command(ScriptCommand::SetCameraVignette {
+                        color_argb: parse_color_argb(&color_hex),
+                        alpha: a,
+                        width: w,
+                        pulse: p,
+                        over_hud: over_hud.unwrap_or(false),
+                    });
+                    Ok(())
+                },
+            )?,
+        )?;
+    }
+    {
+        let h = Arc::clone(host);
+        globals.set(
+            "tweenCameraVignette",
+            lua.create_function(
+                move |_, (tag, target_alpha, dur, ease, color_hex, width, pulse, over_hud): (String, f32, Option<f32>, Option<String>, Option<String>, Option<f32>, Option<f32>, Option<bool>)| {
+                    let a = if target_alpha.is_finite() {
+                        target_alpha.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let d = dur.filter(|v| v.is_finite()).unwrap_or(0.4).max(0.0);
+                    let color_argb = color_hex
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(parse_color_argb);
+                    h.push_command(ScriptCommand::TweenCameraVignette {
+                        tag,
+                        target_alpha: a,
+                        duration_sec: d,
+                        ease: ease
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "sineOut".to_string()),
+                        color_argb,
+                        target_width: width.filter(|v| v.is_finite()).map(|v| v.clamp(0.05, 0.50)),
+                        pulse: pulse.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)),
+                        over_hud,
+                    });
+                    Ok(())
+                },
+            )?,
+        )?;
+    }
+    {
+        let h = Arc::clone(host);
+        globals.set(
+            "clearCameraVignette",
+            lua.create_function(move |_, (dur, ease): (Option<f32>, Option<String>)| {
+                let d = dur.filter(|v| v.is_finite()).unwrap_or(0.35).max(0.0);
+                if d <= 0.01 {
+                    *h.camera_vignette_alpha.lock() = 0.0;
+                }
+                h.push_command(ScriptCommand::ClearCameraVignette {
+                    duration_sec: d,
+                    ease: ease
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "sineOut".to_string()),
+                });
+                Ok(())
+            })?,
+        )?;
+    }
+    {
+        let h = Arc::clone(host);
+        globals.set(
+            "getCameraVignetteAlpha",
+            lua.create_function(move |_, ()| Ok(*h.camera_vignette_alpha.lock()))?,
         )?;
     }
 

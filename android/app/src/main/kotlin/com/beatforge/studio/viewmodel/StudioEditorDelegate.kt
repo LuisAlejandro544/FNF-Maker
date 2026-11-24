@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.storage.StorageManager
 import com.beatforge.studio.AudioPreviewTransportState
 import com.beatforge.studio.CAMERA_SELECTION_ID
+import com.beatforge.studio.CountdownStepSnapshot
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.ImportKind
 import com.beatforge.studio.NativeEngineBridge
@@ -57,6 +58,7 @@ internal class StudioEditorDelegate(
             val receptors = bitmapLoader.loadReceptorBitmaps()
             val hurtX = bitmapLoader.loadHurtArrowXBitmap()
             val hudAssets = bitmapLoader.loadHudSvgAssets()
+            val cdBmps = bitmapLoader.loadCountdownBitmaps(snap.countdownSlots, uiState.value.selectedTier)
             val gfxCaps = VulkanProbeBridge.probeCombinedCapabilities(app)
 
             uiState.update { state ->
@@ -75,6 +77,7 @@ internal class StudioEditorDelegate(
                     healthBarBitmap = hudAssets.healthBar,
                     ratingBitmaps = hudAssets.ratings,
                     noteSplashBitmap = hudAssets.noteSplash,
+                    countdownBitmaps = cdBmps,
                     defaultPlayerNormalIcon = hudAssets.playerNormal,
                     defaultPlayerLosingIcon = hudAssets.playerLosing,
                     defaultOpponentNormalIcon = hudAssets.opponentNormal,
@@ -217,6 +220,9 @@ internal class StudioEditorDelegate(
                             is ImportKind.ArrowSvg -> NativeEngineBridge.nativeImportArrowSvg(kind.direction, localPath)
                             is ImportKind.CharacterIcon -> NativeEngineBridge.nativeImportCharacterIcon(kind.entityId, kind.isLosing, localPath)
                             is ImportKind.HealthBarSvg -> NativeEngineBridge.nativeImportHealthBarSvg(localPath)
+                            is ImportKind.CountdownImage -> NativeEngineBridge.nativeImportCountdownSpriteImage(kind.slot, localPath)
+                            is ImportKind.CountdownXml -> NativeEngineBridge.nativeImportCountdownSpriteXml(kind.slot, localPath)
+                            is ImportKind.CountdownAudio -> NativeEngineBridge.nativeImportCountdownAudio(kind.slot, localPath)
                             is ImportKind.ModPackage,
                             is ImportKind.ArrowAtlasPng,
                             is ImportKind.ArrowAtlasXml -> error("handled above")
@@ -227,6 +233,9 @@ internal class StudioEditorDelegate(
                             is ImportKind.ArrowSvg -> reloadArrowBitmaps()
                             is ImportKind.HealthBarSvg -> reloadHealthBarBitmap()
                             is ImportKind.CharacterIcon -> reloadCustomIcons(uiState.value.snapshot.stageEntities)
+                            is ImportKind.CountdownImage, is ImportKind.CountdownXml -> {
+                                reloadCountdownBitmaps(uiState.value.snapshot.countdownSlots)
+                            }
                             is ImportKind.SpritePng, is ImportKind.SparrowXml, is ImportKind.CharacterConfig, is ImportKind.StageConfig -> {
                                 bitmapLoader.evictRegionCache()
                                 reloadEntityBitmaps(uiState.value.snapshot.stageEntities)
@@ -754,6 +763,55 @@ internal class StudioEditorDelegate(
         }
     }
 
+    fun removeStageEntity(entityId: String) {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeRemoveStageEntity(entityId))
+            bitmapLoader.evictRegionCache()
+            val entities = uiState.value.snapshot.stageEntities
+            reloadEntityBitmaps(entities)
+            reloadCustomIcons(entities)
+            refreshProjectsInternal()
+        }
+    }
+
+    fun clearStageScene() {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeClearStageScene())
+            bitmapLoader.evictRegionCache()
+            val entities = uiState.value.snapshot.stageEntities
+            reloadEntityBitmaps(entities)
+            reloadCustomIcons(entities)
+            refreshProjectsInternal()
+        }
+    }
+
+    fun clearCountdownSprite(slot: Int) {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeClearCountdownSprite(slot))
+            reloadCountdownBitmaps(uiState.value.snapshot.countdownSlots)
+        }
+    }
+
+    fun clearCountdownAudio(slot: Int) {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeClearCountdownAudio(slot))
+        }
+    }
+
+    fun previewCountdownAudio(slot: Int) {
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativePreviewCountdownAudio(slot)
+            applyActionJson(raw, silentOk = true)
+        }
+    }
+
+    fun restoreDefaultCountdownAssets() {
+        scope.launch(engineIoDispatcher) {
+            applyActionJson(NativeEngineBridge.nativeRestoreDefaultCountdownAssets())
+            reloadCountdownBitmaps(uiState.value.snapshot.countdownSlots)
+        }
+    }
+
     fun updateStageCamera(
         enabled: Boolean,
         baseX: Float,
@@ -794,7 +852,7 @@ internal class StudioEditorDelegate(
             }
             state.copy(
                 snapshot = state.snapshot.copy(
-                    stageCamera = StageCameraSnapshot(
+                    stageCamera = currentCam.copy(
                         enabled = enabled,
                         baseX = clampedX,
                         baseY = clampedY,
@@ -822,6 +880,56 @@ internal class StudioEditorDelegate(
                 clampedSmooth,
                 clampedPan,
                 clampToBackground,
+                commitSave
+            )
+            if (commitSave) {
+                applyActionJson(raw, silentOk = true)
+            }
+        }
+    }
+
+    fun updateStageCameraVignette(
+        enabled: Boolean,
+        colorHex: String,
+        alpha: Float,
+        width: Float,
+        pulse: Float,
+        overHud: Boolean,
+        commitSave: Boolean
+    ) {
+        val rawColor = colorHex.trim()
+        val normalizedColor = when {
+            rawColor.isEmpty() -> "#EF4444"
+            rawColor.startsWith("#") -> rawColor
+            else -> "#$rawColor"
+        }
+        val clampedAlpha = alpha.coerceIn(0f, 1f)
+        val clampedWidth = width.coerceIn(0.05f, 0.50f)
+        val clampedPulse = pulse.coerceIn(0f, 1f)
+
+        uiState.update { state ->
+            state.copy(
+                snapshot = state.snapshot.copy(
+                    stageCamera = state.snapshot.stageCamera.copy(
+                        vignetteEnabled = enabled,
+                        vignetteColor = normalizedColor,
+                        vignetteAlpha = clampedAlpha,
+                        vignetteWidth = clampedWidth,
+                        vignettePulse = clampedPulse,
+                        vignetteOverHud = overHud
+                    )
+                )
+            )
+        }
+
+        scope.launch(engineIoDispatcher) {
+            val raw = NativeEngineBridge.nativeUpdateStageCameraVignette(
+                enabled,
+                normalizedColor,
+                clampedAlpha,
+                clampedWidth,
+                clampedPulse,
+                overHud,
                 commitSave
             )
             if (commitSave) {
@@ -1031,6 +1139,10 @@ internal class StudioEditorDelegate(
             nextSnap.stageEntities,
             uiState.value.selectedTier
         )
+        val cdBmps = bitmapLoader.loadCountdownBitmaps(
+            nextSnap.countdownSlots,
+            uiState.value.selectedTier
+        )
         if (uiState.value.isLoadingProject) {
             updateLoadingOverlay(0.92f, "Ajustando gráficos para tu teléfono...")
         }
@@ -1054,6 +1166,7 @@ internal class StudioEditorDelegate(
                 healthBarBitmap = hudAssets.healthBar,
                 ratingBitmaps = hudAssets.ratings,
                 noteSplashBitmap = hudAssets.noteSplash,
+                countdownBitmaps = cdBmps,
                 defaultPlayerNormalIcon = hudAssets.playerNormal,
                 defaultPlayerLosingIcon = hudAssets.playerLosing,
                 defaultOpponentNormalIcon = hudAssets.opponentNormal,
@@ -1119,5 +1232,10 @@ internal class StudioEditorDelegate(
     private fun reloadEntityBitmaps(entities: List<StageEntitySnapshot>) {
         val map = bitmapLoader.loadEditorEntityBitmaps(entities, uiState.value.selectedTier)
         uiState.update { it.copy(entityBitmaps = map) }
+    }
+
+    private fun reloadCountdownBitmaps(slots: List<CountdownStepSnapshot>) {
+        val map = bitmapLoader.loadCountdownBitmaps(slots, uiState.value.selectedTier)
+        uiState.update { it.copy(countdownBitmaps = map) }
     }
 }

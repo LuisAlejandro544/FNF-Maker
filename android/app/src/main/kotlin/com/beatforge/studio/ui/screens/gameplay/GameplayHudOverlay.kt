@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalContext
@@ -76,14 +77,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.beatforge.studio.CountdownStepSnapshot
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.GameplayHudState
+import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.MobileControlMode
 import com.beatforge.studio.ui.theme.StudioColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 private data class LiveRamSnapshot(
@@ -499,8 +503,13 @@ internal fun BoxScope.GameplayScriptBanner(hud: GameplayHudState) {
 }
 
 @Composable
-internal fun BoxScope.GameplayCountdownOverlay(hud: GameplayHudState) {
-    if (hud.countdownStage !in 0..3 || hud.paused || hud.finished) return
+internal fun BoxScope.GameplayCountdownOverlay(
+    hud: GameplayHudState,
+    countdownSlots: List<CountdownStepSnapshot> = emptyList(),
+    countdownBitmaps: Map<Int, LoadedEntityBitmap> = emptyMap()
+) {
+    val stage = hud.countdownStage
+    if (stage !in 0..3 || hud.paused || hud.finished) return
     val p = hud.countdownProgress.coerceIn(0f, 1f)
     val popScale = if (p < 0.25f) {
         1.42f - (p / 0.25f) * 0.42f
@@ -512,12 +521,16 @@ internal fun BoxScope.GameplayCountdownOverlay(hud: GameplayHudState) {
     } else {
         1f
     }
-    val stageColor = when (hud.countdownStage) {
+    val stageColor = when (stage) {
         0 -> StudioColors.AccentCoral
         1 -> StudioColors.AccentAmber
         2 -> StudioColors.AccentCyan
         else -> StudioColors.AccentEmerald
     }
+
+    val loaded = countdownBitmaps[stage]?.takeIf { !it.bitmap.asAndroidBitmap().isRecycled }
+    val slot = countdownSlots.firstOrNull { it.slotIndex == stage }
+    val frames = slot?.frames?.filter { it.found && it.width > 0 && it.height > 0 }.orEmpty()
 
     Box(
         modifier = Modifier
@@ -526,35 +539,102 @@ internal fun BoxScope.GameplayCountdownOverlay(hud: GameplayHudState) {
             .alpha(fadeAlpha),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(160.dp)) {
-            val pulseRadius = (size.minDimension * 0.32f) + (size.minDimension * 0.18f * p)
-            drawCircle(
-                color = stageColor.copy(alpha = (1f - p) * 0.55f),
-                radius = pulseRadius,
-                style = Stroke(width = 6f)
-            )
-        }
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = StudioColors.BgPanel.copy(alpha = 0.92f),
-            border = BorderStroke(2.5.dp, stageColor)
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 30.dp, vertical = 14.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+        if (loaded != null) {
+            Canvas(modifier = Modifier.size(width = 360.dp, height = 180.dp)) {
+                val bmp = loaded.bitmap
+                if (frames.isNotEmpty()) {
+                    val fIdx = (p.coerceIn(0f, 0.9999f) * frames.size)
+                        .toInt()
+                        .coerceIn(0, frames.lastIndex)
+                    val frame = frames[fIdx]
+                    val scaleRatioX = bmp.width.toFloat() / loaded.origWidth.coerceAtLeast(1).toFloat()
+                    val scaleRatioY = bmp.height.toFloat() / loaded.origHeight.coerceAtLeast(1).toFloat()
+                    val srcX = (frame.x * scaleRatioX).roundToInt().coerceIn(0, bmp.width - 1)
+                    val srcY = (frame.y * scaleRatioY).roundToInt().coerceIn(0, bmp.height - 1)
+                    val srcW = (frame.width * scaleRatioX).roundToInt().coerceIn(1, bmp.width - srcX)
+                    val srcH = (frame.height * scaleRatioY).roundToInt().coerceIn(1, bmp.height - srcY)
+
+                    val visW = if (frame.rotated) frame.height else frame.width
+                    val visH = if (frame.rotated) frame.width else frame.height
+                    val logicalW = frame.frameWidth.coerceAtLeast(visW).toFloat().coerceAtLeast(1f)
+                    val logicalH = frame.frameHeight.coerceAtLeast(visH).toFloat().coerceAtLeast(1f)
+                    val fit = min(size.width / logicalW, size.height / logicalH)
+
+                    val boxW = logicalW * fit
+                    val boxH = logicalH * fit
+                    val boxLeft = (size.width - boxW) * 0.5f
+                    val boxTop = (size.height - boxH) * 0.5f
+                    val visLeft = boxLeft + (-frame.frameX * fit)
+                    val visTop = boxTop + (-frame.frameY * fit)
+                    val centerX = visLeft + (visW * fit) * 0.5f
+                    val centerY = visTop + (visH * fit) * 0.5f
+
+                    val dstW = (frame.width * fit).roundToInt().coerceAtLeast(2)
+                    val dstH = (frame.height * fit).roundToInt().coerceAtLeast(2)
+                    val dstLeft = (centerX - dstW * 0.5f).roundToInt()
+                    val dstTop = (centerY - dstH * 0.5f).roundToInt()
+
+                    withTransform({
+                        if (frame.rotated) {
+                            rotate(-90f, pivot = Offset(centerX, centerY))
+                        }
+                    }) {
+                        drawImage(
+                            image = bmp,
+                            srcOffset = IntOffset(srcX, srcY),
+                            srcSize = IntSize(srcW, srcH),
+                            dstOffset = IntOffset(dstLeft, dstTop),
+                            dstSize = IntSize(dstW, dstH),
+                            filterQuality = FilterQuality.High
+                        )
+                    }
+                } else {
+                    val fit = min(size.width / bmp.width.coerceAtLeast(1), size.height / bmp.height.coerceAtLeast(1))
+                    val dstW = (bmp.width * fit).roundToInt().coerceAtLeast(2)
+                    val dstH = (bmp.height * fit).roundToInt().coerceAtLeast(2)
+                    val dstLeft = ((size.width - dstW) * 0.5f).roundToInt()
+                    val dstTop = ((size.height - dstH) * 0.5f).roundToInt()
+                    drawImage(
+                        image = bmp,
+                        srcOffset = IntOffset(0, 0),
+                        srcSize = IntSize(bmp.width, bmp.height),
+                        dstOffset = IntOffset(dstLeft, dstTop),
+                        dstSize = IntSize(dstW, dstH),
+                        filterQuality = FilterQuality.High
+                    )
+                }
+            }
+        } else {
+            Canvas(modifier = Modifier.size(160.dp)) {
+                val pulseRadius = (size.minDimension * 0.32f) + (size.minDimension * 0.18f * p)
+                drawCircle(
+                    color = stageColor.copy(alpha = (1f - p) * 0.55f),
+                    radius = pulseRadius,
+                    style = Stroke(width = 6f)
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = StudioColors.BgPanel.copy(alpha = 0.92f),
+                border = BorderStroke(2.5.dp, stageColor)
             ) {
-                Text(
-                    text = hud.countdownLabel,
-                    color = stageColor,
-                    fontSize = if (hud.countdownStage == 3) 44.sp else 54.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                Text(
-                    text = "${hud.activeBpm.roundToInt()} BPM",
-                    color = StudioColors.TextMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Column(
+                    modifier = Modifier.padding(horizontal = 30.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = hud.countdownLabel,
+                        color = stageColor,
+                        fontSize = if (stage == 3) 44.sp else 54.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "${hud.activeBpm.roundToInt()} BPM",
+                        color = StudioColors.TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }

@@ -476,6 +476,60 @@ fn default_true() -> bool {
     true
 }
 
+fn default_vignette_color() -> String {
+    "#EF4444".to_string()
+}
+
+fn default_vignette_color_argb() -> u32 {
+    0xFFEF4444
+}
+
+fn default_vignette_alpha() -> f32 {
+    0.58
+}
+
+fn default_vignette_width() -> f32 {
+    0.24
+}
+
+fn default_vignette_pulse() -> f32 {
+    0.35
+}
+
+/// Convierte un color hexadecimal (`#RRGGBB`, `#AARRGGBB`, `0x...`) o nombre común en ARGB32.
+pub fn parse_vignette_color_argb(raw: &str) -> u32 {
+    let s = raw.trim();
+    match s.to_ascii_lowercase().as_str() {
+        "red" | "rojo" => return 0xFFEF4444,
+        "crimson" | "carmesi" | "carmesí" => return 0xFFDC2626,
+        "blue" | "azul" => return 0xFF3B82F6,
+        "cyan" | "cian" => return 0xFF06B6D4,
+        "purple" | "morado" | "violet" | "violeta" => return 0xFFA855F7,
+        "amber" | "ambar" | "ámbar" | "orange" | "naranja" => return 0xFFF59E0B,
+        "green" | "verde" => return 0xFF10B981,
+        "pink" | "rosa" | "magenta" => return 0xFFEC4899,
+        "yellow" | "amarillo" => return 0xFFFACC15,
+        "white" | "blanco" => return 0xFFFFFFFF,
+        "black" | "negro" => return 0xFF09090B,
+        _ => {}
+    }
+    let hex = s
+        .strip_prefix('#')
+        .or_else(|| s.strip_prefix("0x"))
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    if hex.len() == 6 {
+        if let Ok(rgb) = u32::from_str_radix(hex, 16) {
+            return 0xFF00_0000 | rgb;
+        }
+    } else if hex.len() == 8 {
+        if let Ok(argb) = u32::from_str_radix(hex, 16) {
+            return argb;
+        }
+    }
+    0xFFEF4444
+}
+
 /// Configuración persistente del sistema multicámara vinculada a `camera_system.lua`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageCameraConfig {
@@ -493,6 +547,18 @@ pub struct StageCameraConfig {
     pub clamp_to_background: bool,
     #[serde(default)]
     pub cameras: Vec<StageCameraSlot>,
+    #[serde(default)]
+    pub vignette_enabled: bool,
+    #[serde(default = "default_vignette_color")]
+    pub vignette_color: String,
+    #[serde(default = "default_vignette_alpha")]
+    pub vignette_alpha: f32,
+    #[serde(default = "default_vignette_width")]
+    pub vignette_width: f32,
+    #[serde(default = "default_vignette_pulse")]
+    pub vignette_pulse: f32,
+    #[serde(default)]
+    pub vignette_over_hud: bool,
 }
 
 impl Default for StageCameraConfig {
@@ -513,6 +579,12 @@ impl Default for StageCameraConfig {
             active_camera_index: 0,
             clamp_to_background: true,
             cameras: default_camera_slots(base_x, base_y, base_zoom, smooth_speed),
+            vignette_enabled: false,
+            vignette_color: default_vignette_color(),
+            vignette_alpha: default_vignette_alpha(),
+            vignette_width: default_vignette_width(),
+            vignette_pulse: default_vignette_pulse(),
+            vignette_over_hud: false,
         }
     }
 }
@@ -547,9 +619,36 @@ impl StageCameraConfig {
         }
     }
 
+    /// Normaliza color y parámetros de la viñeta/brillo lateral de cámara.
+    pub fn sanitize_vignette(&mut self) {
+        let trimmed = self.vignette_color.trim();
+        if trimmed.is_empty() {
+            self.vignette_color = default_vignette_color();
+        } else {
+            let argb = parse_vignette_color_argb(trimmed);
+            self.vignette_color = format!("#{:06X}", argb & 0x00FF_FFFF);
+        }
+        self.vignette_alpha = if self.vignette_alpha.is_finite() {
+            self.vignette_alpha.clamp(0.0, 1.0)
+        } else {
+            default_vignette_alpha()
+        };
+        self.vignette_width = if self.vignette_width.is_finite() {
+            self.vignette_width.clamp(0.05, 0.50)
+        } else {
+            default_vignette_width()
+        };
+        self.vignette_pulse = if self.vignette_pulse.is_finite() {
+            self.vignette_pulse.clamp(0.0, 1.0)
+        } else {
+            default_vignette_pulse()
+        };
+    }
+
     /// Sincroniza `Cam 0` desde `base_x`, `base_y`, `base_zoom` y `smooth_speed` cuando provienen de legacy/Lua.
     pub fn sync_slot0_from_base(&mut self) {
         self.ensure_default_cameras();
+        self.sanitize_vignette();
         if let Some(cam0) = self.cameras.first_mut() {
             cam0.x = self.base_x.clamp(-1000.0, 2600.0);
             cam0.y = self.base_y.clamp(-1000.0, 1800.0);
@@ -576,6 +675,16 @@ pub struct StageScene {
     pub camera_shake: f32,
     #[serde(default)]
     pub camera: StageCameraConfig,
+    #[serde(default = "default_vignette_color_argb")]
+    pub vignette_color_argb: u32,
+    #[serde(default)]
+    pub vignette_alpha: f32,
+    #[serde(default = "default_vignette_width")]
+    pub vignette_width: f32,
+    #[serde(default = "default_vignette_pulse")]
+    pub vignette_pulse: f32,
+    #[serde(default)]
+    pub vignette_over_hud: bool,
     pub entities: Vec<StageEntity>,
 }
 
@@ -618,6 +727,11 @@ impl Default for StageScene {
             camera_zoom: cam_cfg.base_zoom,
             camera_base_zoom: cam_cfg.base_zoom,
             camera_shake: 0.0,
+            vignette_color_argb: parse_vignette_color_argb(&cam_cfg.vignette_color),
+            vignette_alpha: if cam_cfg.vignette_enabled { cam_cfg.vignette_alpha } else { 0.0 },
+            vignette_width: cam_cfg.vignette_width,
+            vignette_pulse: cam_cfg.vignette_pulse,
+            vignette_over_hud: cam_cfg.vignette_over_hud,
             camera: cam_cfg,
             entities: vec![bg, deco, opp, player],
         }
@@ -655,6 +769,7 @@ impl StageScene {
         };
 
         cfg.ensure_default_cameras();
+        cfg.sanitize_vignette();
         let (rx, ry, rzoom, _) =
             Self::resolve_slot_against_entities(&cfg, &self.entities, cfg.active_camera_index, "", "");
 
@@ -662,6 +777,11 @@ impl StageScene {
         self.camera_y = ry;
         self.camera_base_zoom = rzoom;
         self.camera_zoom = rzoom;
+        self.vignette_color_argb = parse_vignette_color_argb(&cfg.vignette_color);
+        self.vignette_alpha = if cfg.vignette_enabled { cfg.vignette_alpha } else { 0.0 };
+        self.vignette_width = cfg.vignette_width;
+        self.vignette_pulse = cfg.vignette_pulse;
+        self.vignette_over_hud = cfg.vignette_over_hud;
         self.camera = cfg;
     }
 
@@ -1116,6 +1236,55 @@ impl StageScene {
     pub fn find_mut(&mut self, entity_id: &str) -> Option<&mut StageEntity> {
         self.entities.iter_mut().find(|e| e.id == entity_id)
     }
+
+    /// Elimina una capa/entidad individual de la escena y desvincula cualquier ranura de cámara
+    /// (`CameraTargetKind::Entity`) que apuntara a ella convirtiéndola a modo `Fixed`.
+    pub fn remove_entity(&mut self, entity_id: &str) -> Option<StageEntity> {
+        let idx = self.entities.iter().position(|e| e.id == entity_id)?;
+        let removed = self.entities.remove(idx);
+
+        for slot in &mut self.camera.cameras {
+            if slot.target_entity_id.as_deref() == Some(entity_id) {
+                slot.target_entity_id = None;
+                if slot.target_kind == CameraTargetKind::Entity {
+                    slot.target_kind = CameraTargetKind::Fixed;
+                    slot.pan_strength = 0.0;
+                }
+            }
+        }
+
+        let active_idx = self.camera.active_camera_index;
+        let (rx, ry, rzoom, _) = self.resolve_camera_slot_target(active_idx, "", "");
+        self.camera_x = rx;
+        self.camera_y = ry;
+        self.camera_base_zoom = rzoom;
+        self.camera_zoom = rzoom;
+
+        Some(removed)
+    }
+
+    /// Vacía todas las capas de la escena, desvinculará objetivos de entidad en las cámaras
+    /// pasándolos a posición `Fixed`, y devuelve las entidades retiradas para limpiar sus assets.
+    pub fn clear_entities(&mut self) -> Vec<StageEntity> {
+        let removed = std::mem::take(&mut self.entities);
+
+        for slot in &mut self.camera.cameras {
+            slot.target_entity_id = None;
+            if slot.target_kind == CameraTargetKind::Entity {
+                slot.target_kind = CameraTargetKind::Fixed;
+                slot.pan_strength = 0.0;
+            }
+        }
+
+        let active_idx = self.camera.active_camera_index;
+        let (rx, ry, rzoom, _) = self.resolve_camera_slot_target(active_idx, "", "");
+        self.camera_x = rx;
+        self.camera_y = ry;
+        self.camera_base_zoom = rzoom;
+        self.camera_zoom = rzoom;
+
+        removed
+    }
 }
 
 #[cfg(test)]
@@ -1220,6 +1389,64 @@ mod tests {
         // Con zoom 1.0 (half_vw = 640), el límite izquierdo de bg_red (180) exige camera_x >= 820.
         assert!((clamped_x - 820.0).abs() < 0.01);
         assert!((clamped_y - 360.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn camera_vignette_sanitizes_color_bounds_and_runtime_sync() {
+        let mut stage = StageScene::default();
+        let mut cfg = stage.camera.clone();
+        cfg.vignette_enabled = true;
+        cfg.vignette_color = "crimson".to_string();
+        cfg.vignette_alpha = 1.8;
+        cfg.vignette_width = 0.01;
+        cfg.vignette_pulse = 0.72;
+        cfg.vignette_over_hud = true;
+
+        stage.apply_camera_config(cfg);
+
+        assert_eq!(stage.camera.vignette_color, "#DC2626");
+        assert_eq!(stage.vignette_color_argb, 0xFFDC2626);
+        assert!((stage.vignette_alpha - 1.0).abs() < 0.001);
+        assert!((stage.vignette_width - 0.05).abs() < 0.001);
+        assert!((stage.vignette_pulse - 0.72).abs() < 0.001);
+        assert!(stage.vignette_over_hud);
+
+        let mut off_cfg = stage.camera.clone();
+        off_cfg.vignette_enabled = false;
+        stage.apply_camera_config(off_cfg);
+        assert_eq!(stage.vignette_alpha, 0.0);
+    }
+
+    #[test]
+    fn removing_and_clearing_stage_entities_cleans_camera_entity_targets() {
+        let mut stage = StageScene::default();
+        stage.camera.ensure_default_cameras();
+        let initial_len = stage.entities.len();
+        assert!(initial_len >= 4);
+
+        let custom_cam_idx = stage.add_custom_camera(
+            "Cam 3 · Fondo",
+            CameraTargetKind::Entity,
+            Some("stage_bg".to_string()),
+            0.0,
+            0.0,
+            1.1,
+            6.0,
+            1.0,
+        );
+
+        let removed = stage.remove_entity("stage_bg").expect("stage_bg debe existir");
+        assert_eq!(removed.id, "stage_bg");
+        assert_eq!(stage.entities.len(), initial_len - 1);
+        assert!(stage.remove_entity("stage_bg").is_none());
+
+        let cam3 = &stage.camera.cameras[custom_cam_idx];
+        assert_eq!(cam3.target_kind, CameraTargetKind::Fixed);
+        assert!(cam3.target_entity_id.is_none());
+
+        let wiped = stage.clear_entities();
+        assert_eq!(wiped.len(), initial_len - 1);
+        assert!(stage.entities.is_empty());
     }
 }
 
