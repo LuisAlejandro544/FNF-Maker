@@ -474,13 +474,13 @@ mod tests {
             name: "vig_test.lua".to_string(),
             language: ScriptLanguage::Lua,
             enabled: true,
-            source_code: r#"
+            source_code: r##"
 function onCreate()
     setCameraVignette("#3B82F6", 0.72, 0.30, 0.45, true)
     tweenCameraVignette("v1", 0.15, 0.5, "quadOut", "#EF4444", 0.20, 0.25, false)
     clearCameraVignette(0.3, "sineOut")
 end
-"#
+"##
             .to_string(),
             precompiled_bytecode: None,
             precompiled_js: None,
@@ -490,13 +490,13 @@ end
             name: "vig_test.js".to_string(),
             language: ScriptLanguage::JavaScript,
             enabled: true,
-            source_code: r#"
+            source_code: r##"
 function onCreate() {
     setCameraVignette("crimson", 0.64, 0.26, 0.40, false);
     tweenCameraVignette("v2", 0.90, 0.4, "sineIn", "#06B6D4", 0.35, 0.60, true);
     clearCameraVignette(0.0, "linear");
 }
-"#
+"##
             .to_string(),
             precompiled_bytecode: None,
             precompiled_js: None,

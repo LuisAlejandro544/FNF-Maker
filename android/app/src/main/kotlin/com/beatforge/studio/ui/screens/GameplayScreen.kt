@@ -40,6 +40,7 @@ import com.beatforge.studio.ui.screens.gameplay.GameplayTouchMaskState
 import com.beatforge.studio.ui.screens.gameplay.GameplayTouchOverlay
 import com.beatforge.studio.ui.screens.gameplay.RatingPopupPoolHolder
 import com.beatforge.studio.ui.screens.gameplay.SplashPoolHolder
+import com.beatforge.studio.ui.screens.gameplay.drawCameraSideVignette
 import com.beatforge.studio.ui.screens.gameplay.drawClassicHitboxColumns
 import com.beatforge.studio.ui.screens.gameplay.drawGameplaySceneLayer
 import com.beatforge.studio.ui.screens.gameplay.drawStrumsNotesAndSplashes
