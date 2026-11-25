@@ -197,8 +197,16 @@ internal class StudioGameplayCoordinator(
             val receptors = bitmapLoader.loadReceptorBitmaps()
             val hurtX = bitmapLoader.loadHurtArrowXBitmap()
             val hudAssets = bitmapLoader.loadHudSvgAssets()
-            val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(snap.stageEntities)
-            val cdBmps = bitmapLoader.loadCountdownBitmaps(snap.countdownSlots, tier)
+            val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(
+                entities = snap.stageEntities,
+                compiledNormalPaths = snap.lastCompileReport?.compiledIconNormalPaths ?: emptyMap(),
+                compiledLosingPaths = snap.lastCompileReport?.compiledIconLosingPaths ?: emptyMap()
+            )
+            val cdBmps = bitmapLoader.loadCountdownBitmaps(
+                slots = snap.countdownSlots,
+                tier = tier,
+                compiledPaths = snap.lastCompileReport?.compiledCountdownPaths ?: emptyMap()
+            )
 
             uiState.update {
                 it.copy(

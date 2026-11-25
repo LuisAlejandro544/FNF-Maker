@@ -3148,5 +3148,98 @@ test('selectCountdownXmlFramesForSlot, resolveCountdownFrameAtProgress and resol
   });
 });
 
+import {
+  resolveAuxHotCompilePlan,
+  resolvePassThroughManifestUpdate,
+} from './engine-tools.ts';
+
+test('resolvePassThroughManifestUpdate registers PassThrough WebPs in manifest and hits cache on subsequent compiles', () => {
+  const firstPass = resolvePassThroughManifestUpdate({
+    entityId: 'prop_webp',
+    sourcePath: '/mods/demo/optimal_prop.webp',
+    outDir: '/cache/demo',
+    fingerprintHash: 'abcd1234',
+    previousManifestTextures: {},
+  });
+  assert.equal(firstPass.status, 'passthrough_registered');
+  assert.equal(firstPass.manifestUpdated, true);
+  assert.equal(firstPass.cachedReusedDelta, 0);
+  assert.equal(firstPass.skippedOptimalDelta, 1);
+
+  const secondPass = resolvePassThroughManifestUpdate({
+    entityId: 'prop_webp',
+    sourcePath: '/mods/demo/optimal_prop.webp',
+    outDir: '/cache/demo',
+    fingerprintHash: 'abcd1234',
+    previousManifestTextures: {
+      prop_webp: {
+        fingerprintHash: 'abcd1234',
+        compiledPath: '/mods/demo/optimal_prop.webp',
+      },
+    },
+  });
+  assert.equal(secondPass.status, 'cache_hit');
+  assert.equal(secondPass.manifestUpdated, false);
+  assert.equal(secondPass.cachedReusedDelta, 1);
+  assert.equal(secondPass.isPassThrough, true);
+});
+
+test('resolveAuxHotCompilePlan scales countdown sprites and character icons proportionally and respects WebP PassThrough', () => {
+  const cdLow = resolveAuxHotCompilePlan({
+    kind: 'countdown',
+    key: 'countdown_slot_3',
+    sourcePath: '/mods/demo/go.png',
+    origWidth: 2048,
+    origHeight: 1024,
+    tier: 'low_32bit',
+    outDir: '/cache/demo',
+  });
+  assert.equal(cdLow.maxSide, 1024);
+  assert.equal(cdLow.mode, 'encode_lossless_webp');
+  assert.equal(cdLow.downscaled, true);
+  assert.equal(cdLow.targetWidth, 1024);
+  assert.equal(cdLow.targetHeight, 512);
+  assert.ok(cdLow.vramSavedBytes > 0);
+  assert.equal(cdLow.registeredInManifest, true);
+
+  const cdOptimalWebp = resolveAuxHotCompilePlan({
+    kind: 'countdown',
+    key: 'countdown_slot_0',
+    sourcePath: '/mods/demo/three.webp',
+    origWidth: 960,
+    origHeight: 480,
+    tier: 'balanced',
+    outDir: '/cache/demo',
+  });
+  assert.equal(cdOptimalWebp.mode, 'passthrough_webp');
+  assert.equal(cdOptimalWebp.downscaled, false);
+  assert.equal(cdOptimalWebp.outputPath, '/mods/demo/three.webp');
+
+  const dualIconBalanced = resolveAuxHotCompilePlan({
+    kind: 'icon',
+    key: 'icon_bf_normal',
+    sourcePath: '/mods/demo/icon-bf.png',
+    origWidth: 1024,
+    origHeight: 512,
+    tier: 'balanced',
+    outDir: '/cache/demo',
+  });
+  assert.equal(dualIconBalanced.maxSide, 512);
+  assert.equal(dualIconBalanced.targetWidth, 512);
+  assert.equal(dualIconBalanced.targetHeight, 256);
+
+  const singleIconLow = resolveAuxHotCompilePlan({
+    kind: 'icon',
+    key: 'icon_dad_losing',
+    sourcePath: '/mods/demo/dad.webp',
+    origWidth: 256,
+    origHeight: 256,
+    tier: 'low_32bit',
+    outDir: '/cache/demo',
+  });
+  assert.equal(singleIconLow.mode, 'passthrough_webp');
+  assert.equal(singleIconLow.registeredInManifest, true);
+});
+
 
 

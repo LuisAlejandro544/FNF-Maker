@@ -4,7 +4,7 @@
 //! para reutilizar artefactos WebP, WAV y scripts precompilados entre sesiones.
 
 use super::analysis::EntityLifecycleWindow;
-use super::fingerprints::{AudioMergeFingerprint, TextureFingerprint};
+use super::fingerprints::{AssetFileFingerprint, AudioMergeFingerprint, TextureFingerprint};
 use crate::chart::NoteDirection;
 use crate::project::{ScriptAsset, ScriptLanguage};
 use crate::sparrow::SparrowAtlas;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Versión del esquema de manifiesto incremental en `compiled_cache/manifest.json`.
-pub const MANIFEST_SCHEMA_VERSION: u32 = 6;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 7;
 /// Versión del analizador de bucles en scripts; incrementarla invalida caché previa de scripts.
 pub const SCRIPT_OPTIMIZER_CACHE_VERSION: u32 = 3;
 
@@ -36,6 +36,26 @@ impl TexturePixelFormat {
             TexturePixelFormat::Rgb565 => "rgb565",
         }
     }
+}
+
+/// Huella incremental ligera para recursos auxiliares (sprites de cuenta regresiva e íconos).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuxTextureFingerprint {
+    pub file: AssetFileFingerprint,
+    pub tier_code: u8,
+    pub max_side: u32,
+    #[serde(default)]
+    pub has_frames: bool,
+}
+
+/// Entrada cacheada en disco (`.webp` compilado o `PassThrough` directo) para cuenta regresiva o ícono.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedAuxTextureEntry {
+    pub key: String,
+    pub fingerprint: AuxTextureFingerprint,
+    pub compiled_webp_path: PathBuf,
+    pub downscaled: bool,
+    pub vram_saved_bytes: usize,
 }
 
 /// Entrada cacheada de textura WebP compilada en disco.
@@ -101,6 +121,10 @@ pub struct HotCompileManifest {
     #[serde(default)]
     pub textures: HashMap<String, CachedTextureEntry>,
     #[serde(default)]
+    pub countdown: HashMap<usize, CachedAuxTextureEntry>,
+    #[serde(default)]
+    pub icons: HashMap<String, CachedAuxTextureEntry>,
+    #[serde(default)]
     pub audio: Option<CachedAudioEntry>,
     #[serde(default)]
     pub scripts: HashMap<String, CachedScriptEntry>,
@@ -112,6 +136,8 @@ impl Default for HotCompileManifest {
             manifest_version: MANIFEST_SCHEMA_VERSION,
             project_id: String::new(),
             textures: HashMap::new(),
+            countdown: HashMap::new(),
+            icons: HashMap::new(),
             audio: None,
             scripts: HashMap::new(),
         }
@@ -191,6 +217,8 @@ pub struct HotCompileReport {
     pub split_atlas_pages_total: usize,
     pub scheduled_preload_entities: usize,
     pub scheduled_retire_entities: usize,
+    pub compiled_countdown_count: usize,
+    pub compiled_icon_count: usize,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<PathBuf>,
     pub estimated_audio_ram_saved_kb: usize,
@@ -211,6 +239,9 @@ pub struct CompiledBundle {
     pub compiled_texture_pages: HashMap<String, Vec<PathBuf>>,
     pub texture_pixel_formats: HashMap<String, TexturePixelFormat>,
     pub passthrough_paths: HashMap<String, PathBuf>,
+    pub compiled_countdown_paths: HashMap<usize, PathBuf>,
+    pub compiled_icon_normal_paths: HashMap<String, PathBuf>,
+    pub compiled_icon_losing_paths: HashMap<String, PathBuf>,
     pub timeline_windows: Vec<EntityLifecycleWindow>,
     pub optimized_scripts: Vec<ScriptAsset>,
     pub arrow_textures: HashMap<NoteDirection, RasterizedArrow>,

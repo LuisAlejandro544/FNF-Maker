@@ -402,3 +402,118 @@ fn hot_compile_applies_rgb565_dithering_for_opaque_bg_and_exoquant_only_when_col
     let _ = std::fs::remove_dir_all(&base_dir);
 }
 
+#[test]
+fn passthrough_webp_registers_in_manifest_and_hits_cache_on_second_compile() {
+    let base_dir = std::env::temp_dir().join("beatforge_passthrough_manifest_test");
+    let _ = std::fs::remove_dir_all(&base_dir);
+    let cache_dir = base_dir.join("compiled_cache");
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    // Crear un WebP nativo óptimo (sin necesidad de reescalar)
+    let webp_path = base_dir.join("optimal_prop.webp");
+    let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(128, 128, Rgba([40, 200, 120, 255])));
+    crate::astc_loader::save_compiled_webp(
+        &img,
+        &webp_path,
+        crate::astc_loader::WebpPixelPolicy::LosslessRgba,
+    )
+    .unwrap();
+
+    let mut project = ModProject::new_demo();
+    project.stage.entities.clear();
+    let mut prop = StageEntity::new("prop_webp", "Prop WebP", EntityRole::Decoration);
+    prop.image_path = Some(webp_path.clone());
+    prop.width = 256.0;
+    prop.height = 256.0;
+    project.stage.entities.push(prop);
+
+    // 1ra compilación: debe salir PassThrough y quedar registrado en manifest.textures
+    let b1 = hot_compile_project_to_dir(
+        &project,
+        DeviceResourceTier::Balanced,
+        Some(&cache_dir),
+        |_, _| {},
+    );
+    assert_eq!(b1.passthrough_paths.get("prop_webp"), Some(&webp_path));
+    assert_eq!(b1.report.skipped_optimal_textures, 1);
+    assert_eq!(b1.report.cached_textures_reused, 0);
+
+    let manifest = HotCompileManifest::load_or_default(&cache_dir, &project.id);
+    assert!(
+        manifest.textures.contains_key("prop_webp"),
+        "PassThrough debe quedar registrado en manifest.textures"
+    );
+
+    // 2da compilación: debe reutilizar la entrada PassThrough vía CacheHit al instante
+    let b2 = hot_compile_project_to_dir(
+        &project,
+        DeviceResourceTier::Balanced,
+        Some(&cache_dir),
+        |_, _| {},
+    );
+    assert_eq!(b2.report.cached_textures_reused, 1);
+    assert_eq!(b2.passthrough_paths.get("prop_webp"), Some(&webp_path));
+    assert!(webp_path.exists());
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}
+
+#[test]
+fn hot_compile_optimizes_and_caches_countdown_sprites_and_character_icons() {
+    let base_dir = std::env::temp_dir().join("beatforge_countdown_icons_compile_test");
+    let _ = std::fs::remove_dir_all(&base_dir);
+    let cache_dir = base_dir.join("compiled_cache");
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let cd_png = base_dir.join("go_huge.png");
+    DynamicImage::ImageRgba8(RgbaImage::from_pixel(2048, 1024, Rgba([255, 220, 40, 255])))
+        .save_with_format(&cd_png, image::ImageFormat::Png)
+        .unwrap();
+
+    let icon_png = base_dir.join("bf_icon_strip.png");
+    DynamicImage::ImageRgba8(RgbaImage::from_pixel(1024, 512, Rgba([60, 180, 255, 255])))
+        .save_with_format(&icon_png, image::ImageFormat::Png)
+        .unwrap();
+
+    let mut project = ModProject::new_demo();
+    project.stage.entities.clear();
+    let mut player = StageEntity::new("bf", "Jugador", EntityRole::Player);
+    player.icon_normal_path = Some(icon_png);
+    project.stage.entities.push(player);
+    project.countdown.slots[3].image_path = Some(cd_png);
+
+    let b1 = hot_compile_project_to_dir(
+        &project,
+        DeviceResourceTier::LowRam32Bit,
+        Some(&cache_dir),
+        |_, _| {},
+    );
+    assert_eq!(b1.report.compiled_countdown_count, 1);
+    assert_eq!(b1.report.compiled_icon_count, 1);
+
+    let out_cd = b1.compiled_countdown_paths.get(&3).unwrap();
+    let out_icon = b1.compiled_icon_normal_paths.get("bf").unwrap();
+    assert!(out_cd.exists());
+    assert!(out_icon.exists());
+    assert_eq!(out_cd.extension().and_then(|e| e.to_str()), Some("webp"));
+    assert_eq!(out_icon.extension().and_then(|e| e.to_str()), Some("webp"));
+
+    let manifest = HotCompileManifest::load_or_default(&cache_dir, &project.id);
+    assert!(manifest.countdown.contains_key(&3));
+    assert!(manifest.icons.contains_key("bf::normal"));
+
+    // Segunda compilación: verifica que la limpieza de huérfanos en out_dir no borre countdown ni íconos
+    let b2 = hot_compile_project_to_dir(
+        &project,
+        DeviceResourceTier::LowRam32Bit,
+        Some(&cache_dir),
+        |_, _| {},
+    );
+    assert_eq!(b2.report.compiled_countdown_count, 1);
+    assert_eq!(b2.report.compiled_icon_count, 1);
+    assert!(b2.compiled_countdown_paths.get(&3).unwrap().exists());
+    assert!(b2.compiled_icon_normal_paths.get("bf").unwrap().exists());
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}
+

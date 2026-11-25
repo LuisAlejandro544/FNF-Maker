@@ -134,6 +134,21 @@ impl EngineSession {
         for (entity_id, fmt) in &bundle.texture_pixel_formats {
             pixel_formats.insert(entity_id.clone(), fmt.as_key().to_string());
         }
+        let mut countdown_paths: HashMap<String, String> =
+            HashMap::with_capacity(bundle.compiled_countdown_paths.len());
+        for (slot_idx, path) in &bundle.compiled_countdown_paths {
+            countdown_paths.insert(slot_idx.to_string(), path.to_string_lossy().into_owned());
+        }
+        let mut icon_normal_paths: HashMap<String, String> =
+            HashMap::with_capacity(bundle.compiled_icon_normal_paths.len());
+        for (entity_id, path) in &bundle.compiled_icon_normal_paths {
+            icon_normal_paths.insert(entity_id.clone(), path.to_string_lossy().into_owned());
+        }
+        let mut icon_losing_paths: HashMap<String, String> =
+            HashMap::with_capacity(bundle.compiled_icon_losing_paths.len());
+        for (entity_id, path) in &bundle.compiled_icon_losing_paths {
+            icon_losing_paths.insert(entity_id.clone(), path.to_string_lossy().into_owned());
+        }
 
         let target_sr = self
             .audio_engine
@@ -232,6 +247,9 @@ impl EngineSession {
         self.compiled_texture_paths = texture_paths;
         self.compiled_texture_pages = texture_pages;
         self.texture_pixel_formats = pixel_formats;
+        self.compiled_countdown_paths = countdown_paths;
+        self.compiled_icon_normal_paths = icon_normal_paths;
+        self.compiled_icon_losing_paths = icon_losing_paths;
         self.last_compile_report = Some(bundle.report.clone());
         self.last_timeline_windows = bundle.timeline_windows.clone();
         self.compiled_bundle = Some(bundle);

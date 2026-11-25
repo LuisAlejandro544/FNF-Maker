@@ -196,14 +196,16 @@ internal class StudioBitmapLoader {
      * y la mitad derecha como Perdiendo (<20% de vida).
      */
     fun loadEntityIcons(
-        entities: List<StageEntitySnapshot>
+        entities: List<StageEntitySnapshot>,
+        compiledNormalPaths: Map<String, String> = emptyMap(),
+        compiledLosingPaths: Map<String, String> = emptyMap()
     ): Pair<Map<String, ImageBitmap>, Map<String, ImageBitmap>> {
         val normalMap = linkedMapOf<String, ImageBitmap>()
         val losingMap = linkedMapOf<String, ImageBitmap>()
 
         for (ent in entities) {
-            val normalPath = ent.iconNormalPath
-            val losingPath = ent.iconLosingPath
+            val normalPath = compiledNormalPaths[ent.id] ?: ent.iconNormalPath
+            val losingPath = compiledLosingPaths[ent.id] ?: ent.iconLosingPath
 
             if (!normalPath.isNullOrBlank()) {
                 decodeIconFileCapped(normalPath)?.let { bmp ->
@@ -258,13 +260,15 @@ internal class StudioBitmapLoader {
 
     fun loadCountdownBitmaps(
         slots: List<CountdownStepSnapshot>,
-        tier: DeviceTier
+        tier: DeviceTier,
+        compiledPaths: Map<String, String> = emptyMap()
     ): Map<Int, LoadedEntityBitmap> {
         val out = linkedMapOf<Int, LoadedEntityBitmap>()
         val cap = if (tier == DeviceTier.LowRam32Bit) 1024 else 1536
         for (slot in slots) {
-            val path = slot.imagePath ?: continue
-            decodeEntityBitmapWithOrigDims(path, path, maxDecodeSide = cap)?.let { loaded ->
+            val cPath = compiledPaths[slot.slotIndex.toString()] ?: slot.imagePath ?: continue
+            val origPath = slot.imagePath ?: cPath
+            decodeEntityBitmapWithOrigDims(cPath, origPath, maxDecodeSide = cap)?.let { loaded ->
                 out[slot.slotIndex] = loaded
             }
         }
@@ -441,11 +445,11 @@ internal class StudioBitmapLoader {
 
         val origBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(origPath, origBounds)
-        val origW = origBounds.outWidth.coerceAtLeast(1)
-        val origH = origBounds.outHeight.coerceAtLeast(1)
 
         val loadBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(loadPath, loadBounds)
+        val origW = (if (origBounds.outWidth > 0) origBounds.outWidth else loadBounds.outWidth).coerceAtLeast(1)
+        val origH = (if (origBounds.outHeight > 0) origBounds.outHeight else loadBounds.outHeight).coerceAtLeast(1)
         var sampleSize = 1
         val maxSide = maxOf(loadBounds.outWidth, loadBounds.outHeight)
         while (maxSide / sampleSize > maxDecodeSide) {

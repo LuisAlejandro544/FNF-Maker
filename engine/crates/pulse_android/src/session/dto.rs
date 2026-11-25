@@ -249,6 +249,8 @@ pub struct CompileReportJson {
     pub split_atlas_pages_total: usize,
     pub scheduled_preload_entities: usize,
     pub scheduled_retire_entities: usize,
+    pub compiled_countdown_count: usize,
+    pub compiled_icon_count: usize,
     pub merged_audio_tracks: usize,
     pub compiled_audio_path: Option<String>,
     pub estimated_audio_ram_saved_kb: usize,
@@ -259,6 +261,9 @@ pub struct CompileReportJson {
     pub compiled_texture_paths: HashMap<String, String>,
     pub compiled_texture_pages: HashMap<String, Vec<String>>,
     pub texture_pixel_formats: HashMap<String, String>,
+    pub compiled_countdown_paths: HashMap<String, String>,
+    pub compiled_icon_normal_paths: HashMap<String, String>,
+    pub compiled_icon_losing_paths: HashMap<String, String>,
     pub timeline_windows: Vec<EntityLifecycleWindow>,
 }
 
@@ -708,6 +713,8 @@ impl EngineSession {
             split_atlas_pages_total: r.split_atlas_pages_total,
             scheduled_preload_entities: r.scheduled_preload_entities,
             scheduled_retire_entities: r.scheduled_retire_entities,
+            compiled_countdown_count: r.compiled_countdown_count,
+            compiled_icon_count: r.compiled_icon_count,
             merged_audio_tracks: r.merged_audio_tracks,
             compiled_audio_path: r
                 .compiled_audio_path
@@ -721,6 +728,9 @@ impl EngineSession {
             compiled_texture_paths: self.compiled_texture_paths.clone(),
             compiled_texture_pages: self.compiled_texture_pages.clone(),
             texture_pixel_formats: self.texture_pixel_formats.clone(),
+            compiled_countdown_paths: self.compiled_countdown_paths.clone(),
+            compiled_icon_normal_paths: self.compiled_icon_normal_paths.clone(),
+            compiled_icon_losing_paths: self.compiled_icon_losing_paths.clone(),
             timeline_windows: self.last_timeline_windows.clone(),
         });
 

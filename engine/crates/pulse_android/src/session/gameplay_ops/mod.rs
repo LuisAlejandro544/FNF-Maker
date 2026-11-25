@@ -162,6 +162,28 @@ impl EngineSession {
                     .insert(id.clone(), fmt.as_key().to_string());
             }
         }
+        if self.compiled_countdown_paths.is_empty() && !bundle.compiled_countdown_paths.is_empty() {
+            for (slot_idx, path) in &bundle.compiled_countdown_paths {
+                self.compiled_countdown_paths
+                    .insert(slot_idx.to_string(), path.to_string_lossy().into_owned());
+            }
+        }
+        if self.compiled_icon_normal_paths.is_empty()
+            && !bundle.compiled_icon_normal_paths.is_empty()
+        {
+            for (id, path) in &bundle.compiled_icon_normal_paths {
+                self.compiled_icon_normal_paths
+                    .insert(id.clone(), path.to_string_lossy().into_owned());
+            }
+        }
+        if self.compiled_icon_losing_paths.is_empty()
+            && !bundle.compiled_icon_losing_paths.is_empty()
+        {
+            for (id, path) in &bundle.compiled_icon_losing_paths {
+                self.compiled_icon_losing_paths
+                    .insert(id.clone(), path.to_string_lossy().into_owned());
+            }
+        }
         if self.last_timeline_windows.is_empty() && !bundle.timeline_windows.is_empty() {
             self.last_timeline_windows = bundle.timeline_windows.clone();
         }

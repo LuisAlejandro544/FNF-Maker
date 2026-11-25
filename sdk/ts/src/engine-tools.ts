@@ -7382,4 +7382,144 @@ export function resolveCountdownAudioPlaybackSlot(
   };
 }
 
+export interface PassThroughManifestSpec {
+  entityId: string;
+  sourcePath: string;
+  outDir: string | null;
+  fingerprintHash: string;
+  previousManifestTextures: Record<string, { fingerprintHash: string; compiledPath: string }>;
+}
+
+export interface PassThroughManifestOutcome {
+  status: 'cache_hit' | 'passthrough_registered' | 'passthrough_transient';
+  compiledPath: string;
+  isPassThrough: boolean;
+  cachedReusedDelta: number;
+  skippedOptimalDelta: number;
+  manifestUpdated: boolean;
+}
+
+/**
+ * Espejo puro del registro `PassThrough` en `hot_compile/pipeline.rs`:
+ * registra sprites `.webp` óptimos en `manifest.textures` cuando existe `outDir`,
+ * permitiendo `CacheHit` instantáneo en compilaciones posteriores sin re-analizar dimensiones ni atlas.
+ */
+export function resolvePassThroughManifestUpdate(
+  spec: PassThroughManifestSpec,
+): PassThroughManifestOutcome {
+  const prev = spec.previousManifestTextures[spec.entityId];
+  const isOutDirAvailable = Boolean(spec.outDir && spec.outDir.trim().length > 0);
+  if (
+    isOutDirAvailable &&
+    prev &&
+    prev.fingerprintHash === spec.fingerprintHash &&
+    prev.compiledPath === spec.sourcePath
+  ) {
+    return {
+      status: 'cache_hit',
+      compiledPath: prev.compiledPath,
+      isPassThrough: !spec.sourcePath.startsWith(spec.outDir!.trim()),
+      cachedReusedDelta: 1,
+      skippedOptimalDelta: 1,
+      manifestUpdated: false,
+    };
+  }
+
+  if (isOutDirAvailable) {
+    return {
+      status: 'passthrough_registered',
+      compiledPath: spec.sourcePath,
+      isPassThrough: true,
+      cachedReusedDelta: 0,
+      skippedOptimalDelta: 1,
+      manifestUpdated: true,
+    };
+  }
+
+  return {
+    status: 'passthrough_transient',
+    compiledPath: spec.sourcePath,
+    isPassThrough: true,
+    cachedReusedDelta: 0,
+    skippedOptimalDelta: 1,
+    manifestUpdated: false,
+  };
+}
+
+export interface AuxHotCompileTargetSpec {
+  kind: 'countdown' | 'icon';
+  key: string;
+  sourcePath: string;
+  origWidth: number;
+  origHeight: number;
+  tier: 'low_32bit' | 'balanced' | 'high_quality';
+  outDir: string;
+  isAstc?: boolean;
+}
+
+export interface AuxHotCompilePlan {
+  maxSide: number;
+  mode: 'passthrough_webp' | 'encode_lossless_webp';
+  downscaled: boolean;
+  targetWidth: number;
+  targetHeight: number;
+  outputPath: string;
+  vramSavedBytes: number;
+  registeredInManifest: boolean;
+}
+
+/**
+ * Espejo puro de `pulse_core::hot_compile::aux_textures`:
+ * calcula el límite máximo de lado por tier (`1024/1536` para Cuenta Regresiva `3-2-1-¡YA!`;
+ * `256/384/512` para ícono sencillo o `512/512/640` para tira doble FNF), preserva proporción
+ * para coordenadas XML en countdown y decide entre `PassThrough` `.webp` o WebP VP8L optimizado.
+ */
+export function resolveAuxHotCompilePlan(spec: AuxHotCompileTargetSpec): AuxHotCompilePlan {
+  const w = Math.max(1, Math.round(spec.origWidth));
+  const h = Math.max(1, Math.round(spec.origHeight));
+  const isDualStrip = spec.kind === 'icon' && w >= h * 1.85;
+
+  let maxSide: number;
+  if (spec.kind === 'countdown') {
+    maxSide = spec.tier === 'low_32bit' ? 1024 : 1536;
+  } else if (isDualStrip) {
+    maxSide = spec.tier === 'high_quality' ? 640 : 512;
+  } else {
+    maxSide = spec.tier === 'low_32bit' ? 256 : spec.tier === 'balanced' ? 384 : 512;
+  }
+
+  const origMax = Math.max(w, h);
+  const isWebp = spec.sourcePath.trim().toLowerCase().endsWith('.webp');
+  if (isWebp && !spec.isAstc && origMax <= maxSide) {
+    return {
+      maxSide,
+      mode: 'passthrough_webp',
+      downscaled: false,
+      targetWidth: w,
+      targetHeight: h,
+      outputPath: spec.sourcePath,
+      vramSavedBytes: 0,
+      registeredInManifest: true,
+    };
+  }
+
+  const downscaled = origMax > maxSide;
+  const scale = downscaled ? maxSide / origMax : 1;
+  const targetWidth = downscaled ? Math.max(1, Math.round(w * scale)) : w;
+  const targetHeight = downscaled ? Math.max(1, Math.round(h * scale)) : h;
+  const vramSavedBytes = Math.max(0, w * h * 4 - targetWidth * targetHeight * 4);
+  const cleanDir = spec.outDir.replace(/\/+$/, '');
+  const safeKey = spec.key.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  return {
+    maxSide,
+    mode: 'encode_lossless_webp',
+    downscaled,
+    targetWidth,
+    targetHeight,
+    outputPath: `${cleanDir}/${safeKey}.webp`,
+    vramSavedBytes,
+    registeredInManifest: true,
+  };
+}
 

@@ -54,11 +54,11 @@ pub use disk_cache::{
 };
 pub use frame_memory::{ArenaSpan, FrameBumpArena, FrameVisibleNote, LruCache, NotePlayState, NoteSlidingWindow};
 pub use hot_compile::{
-    AssetFileFingerprint, AudioMergeFingerprint, AudioSlotFingerprint, CachedAudioEntry,
-    CachedScriptEntry, CachedTextureEntry, CompiledBundle, DeviceResourceTier,
-    EntityLifecycleWindow, HotCompileManifest, HotCompileReport, SCRIPT_OPTIMIZER_CACHE_VERSION,
-    ScreenViewportMetrics, TextureFingerprint, TexturePixelFormat,
-    compute_project_max_camera_zoom, compute_smart_texture_scale,
+    AssetFileFingerprint, AudioMergeFingerprint, AudioSlotFingerprint, AuxTextureFingerprint,
+    CachedAudioEntry, CachedAuxTextureEntry, CachedScriptEntry, CachedTextureEntry,
+    CompiledBundle, DeviceResourceTier, EntityLifecycleWindow, HotCompileManifest,
+    HotCompileReport, SCRIPT_OPTIMIZER_CACHE_VERSION, ScreenViewportMetrics, TextureFingerprint,
+    TexturePixelFormat, compute_project_max_camera_zoom, compute_smart_texture_scale,
     compute_smart_texture_scale_for_viewport, compute_timeline_asset_lifecycle, fnv1a_64_bytes,
     fnv1a_64_str, hot_compile_project, hot_compile_project_to_dir,
     hot_compile_project_to_dir_with_manifest, hot_compile_project_to_dir_with_manifest_viewport,

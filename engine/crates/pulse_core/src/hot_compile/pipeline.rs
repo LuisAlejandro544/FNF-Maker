@@ -8,6 +8,7 @@ use super::analysis::{
     compute_smart_texture_scale_for_viewport, compute_timeline_asset_lifecycle,
     is_permanently_invisible,
 };
+use super::aux_textures::compile_countdown_and_icons_with_manifest;
 use super::fingerprints::{
     DeviceResourceTier, ScreenViewportMetrics, TextureFingerprint, fnv1a_64_str,
 };
@@ -62,7 +63,38 @@ enum CompiledTexOutcome {
         repacked_atlas: Option<SparrowAtlas>,
         repack_stats: Option<AtlasRepackStats>,
     },
-    PassThrough(String, PathBuf),
+    PassThrough {
+        entity_id: String,
+        path: PathBuf,
+        entry: Option<CachedTextureEntry>,
+    },
+}
+
+fn build_passthrough_cache_entry(
+    entity_id: &str,
+    path: &Path,
+    fp_opt: Option<TextureFingerprint>,
+    out_dir: Option<&Path>,
+) -> Option<CachedTextureEntry> {
+    if out_dir.is_none() {
+        return None;
+    }
+    fp_opt.map(|fingerprint| CachedTextureEntry {
+        entity_id: entity_id.to_string(),
+        fingerprint,
+        compiled_webp_path: path.to_path_buf(),
+        extra_page_paths: Vec::new(),
+        pixel_format: TexturePixelFormat::Argb8888,
+        palette_quantized: false,
+        downscaled: false,
+        vram_saved_bytes: 0,
+        atlas_repacked: false,
+        repacked_atlas: None,
+        dead_frames_removed: 0,
+        duplicate_frames_merged: 0,
+        trimmed_frames: 0,
+        pruned_unused_anims: 0,
+    })
 }
 
 fn select_webp_pixel_policy(
@@ -403,10 +435,12 @@ where
                             pct,
                             &format!("Imagen lista ({}/{})", completed, total_entities),
                         );
-                        return Some(CompiledTexOutcome::PassThrough(
-                            entity.id.clone(),
-                            path.clone(),
-                        ));
+                        let entry = build_passthrough_cache_entry(&entity.id, path, fp_opt, out_dir);
+                        return Some(CompiledTexOutcome::PassThrough {
+                            entity_id: entity.id.clone(),
+                            path: path.clone(),
+                            entry,
+                        });
                     }
                 }
             }
@@ -452,10 +486,12 @@ where
                             pct,
                             &format!("Personaje listo ({}/{})", completed, total_entities),
                         );
-                        return Some(CompiledTexOutcome::PassThrough(
-                            entity.id.clone(),
-                            path.clone(),
-                        ));
+                        let entry = build_passthrough_cache_entry(&entity.id, path, fp_opt, out_dir);
+                        return Some(CompiledTexOutcome::PassThrough {
+                            entity_id: entity.id.clone(),
+                            path: path.clone(),
+                            entry,
+                        });
                     }
 
                     let stats = AtlasRepackStats {
@@ -542,10 +578,12 @@ where
                         pct,
                         &format!("Imagen lista ({}/{})", completed, total_entities),
                     );
-                    return Some(CompiledTexOutcome::PassThrough(
-                        entity.id.clone(),
-                        path.clone(),
-                    ));
+                    let entry = build_passthrough_cache_entry(&entity.id, path, fp_opt, out_dir);
+                    return Some(CompiledTexOutcome::PassThrough {
+                        entity_id: entity.id.clone(),
+                        path: path.clone(),
+                        entry,
+                    });
                 }
 
                 if smart_scale < 0.999 {
@@ -704,6 +742,11 @@ where
                 compiled_texture_paths.insert(id.clone(), entry.compiled_webp_path.clone());
                 compiled_texture_pages.insert(id.clone(), pages);
                 texture_pixel_formats.insert(id.clone(), entry.pixel_format);
+                if let Some(dir) = out_dir {
+                    if !entry.compiled_webp_path.starts_with(dir) {
+                        passthrough_paths.insert(id.clone(), entry.compiled_webp_path.clone());
+                    }
+                }
                 if entry.atlas_repacked {
                     if let Some(atlas) = entry.repacked_atlas.clone() {
                         repacked_atlases_map.insert(id.clone(), atlas);
@@ -750,11 +793,18 @@ where
                 }
                 textures.insert(entity_id, texture);
             }
-            CompiledTexOutcome::PassThrough(id, path) => {
-                compiled_texture_paths.insert(id.clone(), path.clone());
-                compiled_texture_pages.insert(id.clone(), vec![path.clone()]);
-                texture_pixel_formats.insert(id.clone(), TexturePixelFormat::Argb8888);
-                passthrough_paths.insert(id, path);
+            CompiledTexOutcome::PassThrough {
+                entity_id,
+                path,
+                entry,
+            } => {
+                compiled_texture_paths.insert(entity_id.clone(), path.clone());
+                compiled_texture_pages.insert(entity_id.clone(), vec![path.clone()]);
+                texture_pixel_formats.insert(entity_id.clone(), TexturePixelFormat::Argb8888);
+                passthrough_paths.insert(entity_id.clone(), path);
+                if let Some(e) = entry {
+                    next_cached_textures.insert(entity_id, e);
+                }
             }
         }
     }
@@ -765,7 +815,18 @@ where
         }
     }
 
-    // Limpiar archivos `.webp` / `.png` huérfanos (incluidas páginas `_p*.webp` sobrantes) en `out_dir`
+    on_progress(0.65, "Optimizando cuenta regresiva e íconos...");
+    let aux_result = compile_countdown_and_icons_with_manifest(
+        project,
+        &active_entities,
+        tier,
+        out_dir,
+        &manifest.countdown,
+        &manifest.icons,
+    );
+    vram_saved_bytes.fetch_add(aux_result.vram_saved_bytes, Ordering::Relaxed);
+
+    // Limpiar archivos `.webp` / `.png` huérfanos (incluidas páginas `_p*.webp`, cuenta regresiva e íconos sobrantes)
     if let Some(dir) = out_dir {
         for (old_id, old_entry) in &manifest.textures {
             if !next_cached_textures.contains_key(old_id) {
@@ -777,6 +838,20 @@ where
                         let _ = std::fs::remove_file(ep);
                     }
                 }
+            }
+        }
+        for (old_slot, old_entry) in &manifest.countdown {
+            if !aux_result.next_cached_countdown.contains_key(old_slot)
+                && old_entry.compiled_webp_path.starts_with(dir)
+            {
+                let _ = std::fs::remove_file(&old_entry.compiled_webp_path);
+            }
+        }
+        for (old_key, old_entry) in &manifest.icons {
+            if !aux_result.next_cached_icons.contains_key(old_key)
+                && old_entry.compiled_webp_path.starts_with(dir)
+            {
+                let _ = std::fs::remove_file(&old_entry.compiled_webp_path);
             }
         }
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -793,7 +868,14 @@ where
                 if ext == "webp" || ext == "png" {
                     let keep = next_cached_textures.values().any(|c| {
                         c.compiled_webp_path == p || c.extra_page_paths.iter().any(|ep| ep == &p)
-                    });
+                    }) || aux_result
+                        .next_cached_countdown
+                        .values()
+                        .any(|c| c.compiled_webp_path == p)
+                        || aux_result
+                            .next_cached_icons
+                            .values()
+                            .any(|c| c.compiled_webp_path == p);
                     if !keep {
                         let _ = std::fs::remove_file(&p);
                     }
@@ -802,6 +884,8 @@ where
         }
     }
     manifest.textures = next_cached_textures;
+    manifest.countdown = aux_result.next_cached_countdown;
+    manifest.icons = aux_result.next_cached_icons;
 
     on_progress(0.68, "Preparando estilo de flechas...");
     let arrow_textures = rasterize_arrow_skin(&project.arrow_skin).unwrap_or_default();
@@ -831,6 +915,8 @@ where
         split_atlas_pages_total: split_atlas_pages_total.load(Ordering::Relaxed),
         scheduled_preload_entities,
         scheduled_retire_entities,
+        compiled_countdown_count: aux_result.compiled_countdown_count,
+        compiled_icon_count: aux_result.compiled_icon_count,
         merged_audio_tracks: 0,
         compiled_audio_path: None,
         estimated_audio_ram_saved_kb: 0,
@@ -847,6 +933,9 @@ where
         compiled_texture_pages,
         texture_pixel_formats,
         passthrough_paths,
+        compiled_countdown_paths: aux_result.countdown_paths,
+        compiled_icon_normal_paths: aux_result.icon_normal_paths,
+        compiled_icon_losing_paths: aux_result.icon_losing_paths,
         timeline_windows,
         optimized_scripts,
         arrow_textures,
