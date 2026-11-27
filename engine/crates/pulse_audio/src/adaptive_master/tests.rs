@@ -316,11 +316,14 @@ fn streaming_dsp_chunks_match_full_batch_and_bluetooth_latency_is_compensated() 
 fn cache_hash_ignores_pre_merged_wav_when_raw_sources_exist_and_prune_removes_old_files() {
     let tmp_dir = std::env::temp_dir().join("beatforge_adapt_prune_test");
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let src_dir = tmp_dir.join("sources");
+    let adapted_dir = tmp_dir.join("audio_adapted");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&adapted_dir).unwrap();
 
-    let raw_src = tmp_dir.join("Inst.wav");
-    let merged_a = tmp_dir.join("compiled_mix_a.wav");
-    let merged_b = tmp_dir.join("compiled_mix_b.wav");
+    let raw_src = src_dir.join("Inst.wav");
+    let merged_a = src_dir.join("compiled_mix_a.wav");
+    let merged_b = src_dir.join("compiled_mix_b.wav");
     std::fs::write(&raw_src, b"RIFF0000WAVE").unwrap();
     std::fs::write(&merged_a, b"RIFFAAAA").unwrap();
     std::fs::write(&merged_b, b"RIFFBBBBBBBB").unwrap();
@@ -340,31 +343,31 @@ fn cache_hash_ignores_pre_merged_wav_when_raw_sources_exist_and_prune_removes_ol
     assert_eq!(h1, h3);
 
     // Crear 4 entradas en audio_adapted + un .tmp huérfano y un .json huérfano
-    let stale_tmp = tmp_dir.join("adapted_999.wav.tmp");
-    let orphan_json = tmp_dir.join("adapted_orphan.json");
-    let keep_wav = tmp_dir.join("adapted_keep.wav");
-    let keep_json = tmp_dir.join("adapted_keep.json");
+    let stale_tmp = adapted_dir.join("adapted_999.wav.tmp");
+    let orphan_json = adapted_dir.join("adapted_orphan.json");
+    let keep_wav = adapted_dir.join("adapted_keep.wav");
+    let keep_json = adapted_dir.join("adapted_keep.json");
     std::fs::write(&stale_tmp, b"tmp").unwrap();
     std::fs::write(&orphan_json, b"{}").unwrap();
     std::fs::write(&keep_wav, vec![0u8; 64]).unwrap();
     std::fs::write(&keep_json, b"{}").unwrap();
     for i in 1..=3 {
-        std::fs::write(tmp_dir.join(format!("adapted_old{}.wav", i)), vec![0u8; 64]).unwrap();
-        std::fs::write(tmp_dir.join(format!("adapted_old{}.json", i)), b"{}").unwrap();
+        std::fs::write(adapted_dir.join(format!("adapted_old{}.wav", i)), vec![0u8; 64]).unwrap();
+        std::fs::write(adapted_dir.join(format!("adapted_old{}.json", i)), b"{}").unwrap();
     }
 
-    cache_io::prune_audio_adapted_cache(&tmp_dir, Some(&keep_wav), Some(&keep_json), 2, 1024);
+    cache_io::prune_audio_adapted_cache(&adapted_dir, Some(&keep_wav), Some(&keep_json), 2, 1024);
     assert!(!stale_tmp.exists());
     assert!(!orphan_json.exists());
     assert!(keep_wav.exists());
     assert!(keep_json.exists());
 
-    let remaining_wavs = std::fs::read_dir(&tmp_dir)
+    let remaining_wavs = std::fs::read_dir(&adapted_dir)
         .unwrap()
         .flatten()
         .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("wav"))
         .count();
-    assert!(remaining_wavs <= 2);
+    assert_eq!(remaining_wavs, 2);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
