@@ -5,9 +5,11 @@
 
 mod analysis;
 mod aux_textures;
+mod entity_compile;
 mod fingerprints;
 mod manifest;
 mod pipeline;
+mod script_cache;
 
 #[cfg(test)]
 mod tests;
