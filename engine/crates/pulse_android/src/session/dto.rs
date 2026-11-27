@@ -82,6 +82,7 @@ pub struct ProjectSnapshotJson {
     pub downscroll: bool,
     pub control_mode: String,
     pub audio_offset_ms: f64,
+    pub auto_audio_offset_ms: f64,
     pub chart: ChartSnapshotJson,
     pub audio_tracks: Vec<AudioTrackSnapshotJson>,
     pub stage_camera: StageCameraSnapshotJson,
@@ -821,6 +822,7 @@ impl EngineSession {
             downscroll: self.project.downscroll,
             control_mode: control_mode_to_key(self.project.control_mode).to_string(),
             audio_offset_ms: self.project.audio_offset_ms,
+            auto_audio_offset_ms: self.auto_audio_offset_ms,
             chart: ChartSnapshotJson {
                 title: self.project.chart.title.clone(),
                 bpm: self.project.chart.bpm,

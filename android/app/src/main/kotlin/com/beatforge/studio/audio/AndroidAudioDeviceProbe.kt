@@ -24,7 +24,7 @@ object AndroidAudioDeviceProbe {
         val device: AudioDeviceInfo?
     )
 
-    suspend fun probeDeviceJson(context: Context): String = withContext(Dispatchers.IO) {
+    suspend fun probeDeviceJson(context: Context, aaudioDeviceId: Int = 0): String = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val pm = appContext.packageManager
@@ -50,7 +50,16 @@ object AndroidAudioDeviceProbe {
             emptyList()
         }
 
-        val selection = selectPrimaryOutputRoute(outputs)
+        val matchedByAaudio = if (aaudioDeviceId > 0) {
+            outputs.firstOrNull { it.id == aaudioDeviceId }
+        } else {
+            null
+        }
+        val selection = if (matchedByAaudio != null) {
+            RouteSelection(mapDeviceTypeToRouteKey(matchedByAaudio), matchedByAaudio)
+        } else {
+            selectPrimaryOutputRoute(outputs)
+        }
         val activeDevice = selection.device
 
         val deviceName = activeDevice?.productName?.toString()?.trim()?.ifBlank { null }
@@ -75,6 +84,7 @@ object AndroidAudioDeviceProbe {
             put("isMonoSpeaker", channelInfo.second)
             put("supportsLowLatencyFeature", supportsLowLatency)
             put("supportsProAudioFeature", supportsProAudio)
+            put("aaudioMatched", matchedByAaudio != null)
             put(
                 "supportedSampleRates",
                 JSONArray().apply {
@@ -83,6 +93,42 @@ object AndroidAudioDeviceProbe {
             )
         }
         json.toString()
+    }
+
+    private fun mapDeviceTypeToRouteKey(device: AudioDeviceInfo): String {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "usb_audio"
+
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> "wired_headphones"
+
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bluetooth_a2dp"
+
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC -> "hdmi_or_external"
+
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+            AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "builtin_speaker"
+
+            else -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && (
+                        device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                            device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                            device.type == AudioDeviceInfo.TYPE_HDMI_EARC ||
+                            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                device.type == AudioDeviceInfo.TYPE_BLE_BROADCAST)
+                        )
+                ) {
+                    if (device.type == AudioDeviceInfo.TYPE_HDMI_EARC) "hdmi_or_external" else "bluetooth_le"
+                } else {
+                    "unknown"
+                }
+            }
+        }
     }
 
     private fun selectPrimaryOutputRoute(devices: List<AudioDeviceInfo>): RouteSelection {

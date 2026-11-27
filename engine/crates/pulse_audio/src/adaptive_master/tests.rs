@@ -137,6 +137,9 @@ fn process_pcm_with_rubato_and_biquad_preserves_sync_and_respects_peak_ceiling()
         low_latency_active: true,
         aaudio_active: true,
         aaudio_device_id: 7,
+        aaudio_matched: true,
+        estimated_output_latency_ms: 173.0,
+        recommended_audio_offset_ms: 173.0,
     };
     let analysis = analyze_song_acoustics(&src, 44_100);
     let plan = build_adaptive_dsp_plan(&dev, &analysis);
@@ -249,4 +252,119 @@ fn adaptive_pipeline_decodes_raw_f32_wav_sources_and_preserves_center_with_cross
 
     let _ = std::fs::remove_file(&tmp_wav);
     let _ = std::fs::remove_dir_all(&tmp_cache);
+}
+
+#[test]
+fn streaming_dsp_chunks_match_full_batch_and_bluetooth_latency_is_compensated() {
+    let src = make_sine_stereo(220.0, 44_100, 0.8, 0.75);
+    let bt_dev = fuse_device_and_aaudio_probe(
+        &DeviceAudioProbeInput {
+            route: AndroidOutputRoute::BluetoothA2dp,
+            os_sample_rate: 48_000,
+            aaudio_matched: true,
+            ..Default::default()
+        },
+        &AudioHardwareProbe {
+            aaudio_active: true,
+            sample_rate: 48_000,
+            frames_per_burst: 192,
+            low_latency_active: false,
+            device_id: 14,
+            ..Default::default()
+        },
+    );
+    assert!(bt_dev.aaudio_matched);
+    assert!(bt_dev.recommended_audio_offset_ms >= 140.0);
+
+    let wired_dev = fuse_device_and_aaudio_probe(
+        &DeviceAudioProbeInput {
+            route: AndroidOutputRoute::WiredHeadphones,
+            aaudio_matched: true,
+            ..Default::default()
+        },
+        &AudioHardwareProbe {
+            aaudio_active: true,
+            low_latency_active: true,
+            device_id: 8,
+            ..Default::default()
+        },
+    );
+    assert_eq!(wired_dev.recommended_audio_offset_ms, 0.0);
+
+    let analysis = analyze_song_acoustics(&src, 44_100);
+    let plan = build_adaptive_dsp_plan(&bt_dev, &analysis);
+    let (batch_out, batch_peak) = process_pcm_with_plan(&src, &plan).unwrap();
+
+    let mut proc = AdaptiveDspProcessor::new(&plan).unwrap();
+    let mut streamed_out = Vec::new();
+    let mut tmp_chunk = Vec::new();
+    for c in src.chunks(1023 * 2) {
+        proc.process_chunk(c, &mut tmp_chunk).unwrap();
+        streamed_out.extend_from_slice(&tmp_chunk);
+    }
+    let streamed_peak = proc.finish(&mut tmp_chunk).unwrap();
+    streamed_out.extend_from_slice(&tmp_chunk);
+
+    assert_eq!(streamed_out.len(), batch_out.len());
+    assert!((streamed_peak - batch_peak).abs() < 1e-4);
+    for (a, b) in streamed_out.iter().zip(batch_out.iter()) {
+        assert!((a - b).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn cache_hash_ignores_pre_merged_wav_when_raw_sources_exist_and_prune_removes_old_files() {
+    let tmp_dir = std::env::temp_dir().join("beatforge_adapt_prune_test");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let raw_src = tmp_dir.join("Inst.wav");
+    let merged_a = tmp_dir.join("compiled_mix_a.wav");
+    let merged_b = tmp_dir.join("compiled_mix_b.wav");
+    std::fs::write(&raw_src, b"RIFF0000WAVE").unwrap();
+    std::fs::write(&merged_a, b"RIFFAAAA").unwrap();
+    std::fs::write(&merged_b, b"RIFFBBBBBBBB").unwrap();
+
+    let mut configs = AudioTrackSlot::default_three_slots();
+    configs[0].file_path = Some(raw_src);
+    let tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS] = [None, None, None];
+    let dev = fuse_device_and_aaudio_probe(
+        &DeviceAudioProbeInput::default(),
+        &AudioHardwareProbe::default(),
+    );
+
+    let h1 = cache_io::compute_adaptation_cache_hash(&tracks, &configs, Some(&merged_a), &dev);
+    let h2 = cache_io::compute_adaptation_cache_hash(&tracks, &configs, Some(&merged_b), &dev);
+    let h3 = cache_io::compute_adaptation_cache_hash(&tracks, &configs, None, &dev);
+    assert_eq!(h1, h2);
+    assert_eq!(h1, h3);
+
+    // Crear 4 entradas en audio_adapted + un .tmp huérfano y un .json huérfano
+    let stale_tmp = tmp_dir.join("adapted_999.wav.tmp");
+    let orphan_json = tmp_dir.join("adapted_orphan.json");
+    let keep_wav = tmp_dir.join("adapted_keep.wav");
+    let keep_json = tmp_dir.join("adapted_keep.json");
+    std::fs::write(&stale_tmp, b"tmp").unwrap();
+    std::fs::write(&orphan_json, b"{}").unwrap();
+    std::fs::write(&keep_wav, vec![0u8; 64]).unwrap();
+    std::fs::write(&keep_json, b"{}").unwrap();
+    for i in 1..=3 {
+        std::fs::write(tmp_dir.join(format!("adapted_old{}.wav", i)), vec![0u8; 64]).unwrap();
+        std::fs::write(tmp_dir.join(format!("adapted_old{}.json", i)), b"{}").unwrap();
+    }
+
+    cache_io::prune_audio_adapted_cache(&tmp_dir, Some(&keep_wav), Some(&keep_json), 2, 1024);
+    assert!(!stale_tmp.exists());
+    assert!(!orphan_json.exists());
+    assert!(keep_wav.exists());
+    assert!(keep_json.exists());
+
+    let remaining_wavs = std::fs::read_dir(&tmp_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("wav"))
+        .count();
+    assert!(remaining_wavs <= 2);
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

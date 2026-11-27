@@ -100,7 +100,10 @@ internal class StudioGameplayCoordinator(
             val compileRes = StudioJsonParser.parseActionResult(compileRaw)
             var snap = compileRes.snapshot ?: uiState.value.snapshot
 
-            // Fase independiente: Adaptador Acústico Adaptativo (después de Compilar en Caliente y antes de Gameplay)
+            // Fase independiente: sondeo exacto de salida AAudio + Bluetooth sync + Adaptador Acústico
+            val aaudioDeviceId = NativeEngineBridge.nativeGetAAudioDeviceId()
+            val deviceProbeJson = AndroidAudioDeviceProbe.probeDeviceJson(app, aaudioDeviceId)
+
             if (snap.audioAdaptEnabled) {
                 uiState.update {
                     it.copy(
@@ -121,7 +124,6 @@ internal class StudioGameplayCoordinator(
                     )
                 }
 
-                val deviceProbeJson = AndroidAudioDeviceProbe.probeDeviceJson(app)
                 val adaptPoller = scope.launch(Dispatchers.IO) {
                     while (isActive) {
                         val live = StudioJsonParser.parseAudioAdaptProgress(
@@ -168,8 +170,8 @@ internal class StudioGameplayCoordinator(
                     delay(420L)
                 }
             } else {
-                // Limpiar cualquier WAV adaptado previo cuando el usuario desactiva la opción
-                val bypassRaw = NativeEngineBridge.nativeAdaptAudioForDevice("")
+                // Aunque DSP esté desactivado, conservar sondeo de ruta AAudio para compensación de latencia Bluetooth
+                val bypassRaw = NativeEngineBridge.nativeAdaptAudioForDevice(deviceProbeJson)
                 snap = StudioJsonParser.parseActionResult(bypassRaw).snapshot ?: snap
                 uiState.update {
                     it.copy(

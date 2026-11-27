@@ -61,6 +61,7 @@ pub struct EngineSession {
     pub compiled_icon_losing_paths: HashMap<String, String>,
     pub compiled_audio_path: Option<PathBuf>,
     pub adapted_audio_path: Option<PathBuf>,
+    pub auto_audio_offset_ms: f64,
     pub last_compile_report: Option<HotCompileReport>,
     pub last_timeline_windows: Vec<EntityLifecycleWindow>,
     pub last_audio_adapt_report: Option<AudioAdaptationReport>,
@@ -105,6 +106,7 @@ impl EngineSession {
             compiled_icon_losing_paths: HashMap::new(),
             compiled_audio_path: None,
             adapted_audio_path: None,
+            auto_audio_offset_ms: 0.0,
             last_compile_report: None,
             last_timeline_windows: Vec::new(),
             last_audio_adapt_report: None,
@@ -130,9 +132,10 @@ impl EngineSession {
         self.compiled_bundle = None;
     }
 
-    /// Invalida la ruta WAV adaptada acústicamente cuando cambian pistas, ganancias o configuración.
+    /// Invalida la ruta WAV adaptada acústicamente y el desplazamiento automático cuando cambian pistas o configuración.
     pub(crate) fn invalidate_adapted_audio(&mut self) {
         self.adapted_audio_path = None;
+        self.auto_audio_offset_ms = 0.0;
         self.last_audio_adapt_report = None;
     }
 

@@ -239,15 +239,23 @@ fun AudioAdaptScreen(
                                 } else {
                                     "${report.device.effectiveChannelCount} canales Estéreo"
                                 }
-                                val latencyText = if (report.device.lowLatencyActive) {
-                                    "Respuesta rápida"
+                                val latencyText = when {
+                                    report.device.recommendedAudioOffsetMs >= 1.0 ->
+                                        "Sync +${report.device.recommendedAudioOffsetMs.roundToInt()} ms"
+                                    report.device.lowLatencyActive -> "Respuesta rápida"
+                                    else -> "Estándar"
+                                }
+                                val routeTag = if (report.device.aaudioMatched && report.device.aaudioDeviceId > 0) {
+                                    " · AAudio #${report.device.aaudioDeviceId}"
                                 } else {
-                                    "Estándar"
+                                    ""
                                 }
                                 Text(
-                                    text = "$channelText · $latencyText",
+                                    text = "$channelText · $latencyText$routeTag",
                                     color = StudioColors.TextMuted,
-                                    fontSize = 10.sp
+                                    fontSize = 10.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }

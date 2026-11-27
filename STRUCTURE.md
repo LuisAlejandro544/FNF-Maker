@@ -78,14 +78,14 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   └── tests.rs         # Pruebas unitarias de deduplicación, recorte alfa, poda y paginación multi-página
 │       │       ├── hot_compile/         # Compilación incremental modularizada (`HotCompileManifest` v7)
 │       │       │   ├── mod.rs           # Orquestación pública y reexportaciones de compilación en caliente
-│       │       │   ├── fingerprints.rs  # Huellas FNV-1a de texturas, pantalla física, zoom máx., audio y scripts
-│       │       │   ├── manifest.rs      # Lectura/escritura atómica de `HotCompileManifest` v7 en disco (`TexturePixelFormat`, `timeline_windows`, `countdown`, `icons`)
-│       │       │   ├── analysis.rs      # Planificación incremental, `compute_timeline_asset_lifecycle` (4s/1.5s), zoom máx. y escala `Lanczos3` por pantalla
-│       │       │   ├── aux_textures.rs  # Compilación/caché incremental WebP + Lanczos3 para Cuenta Regresiva (3-2-1-¡YA!) e íconos de personaje (`normal`/`losing`)
-│       │       │   ├── script_cache.rs  # Optimización incremental de scripts con caché por `source_hash` en `manifest.scripts`
-│       │       │   ├── entity_compile.rs# Compilación paralela por entidad (`CacheHit`, `PassThrough`, `atlas_repack`, `Lanczos3`, WebP/`RGB_565`) y limpieza de huérfanos
-│       │       │   ├── pipeline.rs      # Orquestador `hot_compile_project*`: coordina scripts, pool `rayon`, auxiliares, limpieza y reporte
-│       │       │   └── tests.rs         # Pruebas unitarias de huellas, invalidación, `PassThrough` cache, countdown/íconos, timeline lifecycle y pre-escalado por viewport
+│       │       ├── fingerprints.rs  # Huellas FNV-1a de texturas, pantalla física, zoom máx., audio (desde 1 pista activa) y scripts
+│       │       ├── manifest.rs      # Lectura/escritura atómica de `HotCompileManifest` v7 en disco (`TexturePixelFormat`, `timeline_windows`, `countdown`, `icons`)
+│       │       ├── analysis.rs      # Planificación incremental, `compute_timeline_asset_lifecycle` (4s/1.5s), zoom máx. y escala `Lanczos3` por pantalla
+│       │       ├── aux_textures.rs  # Compilación/caché incremental WebP + Lanczos3 para Cuenta Regresiva (3-2-1-¡YA!) e íconos de personaje (`normal`/`losing`)
+│       │       ├── script_cache.rs  # Optimización incremental de scripts con caché por `source_hash` en `manifest.scripts`
+│       │       ├── entity_compile.rs# Compilación paralela por entidad (`CacheHit`, `PassThrough`, `atlas_repack`, `Lanczos3`, WebP/`RGB_565`) y limpieza de huérfanos
+│       │       ├── pipeline.rs      # Orquestador `hot_compile_project*`: coordina scripts, pool `rayon`, auxiliares, limpieza y reporte
+│       │       └── tests.rs         # Pruebas unitarias de huellas, invalidación, `PassThrough` cache, countdown/íconos, timeline lifecycle y pre-escalado por viewport
 │       │       ├── disk_cache.rs        # Presupuestos 65%/35% por cuota del sistema, limpieza plana heredada y desalojo LRU en disco
 │       │       └── vanilla/             # Contenedor portátil Vanilla (`.mod`) modularizado con Zstandard, PNG->WebP lossless, `assets/countdown/`, dedup y FNV-1a
 │       │           ├── mod.rs           # Reexportaciones públicas del empaquetador/importador Vanilla `.mod`
@@ -95,23 +95,23 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │           ├── importer.rs      # Desempaquetado y restauración de proyectos (`unpack_vanilla_mod_to_project`)
 │       │           └── tests.rs         # Pruebas unitarias de ronda completa `.mod` y deduplicación de assets
 │       │
-│       ├── pulse_audio/                 # Subsistema de audio de baja latencia y DSP 100% Rust puro
+│       ├── pulse_audio/                 # Subsistema de audio de baja latencia y DSP en streaming 100% Rust puro
 │       │   ├── Cargo.toml
 │       │   └── src/
 │       │       ├── lib.rs               # AudioEngineHandle, AudioHardwareProbe, adaptive_master y streaming
-│       │       ├── decoder.rs           # Decodificación nativa `f32` OGG/WAV/MP3 (`rmp3 float`), resampleo `rubato::FftFixedIn` (sin `resample_stereo_linear`) y salida `i16` para editor
+│       │       ├── decoder.rs           # `StreamingTrackDecoder`, `StreamingStereoResampler` (`rubato`), decodificación nativa `f32` OGG/WAV/MP3 (`rmp3 float`/`position()`) y salida `i16` para editor
 │       │       ├── audio_cache.rs       # Caché binario `.bfaud` (picos de onda + PCM i16) en `cacheDir/audio_cache/` con escritura atómica y LRU
-│       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`) + streaming SPSC 512 KB desde disco
-│       │       ├── adaptive_master/     # Adaptador Acústico `f32` modularizado (`ebur128`, `realfft`, `biquad`, `rubato`, M/S + crossfeed, Lookahead 4ms + dither TPDF)
-│       │       │   ├── mod.rs           # Orquestador `adapt_audio_for_device` y reexportaciones públicas
-│       │       │   ├── models.rs        # Modelos `AndroidOutputRoute`, `DeviceAudioProbeInput`, `SongAcousticAnalysis`, `AdaptiveDspPlan` y `AudioAdaptationReport`
-│       │       │   ├── probe_plan.rs    # Fusión Java+AAudio (`fuse_device_and_aaudio_probe`) y diseñador de perfil DSP (`build_adaptive_dsp_plan`)
-│       │       │   ├── analyzer.rs      # Análisis perceptual `ebur128` (LUFS/LRA/dBTP) y espectral 5 bandas (`realfft` + ventana Hann)
-│       │       │   ├── dsp_chain.rs     # Cadena `rubato` + filtros IIR `biquad` + Mid/Side + crossfeed 700Hz + limitador Lookahead 4ms
-│       │       │   ├── cache_io.rs      # Hash FNV-1a de caché, mezcla nativa `f32` y escritura WAV atómica con dither TPDF
-│       │       │   └── tests.rs         # Pruebas unitarias de EBU R128/FFT, perfiles por ruta, sincronización Rubato y lookahead limiter
+│       │       ├── streaming.rs         # Fusión en caliente a WAV único (`compiled_mix.wav`, lineal sin `tanh()` en 1 pista) + streaming SPSC 512 KB desde disco
+│       │       ├── adaptive_master/     # Adaptador Acústico `f32` por bloques de 8192 frames (`ebur128`, `realfft`, `biquad`, `rubato`, M/S + crossfeed, Lookahead O(1) + dither TPDF)
+│       │       │   ├── mod.rs           # Orquestador en streaming `adapt_audio_for_device` (Pasada 1 análisis -> Pasada 2 DSP directo a disco) y reexportaciones
+│       │       │   ├── models.rs        # Modelos `AndroidOutputRoute`, `DeviceAudioProbeInput` (`aaudio_matched`), `EffectiveDeviceAcoustics` (latencia/sync), `AdaptiveDspPlan` y `AudioAdaptationReport`
+│       │       │   ├── probe_plan.rs    # Fusión Java+AAudio (`fuse_device_and_aaudio_probe`), `estimate_output_latency_and_offset` y diseñador de perfil DSP (`build_adaptive_dsp_plan`)
+│       │       │   ├── analyzer.rs      # `StreamingAcousticAnalyzer` por bloques (`ebur128` + reservorio espectral 48 ventanas `realfft` + ventana Hann)
+│       │       │   ├── dsp_chain.rs     # `AdaptiveDspProcessor` stateful por bloques (`StreamingStereoResampler` + `biquad` + M/S + crossfeed 700Hz + Lookahead `VecDeque` O(1))
+│       │       │   ├── cache_io.rs      # Hash `bf_audio_adapt_v3` (sin `pre_merged_wav` cuando hay fuentes crudas), `prune_audio_adapted_cache`, `SourceMixerStream` y `StreamingWavTpdfWriter`
+│       │       │   └── tests.rs         # Pruebas unitarias de paridad streaming vs batch, compensación Bluetooth, hash v3, poda `audio_adapted/` y Lookahead limiter
 │       │       ├── mixer.rs             # Mezclador lock-free (`stream_source` lineal sin `tanh()`, `tanh()` solo en multi-pista editor) + reloj + `countdown_cues` separados (`intro3..introGo` / synth) + preview + Game Over
-│       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI + probe hardware, cero C++) + fallback
+│       │       └── rust_audio_backend.rs # Backend Android AAudio en Rust puro (dlopen C ABI + probe hardware `device_id`, cero C++) + fallback
 │       │
 │       ├── pulse_scripting/             # Motores de scripting comunitario unificados sin ataduras
 │       │   ├── Cargo.toml
@@ -140,13 +140,13 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   ├── mod.rs           # Registro de submódulos JNI (activado bajo `target_os = "android"`)
 │               │   ├── project_ops.rs   # JNI de ciclo de vida del motor, proyectos, caché y exportación Vanilla `.mod`
 │               │   ├── chart_ops.rs     # JNI de chart, secciones (`cameraSlot`), notas especiales, eventos y metadata JSON
-│               │   ├── audio_ops.rs     # JNI de pistas de audio, formas de onda, volumen/mute y reproducción del editor
+│               │   ├── audio_ops.rs     # JNI de pistas de audio, `nativeGetAAudioDeviceId`, formas de onda, volumen/mute y reproducción del editor
 │               │   ├── stage_sprite_ops.rs # JNI de escenario, multicámara (`Cam 0..3+`), sprites Sparrow/Animate y offsets
 │               │   ├── script_skin_ops.rs  # JNI de scripts Lua/TS/JS, flechas SVG/`NOTE_assets`, íconos y barra de vida
 │               │   └── gameplay_gfx_ops.rs # JNI de compilación incremental, simulación gameplay `BFGP` v2, debug y probe GPU (`gfx`)
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
-│                   ├── mod.rs           # Struct `EngineSession`, rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
-│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `CountdownStepSnapshotJson`, `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
+│                   ├── mod.rs           # Struct `EngineSession` (incl. `auto_audio_offset_ms`), rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
+│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `autoAudioOffsetMs`, `CountdownStepSnapshotJson`, `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
 │                   ├── countdown_ops.rs # Importación/limpieza/preview de PNG/ASTC/WebP, Sparrow `.xml` y voces separadas `3 · 2 · 1 · ¡YA!`
 │                   ├── editor_ops/        # Operaciones de edición de `EngineSession` divididas por dominio
 │                   │   ├── mod.rs         # Coordinador `editor_ops` y actualización de metadatos del proyecto (`update_project_meta`)
@@ -160,8 +160,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   ├── persistence_ops.rs # Guardado/carga (normalización de atlas, ranuras `Cam 0..2`, assets countdown y limpieza de cachés v7), adopción `assets/`, GC, `.bfaud` y Vanilla `.mod`
 │                   └── gameplay_ops/      # Compilación incremental y simulación de gameplay modularizada
 │                       ├── mod.rs         # Coordinador `start/pause/stop/retry_game_over/trigger_test_game_over`, colas ordenadas de timeline y BFGP v2 (`168B`)
-│                       ├── hot_compile_ops.rs # `hot_compile_with_progress_and_viewport` en `compiled_cache/<projectId>/` (incl. countdown e íconos) con cuota y desalojo LRU multi-proyecto
-│                       ├── audio_adapt_ops.rs # Fase independiente post-compilación: sondeo hardware + EBU R128/FFT + plan DSP Biquad/Rubato
+│                       ├── hot_compile_ops.rs # `hot_compile_with_progress_and_viewport` en `compiled_cache/<projectId>/` (omite mezcla WAV si adaptador `f32` está activo) con cuota y desalojo LRU
+│                       ├── audio_adapt_ops.rs # Fase independiente post-compilación: sondeo hardware + EBU R128/FFT + plan DSP + actualización `auto_audio_offset_ms`
 │                       ├── script_sync/   # Sincronización Lua/QuickJS dividida por responsabilidad
 │                       │   ├── mod.rs     # Reexportaciones internas de `script_sync`
 │                       │   ├── props.rs   # Lectura/escritura de propiedades (`entities`/`dynamics`/`strums`) y `sync_script_host_state`
@@ -169,7 +169,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   ├── camera_commands.rs # Comandos `ScriptCommand` de cámara multicámara y viñeta lateral
 │                       │   └── command_handlers.rs # Drenaje de `ScriptCommand` (HUD, dinámicos, audio, swaps RAM, Game Over y logs)
 │                       ├── simulation/    # Simulación por frame modularizada (`step_gameplay_internal`)
-│                       │   ├── mod.rs     # Orquestador del tick (`StepSimOutput`, reloj BPM, cuenta regresiva, hooks y arena)
+│                       │   ├── mod.rs     # Orquestador del tick (`StepSimOutput`, reloj BPM con `audio_offset_ms + auto_audio_offset_ms`, cuenta regresiva, hooks y arena)
 │                       │   ├── timeline_ram.rs # Precarga anticipada (4 s) y retiro seguro en RAM según cola temporal compilada
 │                       │   ├── camera_runtime.rs # Multicámara por sección/beat, acciones `chart.json` y seguimiento `lerp` con clamping
 │                       │   └── note_judge.rs # Evaluación de notas (`Sick`/`Good`/`Bad`/`Miss`), sostenidas y notas especiales X
@@ -208,7 +208,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               ├── StudioUiState.kt     # Estado reactivo (`hasSelectedProject`, `isLoadingProject`, `debug*`, `stagedArrowAtlas*`) y `LoadedEntityBitmap` (`extraPages` + `pageAt()`)
 │               ├── StudioViewModel.kt   # Coordinador principal (`StateFlow`) que delega en `viewmodel/*` sobre `Dispatchers.IO`
 │               ├── audio/               # Sondeo físico del audio de Android (sin bloqueos en UI)
-│               │   └── AndroidAudioDeviceProbe.kt # Consulta `AudioManager` + `AudioDeviceInfo` en `Dispatchers.IO` (ruta, canales, mono, burst)
+│               │   └── AndroidAudioDeviceProbe.kt # Consulta `AudioManager` + cruce exacto `AudioDeviceInfo.id == aaudioDeviceId` en `Dispatchers.IO` (`aaudioMatched`)
 │               ├── gfx/                 # Capa modular de preparación GPU (OpenGL ES 2.0/3.x y Vulkan)
 │               │   ├── RenderBackendModels.kt # Modelos Kotlin de backend seleccionado y capacidades de drivers detectados
 │               │   ├── VulkanProbeBridge.kt   # Sondeo ligero Android PackageManager (GLES / Vulkan) enlazado con el reporte Rust
@@ -222,7 +222,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   │   ├── SafImportExportDelegate.kt # Staging SAF, exportación `.json`/`.mod`, importación universal y flujo en 2 pasos `NOTE_assets`
 │               │   │   ├── ChartAudioEditorDelegate.kt # Edición de `chart.json` (BPM, eventos, notas, secciones) y pistas/preview de audio
 │               │   │   └── StageAssetsEditorDelegate.kt # Entidades del escenario, íconos, SVGs, Sparrow offsets, cuenta regresiva, multicámara y scripts
-│               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (`nativeHotCompileWithViewport`), fase `AudioAdaptScreen`, colas timeline/precarga 4s y reciclaje `extraPages` a 3 frames
+│               │   └── StudioGameplayCoordinator.kt # Ciclo RAM (`nativeHotCompileWithViewport`), cruce `nativeGetAAudioDeviceId`, fase `AudioAdaptScreen`, colas timeline/precarga 4s y reciclaje a 3 frames
 │               └── ui/
 │                   ├── theme/
 │                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
@@ -291,8 +291,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `setCameraVignette`, `tweenCameraVignette`, `clearCameraVignette`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `PassThrough` manifest & aux countdown/icon scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
-│       └── engine-tools.test.ts         # 70 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `PassThrough` manifest & aux countdown/icon scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF + cruce AAudio + offset Bluetooth + poda v3, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
+│       └── engine-tools.test.ts         # 74 pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

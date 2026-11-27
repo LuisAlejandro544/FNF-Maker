@@ -3,6 +3,8 @@
 //! conservando una ruta nativa de alta precisión en `f32` sin pasar por `resample_stereo_linear`:
 //! - `decode_audio_file_raw_f32`: entrega PCM estéreo `f32` a su frecuencia original (para masterización
 //!   acústica `adaptive_master` y medición EBU R128/FFT sin pérdida previa).
+//! - `StreamingTrackDecoder` y `StreamingStereoResampler`: decodificación y remuestreo `rubato`
+//!   por bloques pequeños (~8192 frames) sin cargar canciones completas en `Vec<f32>`.
 //! - `resample_stereo_f32_rubato`: remuestrea con `rubato::FftFixedIn` compensando `output_delay`.
 //! - `decode_audio_file`: genera `DecodedTrack` compacto (`i16`, 50% menos RAM) para el editor y `.bfaud`.
 
@@ -142,6 +144,360 @@ pub fn resample_stereo_f32_rubato(
         interleaved_out.push(0.0);
     }
     Ok(interleaved_out)
+}
+
+/// Remuestreador incremental estéreo `f32` basado en `rubato::FftFixedIn` con compensación
+/// de `output_delay` y recorte exacto al drenado final, evitando buffers de canción completa.
+pub struct StreamingStereoResampler {
+    resampler: FftFixedIn<f32>,
+    fs_in: u32,
+    fs_out: u32,
+    in_l: Vec<f32>,
+    in_r: Vec<f32>,
+    in_pos: usize,
+    total_in_frames: usize,
+    trim_remaining: usize,
+    emitted_out_frames: usize,
+}
+
+impl StreamingStereoResampler {
+    pub fn new(fs_in: u32, fs_out: u32) -> Result<Self, String> {
+        let safe_in = fs_in.max(8000);
+        let safe_out = fs_out.max(8000);
+        let chunk_size = 1024usize;
+        let sub_chunks = 2usize;
+        let resampler =
+            FftFixedIn::<f32>::new(safe_in as usize, safe_out as usize, chunk_size, sub_chunks, 2)
+                .map_err(|e| format!("Error creando remuestreador Rubato incremental: {}", e))?;
+        let trim_remaining = resampler.output_delay();
+        Ok(Self {
+            resampler,
+            fs_in: safe_in,
+            fs_out: safe_out,
+            in_l: Vec::with_capacity(8192),
+            in_r: Vec::with_capacity(8192),
+            in_pos: 0,
+            total_in_frames: 0,
+            trim_remaining,
+            emitted_out_frames: 0,
+        })
+    }
+
+    pub fn push_interleaved(
+        &mut self,
+        interleaved: &[f32],
+        out_interleaved: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        for pair in interleaved.chunks_exact(2) {
+            self.in_l.push(if pair[0].is_finite() { pair[0] } else { 0.0 });
+            self.in_r.push(if pair[1].is_finite() { pair[1] } else { 0.0 });
+            self.total_in_frames += 1;
+        }
+        self.drain_ready_blocks(out_interleaved, usize::MAX)?;
+        Ok(())
+    }
+
+    pub fn finish(&mut self, out_interleaved: &mut Vec<f32>) -> Result<(), String> {
+        let expected_out_frames =
+            ((self.total_in_frames as f64) * (self.fs_out as f64) / (self.fs_in as f64)).round()
+                as usize;
+        if self.in_pos > 0 {
+            self.in_l.drain(..self.in_pos);
+            self.in_r.drain(..self.in_pos);
+            self.in_pos = 0;
+        }
+        let step = self.resampler.input_frames_next().max(1);
+        let delay_frames = self.resampler.output_delay();
+        let flush_frames =
+            ((delay_frames as f64 * (self.fs_in as f64 / self.fs_out as f64)).ceil() as usize)
+                + step;
+        let target_len = self.in_l.len() + flush_frames;
+        let padded_len = target_len.div_ceil(step) * step;
+        self.in_l.resize(padded_len, 0.0);
+        self.in_r.resize(padded_len, 0.0);
+
+        self.drain_ready_blocks(out_interleaved, expected_out_frames)?;
+        while self.emitted_out_frames < expected_out_frames {
+            out_interleaved.push(0.0);
+            out_interleaved.push(0.0);
+            self.emitted_out_frames += 1;
+        }
+        Ok(())
+    }
+
+    fn drain_ready_blocks(
+        &mut self,
+        out_interleaved: &mut Vec<f32>,
+        max_total_out_frames: usize,
+    ) -> Result<(), String> {
+        let step = self.resampler.input_frames_next().max(1);
+        while self.in_l.len().saturating_sub(self.in_pos) >= step {
+            let end = self.in_pos + step;
+            let out_chunks = self
+                .resampler
+                .process(&[&self.in_l[self.in_pos..end], &self.in_r[self.in_pos..end]], None)
+                .map_err(|e| format!("Error procesando bloque Rubato incremental: {}", e))?;
+            self.in_pos = end;
+            if out_chunks.len() >= 2 {
+                let len = out_chunks[0].len().min(out_chunks[1].len());
+                let skip = self.trim_remaining.min(len);
+                self.trim_remaining = self.trim_remaining.saturating_sub(skip);
+                for i in skip..len {
+                    if self.emitted_out_frames >= max_total_out_frames {
+                        break;
+                    }
+                    out_interleaved.push(out_chunks[0][i]);
+                    out_interleaved.push(out_chunks[1][i]);
+                    self.emitted_out_frames += 1;
+                }
+            }
+        }
+        if self.in_pos >= step * 4 {
+            self.in_l.drain(..self.in_pos);
+            self.in_r.drain(..self.in_pos);
+            self.in_pos = 0;
+        }
+        Ok(())
+    }
+}
+
+enum InnerTrackDecoder {
+    Ogg {
+        reader: lewton::inside_ogg::OggStreamReader<BufReader<File>>,
+        channels: usize,
+    },
+    Wav {
+        reader: hound::WavReader<BufReader<File>>,
+        channels: usize,
+        bits_per_sample: u16,
+        is_float: bool,
+    },
+    Mp3 {
+        bytes: Vec<u8>,
+        pos: usize,
+    },
+}
+
+/// Decodificador por bloques (`f32` estéreo nativo) para `.ogg`, `.wav` y `.mp3` que evita
+/// materializar la canción completa en RAM durante análisis y masterización en streaming.
+pub struct StreamingTrackDecoder {
+    sample_rate: u32,
+    inner: InnerTrackDecoder,
+    pending: Vec<f32>,
+    pending_pos: usize,
+    eof: bool,
+}
+
+impl StreamingTrackDecoder {
+    pub fn open(path: &Path) -> Result<Self, AudioDecodeError> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        match ext.as_str() {
+            "ogg" | "oga" => {
+                let file = File::open(path)?;
+                let reader = lewton::inside_ogg::OggStreamReader::new(BufReader::new(file))
+                    .map_err(|e| AudioDecodeError::Ogg(e.to_string()))?;
+                let sample_rate = reader.ident_hdr.audio_sample_rate.max(8000);
+                let channels = reader.ident_hdr.audio_channels as usize;
+                Ok(Self {
+                    sample_rate,
+                    inner: InnerTrackDecoder::Ogg { reader, channels },
+                    pending: Vec::with_capacity(16_384),
+                    pending_pos: 0,
+                    eof: false,
+                })
+            }
+            "wav" => {
+                let reader = hound::WavReader::open(path)
+                    .map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
+                let spec = reader.spec();
+                let sample_rate = spec.sample_rate.max(8000);
+                let channels = (spec.channels as usize).max(1);
+                let is_float = matches!(spec.sample_format, hound::SampleFormat::Float);
+                Ok(Self {
+                    sample_rate,
+                    inner: InnerTrackDecoder::Wav {
+                        reader,
+                        channels,
+                        bits_per_sample: spec.bits_per_sample,
+                        is_float,
+                    },
+                    pending: Vec::with_capacity(16_384),
+                    pending_pos: 0,
+                    eof: false,
+                })
+            }
+            "mp3" => {
+                let bytes = std::fs::read(path)?;
+                let mut sample_rate = None;
+                let mut probe_dec = rmp3::Decoder::new(&bytes);
+                while let Some(frame) = probe_dec.next() {
+                    if let rmp3::Frame::Audio(audio) = frame {
+                        sample_rate = Some(audio.sample_rate().max(8000));
+                        break;
+                    }
+                }
+                let sample_rate = sample_rate.ok_or(AudioDecodeError::Mp3Empty)?;
+                Ok(Self {
+                    sample_rate,
+                    inner: InnerTrackDecoder::Mp3 { bytes, pos: 0 },
+                    pending: Vec::with_capacity(16_384),
+                    pending_pos: 0,
+                    eof: false,
+                })
+            }
+            _ => Err(AudioDecodeError::UnsupportedFormat),
+        }
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Lee hasta `max_frames` frames estéreo `f32` hacia `out_interleaved` (sobrescribiendo su contenido).
+    /// Devuelve el número de frames escritos (`0` al alcanzar EOF).
+    pub fn read_next_frames(
+        &mut self,
+        max_frames: usize,
+        out_interleaved: &mut Vec<f32>,
+    ) -> Result<usize, AudioDecodeError> {
+        out_interleaved.clear();
+        if max_frames == 0 {
+            return Ok(0);
+        }
+        let want_floats = max_frames * 2;
+
+        while self.pending.len().saturating_sub(self.pending_pos) < want_floats && !self.eof {
+            if self.pending_pos > 0 {
+                self.pending.drain(..self.pending_pos);
+                self.pending_pos = 0;
+            }
+            match &mut self.inner {
+                InnerTrackDecoder::Ogg { reader, channels } => {
+                    let Some(packet) = reader
+                        .read_dec_packet_generic::<Vec<Vec<f32>>>()
+                        .map_err(|e| AudioDecodeError::Ogg(e.to_string()))?
+                    else {
+                        self.eof = true;
+                        break;
+                    };
+                    let ch_count = packet.len();
+                    if ch_count == 0 || packet[0].is_empty() {
+                        continue;
+                    }
+                    let frame_len = packet[0].len();
+                    self.pending.reserve(frame_len * 2);
+                    if ch_count == 1 || *channels <= 1 {
+                        for &s in &packet[0] {
+                            let clean = if s.is_finite() { s } else { 0.0 };
+                            self.pending.push(clean);
+                            self.pending.push(clean);
+                        }
+                    } else {
+                        let r_ch = &packet[1];
+                        for i in 0..frame_len {
+                            let l = packet[0][i];
+                            let r = r_ch.get(i).copied().unwrap_or(l);
+                            self.pending.push(if l.is_finite() { l } else { 0.0 });
+                            self.pending.push(if r.is_finite() { r } else { 0.0 });
+                        }
+                    }
+                }
+                InnerTrackDecoder::Wav {
+                    reader,
+                    channels,
+                    bits_per_sample,
+                    is_float,
+                } => {
+                    let ch = (*channels).max(1);
+                    let need_raw = max_frames.max(1024) * ch;
+                    let mut raw_chunk = Vec::with_capacity(need_raw);
+                    if *is_float {
+                        for s in reader.samples::<f32>().take(need_raw) {
+                            let v = s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
+                            raw_chunk.push(if v.is_finite() { v } else { 0.0 });
+                        }
+                    } else if *bits_per_sample == 16 {
+                        for s in reader.samples::<i16>().take(need_raw) {
+                            let v = s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
+                            raw_chunk.push((v as f32) / 32768.0);
+                        }
+                    } else {
+                        let denom =
+                            (1_i64 << bits_per_sample.saturating_sub(1).max(1)) as f64;
+                        for s in reader.samples::<i32>().take(need_raw) {
+                            let v = s.map_err(|e| AudioDecodeError::Wav(e.to_string()))?;
+                            raw_chunk.push(((v as f64) / denom) as f32);
+                        }
+                    }
+                    if raw_chunk.len() < need_raw {
+                        self.eof = true;
+                    }
+                    if raw_chunk.is_empty() {
+                        break;
+                    }
+                    if ch == 1 {
+                        self.pending.reserve(raw_chunk.len() * 2);
+                        for s in raw_chunk {
+                            self.pending.push(s);
+                            self.pending.push(s);
+                        }
+                    } else {
+                        self.pending.reserve((raw_chunk.len() / ch) * 2);
+                        for pair in raw_chunk.chunks_exact(ch) {
+                            self.pending.push(pair[0]);
+                            self.pending.push(pair[1]);
+                        }
+                    }
+                }
+                InnerTrackDecoder::Mp3 { bytes, pos } => {
+                    let mut dec = rmp3::Decoder::new(bytes);
+                    dec.set_position(*pos);
+                    while self.pending.len().saturating_sub(self.pending_pos) < want_floats {
+                        let Some(frame) = dec.next() else {
+                            self.eof = true;
+                            break;
+                        };
+                        if let rmp3::Frame::Audio(audio) = frame {
+                            let ch = audio.channels() as usize;
+                            let samples: &[f32] = audio.samples();
+                            if ch <= 1 {
+                                self.pending.reserve(samples.len() * 2);
+                                for &s in samples {
+                                    let clean = if s.is_finite() { s } else { 0.0 };
+                                    self.pending.push(clean);
+                                    self.pending.push(clean);
+                                }
+                            } else {
+                                self.pending.reserve((samples.len() / ch) * 2);
+                                for pair in samples.chunks_exact(ch) {
+                                    self.pending.push(if pair[0].is_finite() { pair[0] } else { 0.0 });
+                                    self.pending.push(if pair[1].is_finite() { pair[1] } else { 0.0 });
+                                }
+                            }
+                        }
+                    }
+                    *pos = dec.position();
+                    if self.eof {
+                        bytes.clear();
+                        bytes.shrink_to_fit();
+                    }
+                }
+            }
+        }
+
+        let avail_floats = ((self.pending.len() - self.pending_pos) / 2) * 2;
+        let copy_floats = avail_floats.min(want_floats);
+        if copy_floats > 0 {
+            out_interleaved.extend_from_slice(&self.pending[self.pending_pos..self.pending_pos + copy_floats]);
+            self.pending_pos += copy_floats;
+        }
+        Ok(copy_floats / 2)
+    }
 }
 
 /// Decodifica cualquier archivo `.ogg`, `.wav` o `.mp3` en `f32`, lo remuestrea con Rubato FFT
@@ -359,6 +715,49 @@ mod tests {
         let resampled = resample_stereo_f32_rubato(&samples, 44_100, 48_000).unwrap();
         let expected_frames = ((512.0_f64 * 48_000.0) / 44_100.0).round() as usize;
         assert_eq!(resampled.len() / 2, expected_frames);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn streaming_track_decoder_matches_batch_wav_decode_in_chunks() {
+        let tmp = std::env::temp_dir().join("beatforge_streaming_decoder_test.wav");
+        let _ = std::fs::remove_file(&tmp);
+
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut writer = hound::WavWriter::create(&tmp, spec).unwrap();
+            for i in 0..5_000 {
+                let v = ((i as f32 * 0.05).sin() * 18_000.0) as i16;
+                writer.write_sample(v).unwrap();
+                writer.write_sample(-v).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        let (sr_batch, batch) = decode_audio_file_raw_f32(&tmp).unwrap();
+        let mut dec = StreamingTrackDecoder::open(&tmp).unwrap();
+        assert_eq!(dec.sample_rate(), sr_batch);
+
+        let mut streamed = Vec::new();
+        let mut chunk = Vec::new();
+        loop {
+            let n = dec.read_next_frames(777, &mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            streamed.extend_from_slice(&chunk);
+        }
+
+        assert_eq!(streamed.len(), batch.len());
+        for (a, b) in streamed.iter().zip(batch.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
 
         let _ = std::fs::remove_file(&tmp);
     }

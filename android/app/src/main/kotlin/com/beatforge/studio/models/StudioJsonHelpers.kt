@@ -211,7 +211,10 @@ internal object StudioJsonHelpers {
             bufferCapacityFrames = devObj.optInt("bufferCapacityFrames", 0),
             lowLatencyActive = devObj.optBoolean("lowLatencyActive", false),
             aaudioActive = devObj.optBoolean("aaudioActive", false),
-            aaudioDeviceId = devObj.optInt("aaudioDeviceId", 0)
+            aaudioDeviceId = devObj.optInt("aaudioDeviceId", 0),
+            aaudioMatched = devObj.optBoolean("aaudioMatched", false),
+            estimatedOutputLatencyMs = devObj.optDouble("estimatedOutputLatencyMs", 0.0).toFloat(),
+            recommendedAudioOffsetMs = devObj.optDouble("recommendedAudioOffsetMs", 0.0)
         )
 
         val songObj = obj.optJSONObject("songAnalysis")
@@ -282,7 +285,8 @@ internal object StudioJsonHelpers {
             device = device,
             songAnalysis = songAnalysis,
             dspPlan = dspPlan,
-            outputTruePeakDbtp = obj.optDouble("outputTruePeakDbtp", -1.0).toFloat()
+            outputTruePeakDbtp = obj.optDouble("outputTruePeakDbtp", -1.0).toFloat(),
+            appliedAutoOffsetMs = obj.optDouble("appliedAutoOffsetMs", 0.0)
         )
     }
 }

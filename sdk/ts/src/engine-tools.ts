@@ -5968,6 +5968,7 @@ export interface DeviceAudioProbeInput {
   supportsLowLatencyFeature?: boolean;
   supportsProAudioFeature?: boolean;
   supportedSampleRates?: number[];
+  aaudioMatched?: boolean;
 }
 
 export interface AAudioHardwareProbeInput {
@@ -5998,6 +5999,9 @@ export interface EffectiveDeviceAcoustics {
   lowLatencyActive: boolean;
   aaudioActive: boolean;
   aaudioDeviceId: number;
+  aaudioMatched: boolean;
+  estimatedOutputLatencyMs: number;
+  recommendedAudioOffsetMs: number;
 }
 
 export interface SpectralBandProfile {
@@ -6102,6 +6106,19 @@ export function fuseDeviceAndAAudioProbe(
     os.route === 'builtin_speaker' &&
     (Boolean(os.isMonoSpeaker) || effectiveChannelCount === 1 || aaudio.hardwareChannelCount === 1);
 
+  const framesPerBurst =
+    aaudio.framesPerBurst > 0 ? aaudio.framesPerBurst : Math.max(64, os.osFramesPerBuffer ?? 192);
+  const lowLatencyActive = Boolean(aaudio.lowLatencyActive || os.supportsLowLatencyFeature);
+  const aaudioDeviceId = aaudio.deviceId ?? 0;
+  const { totalLatencyMs, recommendedOffsetMs } = estimateOutputLatencyAndOffset(
+    os.route,
+    effectiveSampleRate,
+    framesPerBurst,
+    aaudio.bufferCapacityFrames ?? 0,
+    lowLatencyActive,
+    aaudio.aaudioActive,
+  );
+
   return {
     route: os.route,
     routeLabel:
@@ -6118,12 +6135,70 @@ export function fuseDeviceAndAAudioProbe(
     hardwareNativeSampleRate,
     effectiveChannelCount,
     isMonoSpeaker,
-    framesPerBurst: aaudio.framesPerBurst > 0 ? aaudio.framesPerBurst : Math.max(64, os.osFramesPerBuffer ?? 192),
+    framesPerBurst,
     bufferCapacityFrames: aaudio.bufferCapacityFrames ?? 0,
-    lowLatencyActive: Boolean(aaudio.lowLatencyActive || os.supportsLowLatencyFeature),
+    lowLatencyActive,
     aaudioActive: aaudio.aaudioActive,
-    aaudioDeviceId: aaudio.deviceId ?? 0,
+    aaudioDeviceId,
+    aaudioMatched: Boolean(os.aaudioMatched && aaudioDeviceId > 0),
+    estimatedOutputLatencyMs: totalLatencyMs,
+    recommendedAudioOffsetMs: recommendedOffsetMs,
   };
+}
+
+/**
+ * Espejo puro de `pulse_audio::adaptive_master::estimate_output_latency_and_offset`:
+ * calcula la latencia física estimada del buffer AAudio + enlace Bluetooth/HDMI y el
+ * desplazamiento recomendado en ms para compensar `audio_offset_ms` sin tocar el ajuste manual.
+ */
+export function estimateOutputLatencyAndOffset(
+  route: AndroidOutputRoute,
+  effectiveSr: number,
+  framesPerBurst: number,
+  bufferCapacityFrames: number,
+  lowLatencyActive: boolean,
+  aaudioActive: boolean,
+): { totalLatencyMs: number; recommendedOffsetMs: number } {
+  const sr = Math.max(8000, effectiveSr);
+  const activeBufFrames = lowLatencyActive
+    ? Math.max(64, framesPerBurst) * 2
+    : bufferCapacityFrames > 0
+      ? Math.max(bufferCapacityFrames, Math.max(64, framesPerBurst) * 2)
+      : Math.max(192, framesPerBurst) * 3;
+  const bufferMs = (activeBufFrames / sr) * 1000;
+  let wirelessOrDacMs = 0;
+  if (route === 'bluetooth_a2dp') {
+    wirelessOrDacMs = 165;
+  } else if (route === 'bluetooth_le') {
+    wirelessOrDacMs = 50;
+  } else if (route === 'hdmi_or_external') {
+    wirelessOrDacMs = 42;
+  } else if (route === 'usb_audio') {
+    wirelessOrDacMs = lowLatencyActive ? 4 : 14;
+  } else if (route === 'wired_headphones') {
+    wirelessOrDacMs = aaudioActive && lowLatencyActive ? 0 : 8;
+  } else {
+    wirelessOrDacMs = aaudioActive && lowLatencyActive ? 0 : 10;
+  }
+
+  const totalLatencyMs = Math.max(2, Math.min(320, bufferMs + wirelessOrDacMs));
+  let recommendedOffsetMs = 0;
+  if (route === 'bluetooth_a2dp') {
+    recommendedOffsetMs = Math.round(Math.max(140, Math.min(240, totalLatencyMs)));
+  } else if (route === 'bluetooth_le') {
+    recommendedOffsetMs = Math.round(Math.max(40, Math.min(95, totalLatencyMs)));
+  } else if (route === 'hdmi_or_external') {
+    recommendedOffsetMs = Math.round(Math.max(25, Math.min(120, totalLatencyMs)));
+  } else if (route === 'usb_audio') {
+    recommendedOffsetMs =
+      !lowLatencyActive && totalLatencyMs > 28
+        ? Math.round(Math.max(0, Math.min(35, totalLatencyMs - 14)))
+        : 0;
+  } else if (aaudioActive && !lowLatencyActive && totalLatencyMs > 40) {
+    recommendedOffsetMs = Math.round(Math.max(0, Math.min(60, totalLatencyMs - 20)));
+  }
+
+  return { totalLatencyMs, recommendedOffsetMs };
 }
 
 /**
@@ -6374,6 +6449,9 @@ export function buildAdaptiveDspPlan(
   const resampleNeeded = song.sampleRate !== targetSampleRate;
   if (resampleNeeded) {
     summaryNotes.push(`Rubato ${song.sampleRate} -> ${targetSampleRate} Hz`);
+  }
+  if (device.recommendedAudioOffsetMs >= 1) {
+    summaryNotes.push(`Sync +${Math.round(device.recommendedAudioOffsetMs)} ms`);
   }
 
   const appliedMakeupGainDb = clamp(targetLufs - song.integratedLufs, -9.0, 8.0);
@@ -7522,4 +7600,197 @@ export function resolveAuxHotCompilePlan(spec: AuxHotCompileTargetSpec): AuxHotC
     registeredInManifest: true,
   };
 }
+
+export interface AAudioAndroidDeviceEntry {
+  id: number;
+  route: AndroidOutputRoute;
+  productName: string;
+}
+
+/**
+ * Espejo puro del cruce exacto en `AndroidAudioDeviceProbe.kt`:
+ * busca primero la coincidencia exacta `id === aaudioDeviceId` reportada por `AAudioStream_getDeviceId`
+ * y solo recurre a heurística por prioridad de salidas cuando AAudio no reportó un dispositivo válido.
+ */
+export function resolveAAudioOutputDeviceMatch(
+  outputs: ReadonlyArray<AAudioAndroidDeviceEntry>,
+  aaudioDeviceId: number,
+): { selected: AAudioAndroidDeviceEntry | null; aaudioMatched: boolean } {
+  if (aaudioDeviceId > 0) {
+    const exact = outputs.find((d) => d.id === aaudioDeviceId);
+    if (exact) {
+      return { selected: exact, aaudioMatched: true };
+    }
+  }
+  const priority: AndroidOutputRoute[] = [
+    'usb_audio',
+    'wired_headphones',
+    'bluetooth_le',
+    'bluetooth_a2dp',
+    'hdmi_or_external',
+    'builtin_speaker',
+  ];
+  for (const r of priority) {
+    const found = outputs.find((d) => d.route === r);
+    if (found) return { selected: found, aaudioMatched: false };
+  }
+  return { selected: outputs[0] ?? null, aaudioMatched: false };
+}
+
+/**
+ * Espejo puro de la política anti-doble-mezcla y ruta lineal de 1 pista entre
+ * `hot_compile_ops.rs` y `pulse_audio::streaming::merge_tracks_to_wav`:
+ * - Si el adaptador `f32` está activo y existen pistas crudas en disco, se omite `compiled_mix.wav`.
+ * - Si está desactivado y hay 1..3 pistas activas, se genera `compiled_mix.wav`, aplicando `tanh()`
+ *   únicamente cuando hay 2+ pistas simultáneas (1 pista pasa linealmente).
+ */
+export function resolveAudioMergePolicy(spec: {
+  audioAdaptEnabled: boolean;
+  hasRawActiveTrackOnDisk: boolean;
+  unmutedActiveTrackCount: number;
+}): {
+  skipHotCompileMix: boolean;
+  shouldMergeWav: boolean;
+  applySoftClipTanhOnMerge: boolean;
+} {
+  const activeCount = Math.max(0, Math.trunc(spec.unmutedActiveTrackCount));
+  if (activeCount === 0) {
+    return {
+      skipHotCompileMix: false,
+      shouldMergeWav: false,
+      applySoftClipTanhOnMerge: false,
+    };
+  }
+  if (spec.audioAdaptEnabled && spec.hasRawActiveTrackOnDisk) {
+    return {
+      skipHotCompileMix: true,
+      shouldMergeWav: false,
+      applySoftClipTanhOnMerge: false,
+    };
+  }
+  return {
+    skipHotCompileMix: false,
+    shouldMergeWav: true,
+    applySoftClipTanhOnMerge: activeCount > 1,
+  };
+}
+
+/**
+ * Espejo puro de `pulse_audio::adaptive_master::compute_adaptation_cache_hash` (`bf_audio_adapt_v3`):
+ * cuando existen pistas fuente crudas, ignora `preMergedWavFingerprint` para no invalidar el caché
+ * `audio_adapted/` por cambios o eliminación de `compiled_mix.wav`.
+ */
+export function computeAudioAdaptCacheKeyV3(spec: {
+  rawSourceFingerprints: ReadonlyArray<{ slot: number; gain: number; key: string }>;
+  preMergedWavFingerprint?: string | null;
+  route: AndroidOutputRoute;
+  aaudioDeviceId: number;
+  effectiveSampleRate: number;
+  isMonoSpeaker: boolean;
+}): string {
+  const parts: string[] = ['bf_audio_adapt_v3'];
+  if (spec.rawSourceFingerprints.length > 0) {
+    for (const src of spec.rawSourceFingerprints) {
+      parts.push(`raw:${src.slot}:${Math.round(src.gain * 1000)}:${src.key}`);
+    }
+  } else if (spec.preMergedWavFingerprint) {
+    parts.push(`pre:${spec.preMergedWavFingerprint}`);
+  }
+  parts.push(
+    `dev:${spec.route}:${spec.aaudioDeviceId}:${spec.effectiveSampleRate}:${spec.isMonoSpeaker ? 1 : 0}`,
+  );
+  return fnv1a64Hex(parts.join('|'));
+}
+
+export interface AudioAdaptedFileEntry {
+  path: string;
+  bytes: number;
+  modifiedMs: number;
+}
+
+/**
+ * Espejo puro de `pulse_audio::adaptive_master::prune_audio_adapted_cache`:
+ * elimina archivos `.tmp`, `.json` huérfanos sin `.wav` y los pares `adapted_*` más antiguos
+ * por encima del límite (`maxPairs = 2`, `maxBytes = 96 MiB`) protegiendo la entrada activa.
+ */
+export function planAudioAdaptedCachePrune(
+  files: ReadonlyArray<AudioAdaptedFileEntry>,
+  protectPaths: ReadonlyArray<string>,
+  maxPairs = 2,
+  maxBytes = 96 * 1024 * 1024,
+): { deletePaths: string[]; keptPairs: number; keptBytes: number } {
+  const protectedSet = new Set(protectPaths);
+  const deleteSet = new Set<string>();
+  const wavByStem = new Map<string, AudioAdaptedFileEntry>();
+  const jsonByStem = new Map<string, AudioAdaptedFileEntry>();
+
+  const baseName = (p: string) => p.split('/').pop() ?? p;
+
+  for (const f of files) {
+    const name = baseName(f.path);
+    if (name.endsWith('.tmp') || name.endsWith('.wav.tmp') || name.endsWith('.json.tmp')) {
+      if (!protectedSet.has(f.path)) deleteSet.add(f.path);
+      continue;
+    }
+    if (name.startsWith('adapted_') && name.endsWith('.wav')) {
+      wavByStem.set(name.slice(0, -4), f);
+    } else if (name.startsWith('adapted_') && name.endsWith('.json')) {
+      jsonByStem.set(name.slice(0, -5), f);
+    }
+  }
+
+  for (const [stem, jsonFile] of jsonByStem.entries()) {
+    if (!wavByStem.has(stem) && !protectedSet.has(jsonFile.path)) {
+      deleteSet.add(jsonFile.path);
+    }
+  }
+
+  const pairs = [...wavByStem.entries()].map(([stem, wav]) => {
+    const json = jsonByStem.get(stem) ?? null;
+    const isProtected =
+      protectedSet.has(wav.path) || (json !== null && protectedSet.has(json.path));
+    return {
+      wav,
+      json,
+      totalBytes: wav.bytes + (json?.bytes ?? 0),
+      isProtected,
+      modifiedMs: wav.modifiedMs,
+    };
+  });
+
+  // Ordenar de más antiguo a más reciente
+  pairs.sort((a, b) => a.modifiedMs - b.modifiedMs);
+  let totalBytes = pairs.reduce((acc, p) => acc + p.totalBytes, 0);
+  let remainingPairs = pairs.length;
+
+  for (const p of pairs) {
+    const overLimit = remainingPairs > maxPairs || totalBytes > maxBytes;
+    if (!overLimit) break;
+    if (p.isProtected) continue;
+    deleteSet.add(p.wav.path);
+    if (p.json) deleteSet.add(p.json.path);
+    totalBytes = Math.max(0, totalBytes - p.totalBytes);
+    remainingPairs = Math.max(0, remainingPairs - 1);
+  }
+
+  return {
+    deletePaths: [...deleteSet],
+    keptPairs: remainingPairs,
+    keptBytes: totalBytes,
+  };
+}
+
+/**
+ * Espejo puro de `simulation/mod.rs`: calcula `songPosMs` combinando el offset manual del proyecto
+ * con la compensación automática por latencia Bluetooth/AAudio sin modificar el slider manual.
+ */
+export function computeEffectiveSongPositionMs(
+  rawMixerMs: number,
+  manualAudioOffsetMs: number,
+  autoAudioOffsetMs: number,
+): number {
+  if (rawMixerMs < 0) return rawMixerMs;
+  return rawMixerMs - (manualAudioOffsetMs + autoAudioOffsetMs);
+}
+
 

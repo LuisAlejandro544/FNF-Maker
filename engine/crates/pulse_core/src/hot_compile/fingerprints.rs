@@ -333,7 +333,7 @@ impl AudioMergeFingerprint {
                 duck_on_miss: slot.duck_on_player_miss,
             });
         }
-        if active.len() <= 1 {
+        if !active.iter().any(|s| !s.muted) {
             return None;
         }
         Some(Self {

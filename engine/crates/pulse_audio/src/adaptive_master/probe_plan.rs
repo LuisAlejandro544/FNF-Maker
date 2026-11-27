@@ -47,6 +47,22 @@ pub fn fuse_device_and_aaudio_probe(
             || reported_ch == 1
             || aaudio.hardware_channel_count == 1);
 
+    let frames_per_burst = if aaudio.frames_per_burst > 0 {
+        aaudio.frames_per_burst
+    } else {
+        os.os_frames_per_buffer.max(64)
+    };
+    let low_latency_active = aaudio.low_latency_active || os.supports_low_latency_feature;
+    let (estimated_output_latency_ms, recommended_audio_offset_ms) =
+        estimate_output_latency_and_offset(
+            os.route,
+            effective_sr,
+            frames_per_burst,
+            aaudio.buffer_capacity_frames,
+            low_latency_active,
+            aaudio.aaudio_active,
+        );
+
     EffectiveDeviceAcoustics {
         route: os.route,
         route_label: if os.route == AndroidOutputRoute::BuiltinSpeaker {
@@ -70,16 +86,85 @@ pub fn fuse_device_and_aaudio_probe(
         hardware_native_sample_rate: hw_native_sr,
         effective_channel_count: reported_ch,
         is_mono_speaker,
-        frames_per_burst: if aaudio.frames_per_burst > 0 {
-            aaudio.frames_per_burst
-        } else {
-            os.os_frames_per_buffer.max(64)
-        },
+        frames_per_burst,
         buffer_capacity_frames: aaudio.buffer_capacity_frames,
-        low_latency_active: aaudio.low_latency_active || os.supports_low_latency_feature,
+        low_latency_active,
         aaudio_active: aaudio.aaudio_active,
         aaudio_device_id: aaudio.device_id,
+        aaudio_matched: os.aaudio_matched && aaudio.device_id > 0,
+        estimated_output_latency_ms,
+        recommended_audio_offset_ms,
     }
+}
+
+/// Estima la latencia física total de salida (buffer AAudio + enlace inalámbrico Bluetooth/HDMI)
+/// y calcula el desplazamiento automático recomendado en ms para compensar `audio_offset_ms`.
+pub fn estimate_output_latency_and_offset(
+    route: AndroidOutputRoute,
+    effective_sr: u32,
+    frames_per_burst: u32,
+    buffer_capacity_frames: u32,
+    low_latency_active: bool,
+    aaudio_active: bool,
+) -> (f32, f64) {
+    let sr = effective_sr.max(8000) as f32;
+    let active_buf_frames = if low_latency_active {
+        frames_per_burst.max(64) * 2
+    } else if buffer_capacity_frames > 0 {
+        buffer_capacity_frames.max(frames_per_burst.max(64) * 2)
+    } else {
+        frames_per_burst.max(192) * 3
+    };
+    let buffer_ms = (active_buf_frames as f32 / sr) * 1000.0;
+    let wireless_or_dac_ms = match route {
+        AndroidOutputRoute::BluetoothA2dp => 165.0,
+        AndroidOutputRoute::BluetoothLe => 50.0,
+        AndroidOutputRoute::HdmiOrExternal => 42.0,
+        AndroidOutputRoute::UsbAudio => {
+            if low_latency_active {
+                4.0
+            } else {
+                14.0
+            }
+        }
+        AndroidOutputRoute::WiredHeadphones => {
+            if aaudio_active && low_latency_active {
+                0.0
+            } else {
+                8.0
+            }
+        }
+        AndroidOutputRoute::BuiltinSpeaker | AndroidOutputRoute::Unknown => {
+            if aaudio_active && low_latency_active {
+                0.0
+            } else {
+                10.0
+            }
+        }
+    };
+    let total_latency_ms = (buffer_ms + wireless_or_dac_ms).clamp(2.0, 320.0);
+    let recommended_offset_ms = match route {
+        AndroidOutputRoute::BluetoothA2dp => total_latency_ms.clamp(140.0, 240.0).round() as f64,
+        AndroidOutputRoute::BluetoothLe => total_latency_ms.clamp(40.0, 95.0).round() as f64,
+        AndroidOutputRoute::HdmiOrExternal => total_latency_ms.clamp(25.0, 120.0).round() as f64,
+        AndroidOutputRoute::UsbAudio => {
+            if !low_latency_active && total_latency_ms > 28.0 {
+                (total_latency_ms - 14.0).clamp(0.0, 35.0).round() as f64
+            } else {
+                0.0
+            }
+        }
+        AndroidOutputRoute::WiredHeadphones
+        | AndroidOutputRoute::BuiltinSpeaker
+        | AndroidOutputRoute::Unknown => {
+            if aaudio_active && !low_latency_active && total_latency_ms > 40.0 {
+                (total_latency_ms - 20.0).clamp(0.0, 60.0).round() as f64
+            } else {
+                0.0
+            }
+        }
+    };
+    (total_latency_ms, recommended_offset_ms)
 }
 
 /// Calcula el plan de masterización adaptativa combinando el hardware real de TU teléfono,
@@ -353,6 +438,9 @@ pub fn build_adaptive_dsp_plan(
     let resample_needed = song.sample_rate != target_sr;
     if resample_needed {
         summary_notes.push(format!("Rubato {} -> {} Hz", song.sample_rate, target_sr));
+    }
+    if device.recommended_audio_offset_ms >= 1.0 {
+        summary_notes.push(format!("Sync +{:.0} ms", device.recommended_audio_offset_ms));
     }
 
     // Nivelación EBU R128 acotada [-9 dB, +8 dB] respetando la dinámica de cada canción

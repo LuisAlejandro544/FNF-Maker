@@ -98,6 +98,12 @@ import {
   normalizeRenderBackendKind,
   matchArrowSparrowSubTexture,
   decodeBfgpExtensionFlags,
+  estimateOutputLatencyAndOffset,
+  resolveAAudioOutputDeviceMatch,
+  resolveAudioMergePolicy,
+  computeAudioAdaptCacheKeyV3,
+  planAudioAdaptedCachePrune,
+  computeEffectiveSongPositionMs,
   decodeBfgpNoteKindCode,
   normalizeAndCenterAtlasFrames,
   computeStageImportDimensions,
@@ -3240,6 +3246,137 @@ test('resolveAuxHotCompilePlan scales countdown sprites and character icons prop
   assert.equal(singleIconLow.mode, 'passthrough_webp');
   assert.equal(singleIconLow.registeredInManifest, true);
 });
+
+test('resolveAudioMergePolicy avoids double mix and disables tanh distortion on single active track', () => {
+  const adaptOnWithRaw = resolveAudioMergePolicy({
+    audioAdaptEnabled: true,
+    hasRawActiveTrackOnDisk: true,
+    unmutedActiveTrackCount: 2,
+  });
+  assert.equal(adaptOnWithRaw.skipHotCompileMix, true);
+  assert.equal(adaptOnWithRaw.shouldMergeWav, false);
+
+  const adaptOffSingleTrack = resolveAudioMergePolicy({
+    audioAdaptEnabled: false,
+    hasRawActiveTrackOnDisk: true,
+    unmutedActiveTrackCount: 1,
+  });
+  assert.equal(adaptOffSingleTrack.skipHotCompileMix, false);
+  assert.equal(adaptOffSingleTrack.shouldMergeWav, true);
+  assert.equal(adaptOffSingleTrack.applySoftClipTanhOnMerge, false);
+
+  const adaptOffMultiTrack = resolveAudioMergePolicy({
+    audioAdaptEnabled: false,
+    hasRawActiveTrackOnDisk: true,
+    unmutedActiveTrackCount: 3,
+  });
+  assert.equal(adaptOffMultiTrack.shouldMergeWav, true);
+  assert.equal(adaptOffMultiTrack.applySoftClipTanhOnMerge, true);
+});
+
+test('resolveAAudioOutputDeviceMatch identifies exact AAudio deviceId and falls back cleanly when unmatched', () => {
+  const outputs = [
+    { id: 1, route: 'builtin_speaker' as const, productName: 'Phone Speaker' },
+    { id: 17, route: 'bluetooth_a2dp' as const, productName: 'Buds BT' },
+    { id: 23, route: 'usb_audio' as const, productName: 'USB DAC' },
+  ];
+
+  // Aunque hay un DAC USB conectado, si AAudio reporta deviceId 17, debe elegir exactamente Bluetooth A2DP
+  const exactBt = resolveAAudioOutputDeviceMatch(outputs, 17);
+  assert.equal(exactBt.aaudioMatched, true);
+  assert.equal(exactBt.selected?.route, 'bluetooth_a2dp');
+  assert.equal(exactBt.selected?.id, 17);
+
+  // Si AAudio devuelve 0 (emulador/no reportado), usa la prioridad estándar
+  const fallbackUsb = resolveAAudioOutputDeviceMatch(outputs, 0);
+  assert.equal(fallbackUsb.aaudioMatched, false);
+  assert.equal(fallbackUsb.selected?.route, 'usb_audio');
+});
+
+test('estimateOutputLatencyAndOffset & computeEffectiveSongPositionMs compensate Bluetooth latency non-destructively', () => {
+  const btA2dp = fuseDeviceAndAAudioProbe(
+    {
+      route: 'bluetooth_a2dp',
+      osSampleRate: 48000,
+      reportedChannelCount: 2,
+      aaudioMatched: true,
+    },
+    {
+      aaudioActive: true,
+      sampleRate: 48000,
+      channelCount: 2,
+      framesPerBurst: 512,
+      lowLatencyActive: false,
+      deviceId: 17,
+    },
+  );
+  assert.equal(btA2dp.aaudioMatched, true);
+  assert.ok(btA2dp.recommendedAudioOffsetMs >= 140 && btA2dp.recommendedAudioOffsetMs <= 240);
+
+  const btLe = estimateOutputLatencyAndOffset('bluetooth_le', 48000, 192, 576, false, true);
+  assert.ok(btLe.recommendedOffsetMs >= 40 && btLe.recommendedOffsetMs <= 95);
+
+  const wiredLow = estimateOutputLatencyAndOffset('wired_headphones', 48000, 96, 192, true, true);
+  assert.equal(wiredLow.recommendedOffsetMs, 0);
+
+  // Suma el offset manual del jugador (+12 ms) y el auto-offset Bluetooth (+186 ms) sin sobrescribir el manual
+  const effectivePos = computeEffectiveSongPositionMs(10000, 12, btA2dp.recommendedAudioOffsetMs);
+  assert.equal(effectivePos, 10000 - (12 + btA2dp.recommendedAudioOffsetMs));
+  assert.equal(computeEffectiveSongPositionMs(-450, 12, btA2dp.recommendedAudioOffsetMs), -450);
+});
+
+test('computeAudioAdaptCacheKeyV3 ignores preMergedWav when raw tracks exist and planAudioAdaptedCachePrune cleans old/tmp files', () => {
+  const hashA = computeAudioAdaptCacheKeyV3({
+    rawSourceFingerprints: [{ slot: 0, gain: 1, key: 'inst_ogg_1234' }],
+    preMergedWavFingerprint: 'compiled_mix_old',
+    route: 'wired_headphones',
+    aaudioDeviceId: 5,
+    effectiveSampleRate: 48000,
+    isMonoSpeaker: false,
+  });
+  const hashB = computeAudioAdaptCacheKeyV3({
+    rawSourceFingerprints: [{ slot: 0, gain: 1, key: 'inst_ogg_1234' }],
+    preMergedWavFingerprint: null,
+    route: 'wired_headphones',
+    aaudioDeviceId: 5,
+    effectiveSampleRate: 48000,
+    isMonoSpeaker: false,
+  });
+  assert.equal(hashA, hashB);
+
+  const hashDifferentRoute = computeAudioAdaptCacheKeyV3({
+    rawSourceFingerprints: [{ slot: 0, gain: 1, key: 'inst_ogg_1234' }],
+    preMergedWavFingerprint: null,
+    route: 'bluetooth_a2dp',
+    aaudioDeviceId: 17,
+    effectiveSampleRate: 48000,
+    isMonoSpeaker: false,
+  });
+  assert.notEqual(hashA, hashDifferentRoute);
+
+  const prune = planAudioAdaptedCachePrune(
+    [
+      { path: '/cache/audio_adapted/adapted_old1.wav', bytes: 30_000_000, modifiedMs: 100 },
+      { path: '/cache/audio_adapted/adapted_old1.json', bytes: 2_000, modifiedMs: 100 },
+      { path: '/cache/audio_adapted/adapted_mid2.wav', bytes: 30_000_000, modifiedMs: 200 },
+      { path: '/cache/audio_adapted/adapted_mid2.json', bytes: 2_000, modifiedMs: 200 },
+      { path: '/cache/audio_adapted/adapted_active.wav', bytes: 30_000_000, modifiedMs: 300 },
+      { path: '/cache/audio_adapted/adapted_active.json', bytes: 2_000, modifiedMs: 300 },
+      { path: '/cache/audio_adapted/adapted_orphan.json', bytes: 1_500, modifiedMs: 150 },
+      { path: '/cache/audio_adapted/adapted_stale.wav.tmp', bytes: 50_000, modifiedMs: 120 },
+    ],
+    ['/cache/audio_adapted/adapted_active.wav', '/cache/audio_adapted/adapted_active.json'],
+    2,
+    96 * 1024 * 1024,
+  );
+  assert.ok(prune.deletePaths.includes('/cache/audio_adapted/adapted_old1.wav'));
+  assert.ok(prune.deletePaths.includes('/cache/audio_adapted/adapted_old1.json'));
+  assert.ok(prune.deletePaths.includes('/cache/audio_adapted/adapted_orphan.json'));
+  assert.ok(prune.deletePaths.includes('/cache/audio_adapted/adapted_stale.wav.tmp'));
+  assert.ok(!prune.deletePaths.includes('/cache/audio_adapted/adapted_active.wav'));
+  assert.equal(prune.keptPairs, 2);
+});
+
 
 
 

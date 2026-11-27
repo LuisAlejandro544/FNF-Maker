@@ -241,6 +241,7 @@ object StudioJsonParser {
             downscroll = obj.optBoolean("downscroll", false),
             controlMode = obj.optString("controlMode", "tap_arrows"),
             audioOffsetMs = obj.optDouble("audioOffsetMs", 0.0),
+            autoAudioOffsetMs = obj.optDouble("autoAudioOffsetMs", 0.0),
             chart = chart,
             audioTracks = tracks,
             stageCamera = stageCamera,

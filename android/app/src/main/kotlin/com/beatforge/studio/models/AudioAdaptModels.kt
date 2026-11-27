@@ -65,7 +65,10 @@ data class EffectiveDeviceAcousticsSnapshot(
     val bufferCapacityFrames: Int = 0,
     val lowLatencyActive: Boolean = false,
     val aaudioActive: Boolean = false,
-    val aaudioDeviceId: Int = 0
+    val aaudioDeviceId: Int = 0,
+    val aaudioMatched: Boolean = false,
+    val estimatedOutputLatencyMs: Float = 0f,
+    val recommendedAudioOffsetMs: Double = 0.0
 )
 
 data class AdaptiveDspPlanSnapshot(
@@ -96,5 +99,6 @@ data class AudioAdaptationReportSnapshot(
     val device: EffectiveDeviceAcousticsSnapshot = EffectiveDeviceAcousticsSnapshot(),
     val songAnalysis: SongAcousticAnalysisSnapshot? = null,
     val dspPlan: AdaptiveDspPlanSnapshot? = null,
-    val outputTruePeakDbtp: Float = -1f
+    val outputTruePeakDbtp: Float = -1f,
+    val appliedAutoOffsetMs: Double = 0.0
 )

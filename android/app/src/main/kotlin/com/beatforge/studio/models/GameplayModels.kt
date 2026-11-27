@@ -78,6 +78,7 @@ data class ProjectSnapshot(
     val downscroll: Boolean = false,
     val controlMode: String = "tap_arrows",
     val audioOffsetMs: Double = 0.0,
+    val autoAudioOffsetMs: Double = 0.0,
     val chart: ChartSnapshot = ChartSnapshot(),
     val audioTracks: List<AudioTrackSnapshot> = emptyList(),
     val stageCamera: StageCameraSnapshot = StageCameraSnapshot(),

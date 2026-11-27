@@ -31,7 +31,14 @@ impl EngineSession {
             serde_json::from_str(device_probe_json).unwrap_or_default()
         };
 
+        let has_raw_active = self.project.audio_tracks.iter().any(|t| {
+            !t.muted
+                && t.file_path
+                    .as_ref()
+                    .is_some_and(|p| p.is_file())
+        });
         if self.project.active_audio_count() > 0
+            && !has_raw_active
             && self.decoded_tracks.iter().all(|t| t.is_none())
             && self.compiled_audio_path.is_none()
         {
@@ -57,6 +64,7 @@ impl EngineSession {
         ) {
             Ok(report) => {
                 self.adapted_audio_path = report.output_wav_path.as_deref().map(PathBuf::from);
+                self.auto_audio_offset_ms = report.applied_auto_offset_ms;
                 let msg = if report.bypassed {
                     if !report.enabled {
                         "Adaptador acústico desactivado (audio original)".to_string()
@@ -73,6 +81,7 @@ impl EngineSession {
             }
             Err(err) => {
                 self.adapted_audio_path = None;
+                self.auto_audio_offset_ms = 0.0;
                 self.last_audio_adapt_report = None;
                 self.err_response(format!("Error en adaptador acústico: {}", err))
             }

@@ -69,6 +69,14 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetAud
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeGetAAudioDeviceId(
+    _env: JNIEnv,
+    _cls: JClass,
+) -> jint {
+    session().lock().audio_engine.probe_aaudio_hardware().device_id
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeAdaptAudioForDevice<'local>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,

@@ -51,10 +51,11 @@ impl EngineSession {
         let dt = dt_sec.clamp(0.0, 0.05);
         let raw_mixer_ms = self.audio_engine.mixer.position_ms();
         let in_countdown = raw_mixer_ms < 0.0;
+        let effective_offset_ms = self.project.audio_offset_ms + self.auto_audio_offset_ms;
         let song_pos_ms = if in_countdown {
             raw_mixer_ms
         } else {
-            raw_mixer_ms - self.project.audio_offset_ms
+            raw_mixer_ms - effective_offset_ms
         };
         let active_bpm = self.project.chart.bpm_at_ms(song_pos_ms.max(0.0)).max(40.0);
         let beat_ms = 60_000.0 / active_bpm;

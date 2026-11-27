@@ -157,6 +157,9 @@ object NativeEngineBridge {
     external fun nativeGetAudioAdaptProgress(): String
 
     @JvmStatic
+    external fun nativeGetAAudioDeviceId(): Int
+
+    @JvmStatic
     external fun nativeAdaptAudioForDevice(deviceProbeJson: String): String
 
     @JvmStatic

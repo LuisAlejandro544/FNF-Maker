@@ -33,8 +33,9 @@ pub struct AudioMergeReport {
     pub estimated_ram_saved_kb: usize,
 }
 
-/// Mezcla de 1 a 3 pistas activas (aplicando ganancia, omitiendo silenciadas y aplicando
-/// limitador suave `tanh`) en un único archivo WAV estéreo de 16 bits sobre disco.
+/// Mezcla de 1 a 3 pistas activas en un único archivo WAV estéreo de 16 bits sobre disco.
+/// Si hay múltiples pistas activas aplica limitador suave `tanh()` contra suma > 0 dBFS;
+/// si solo hay una pista activa pasa linealmente (`clamp`) sin distorsión armónica innecesaria.
 pub fn merge_tracks_to_wav(
     tracks: &[Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS],
     configs: &[AudioTrackSlot; MAX_AUDIO_TRACKS],
@@ -105,9 +106,15 @@ pub fn merge_tracks_to_wav(
                 }
             }
 
+            let apply_soft_clip = active_indices.len() > 1;
             for i in 0..len {
-                let l_i16 = (mix_l[i].tanh().clamp(-1.0, 1.0) * 32767.0).round() as i16;
-                let r_i16 = (mix_r[i].tanh().clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                let (l_f, r_f) = if apply_soft_clip {
+                    (mix_l[i].tanh(), mix_r[i].tanh())
+                } else {
+                    (mix_l[i], mix_r[i])
+                };
+                let l_i16 = (l_f.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                let r_i16 = (r_f.clamp(-1.0, 1.0) * 32767.0).round() as i16;
                 writer
                     .write_sample(l_i16)
                     .map_err(|e| format!("Error escribiendo muestra L WAV: {}", e))?;
@@ -536,6 +543,38 @@ mod tests {
         let n2 = stream.read_frames_add(&mut out_seek, 1.0);
         assert_eq!(n2, 256);
         assert!((out_seek[0] - 0.183).abs() < 0.02);
+
+        drop(stream);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn single_active_track_merges_linearly_without_tanh_distortion() {
+        let tmp = std::env::temp_dir().join("beatforge_single_track_linear_test.wav");
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut configs = AudioTrackSlot::default_three_slots();
+        configs[0].gain = 1.0;
+        configs[1].muted = true;
+
+        // 0.85 * 32768 ~= 27853; tanh(0.85) = 0.691 mientras que salida lineal conserva ~0.85
+        let tracks: [Option<Arc<DecodedTrack>>; MAX_AUDIO_TRACKS] = [
+            Some(make_track(48_000, 4_096, 27_853)),
+            Some(make_track(48_000, 4_096, 12_000)),
+            None,
+        ];
+
+        let report = merge_tracks_to_wav(&tracks, &configs, 48_000, &tmp)
+            .expect("merge ok")
+            .expect("some report");
+        assert_eq!(report.merged_tracks, 1);
+
+        let stream = StreamingAudioSource::open(&tmp).expect("open stream ok");
+        let mut out = vec![0.0_f32; 128 * 2];
+        let n = stream.read_frames_add(&mut out, 1.0);
+        assert_eq!(n, 128);
+        assert!(out[0] > 0.82, "expected linear output ~0.85, got {}", out[0]);
+        assert!(out[1] < -0.82, "expected linear output ~-0.85, got {}", out[1]);
 
         drop(stream);
         let _ = std::fs::remove_file(&tmp);

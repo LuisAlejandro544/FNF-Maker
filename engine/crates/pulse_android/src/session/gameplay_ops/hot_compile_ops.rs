@@ -157,7 +157,18 @@ impl EngineSession {
             .load(Ordering::Relaxed)
             .max(8000);
         let compiled_wav = out_dir.join("compiled_mix.wav");
-        let audio_fp_opt = AudioMergeFingerprint::compute(&self.project.audio_tracks, target_sr);
+        let has_raw_active_track = self.project.audio_tracks.iter().any(|t| {
+            !t.muted
+                && t.file_path
+                    .as_ref()
+                    .is_some_and(|p| p.is_file())
+        });
+        let skip_hot_compile_mix = self.project.audio_adapt_enabled && has_raw_active_track;
+        let audio_fp_opt = if skip_hot_compile_mix {
+            None
+        } else {
+            AudioMergeFingerprint::compute(&self.project.audio_tracks, target_sr)
+        };
 
         let reused_audio = if let (Some(fp), Some(cached_audio)) = (&audio_fp_opt, &manifest.audio) {
             if &cached_audio.fingerprint == fp && compiled_wav.exists() {
@@ -184,7 +195,7 @@ impl EngineSession {
                 on_progress(
                     0.82,
                     "Preparando pistas musicales...",
-                    "Uniendo música y voces para sonar sin cortes",
+                    "Preparando streaming WAV limpio sin cortes",
                 );
                 if self.project.active_audio_count() > 0
                     && self.decoded_tracks.iter().all(|t| t.is_none())
@@ -217,8 +228,14 @@ impl EngineSession {
                     }
                 }
             } else {
-                // 0 o 1 pista: no requiere mezcla WAV combinada; asegurar pistas decodificadas listas
-                if self.project.active_audio_count() > 0
+                // Con el adaptador acústico f32 activo o sin pistas activas, evitamos doble mezcla WAV
+                if skip_hot_compile_mix {
+                    on_progress(
+                        0.85,
+                        "Audio listo para calibración f32",
+                        "Se procesará en streaming directo sin doble mezcla",
+                    );
+                } else if self.project.active_audio_count() > 0
                     && self.decoded_tracks.iter().all(|t| t.is_none())
                 {
                     self.reload_project_audio_tracks();

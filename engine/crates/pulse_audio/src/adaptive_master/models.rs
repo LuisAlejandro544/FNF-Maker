@@ -72,6 +72,8 @@ pub struct DeviceAudioProbeInput {
     pub supports_pro_audio_feature: bool,
     #[serde(default)]
     pub supported_sample_rates: Vec<u32>,
+    #[serde(default)]
+    pub aaudio_matched: bool,
 }
 
 fn default_android_api() -> u32 {
@@ -102,6 +104,7 @@ impl Default for DeviceAudioProbeInput {
             supports_low_latency_feature: false,
             supports_pro_audio_feature: false,
             supported_sample_rates: vec![48_000],
+            aaudio_matched: false,
         }
     }
 }
@@ -125,6 +128,12 @@ pub struct EffectiveDeviceAcoustics {
     pub low_latency_active: bool,
     pub aaudio_active: bool,
     pub aaudio_device_id: i32,
+    #[serde(default)]
+    pub aaudio_matched: bool,
+    #[serde(default)]
+    pub estimated_output_latency_ms: f32,
+    #[serde(default)]
+    pub recommended_audio_offset_ms: f64,
 }
 
 /// Distribución de energía espectral calculada con `realfft` + ventana Hann.
@@ -214,4 +223,6 @@ pub struct AudioAdaptationReport {
     pub song_analysis: Option<SongAcousticAnalysis>,
     pub dsp_plan: Option<AdaptiveDspPlan>,
     pub output_true_peak_dbtp: f32,
+    #[serde(default)]
+    pub applied_auto_offset_ms: f64,
 }
