@@ -24,7 +24,7 @@ use pulse_core::hot_compile::{
 };
 use pulse_core::project::MAX_AUDIO_TRACKS;
 use pulse_core::sparrow::CharacterAnimKind;
-use pulse_core::EntityRole;
+use pulse_core::{EntityRole, MobileControlMode, StageEntity};
 use pulse_scripting::ModScriptRuntime;
 use script_sync::sync_script_host_state;
 use std::collections::{HashMap, HashSet};
