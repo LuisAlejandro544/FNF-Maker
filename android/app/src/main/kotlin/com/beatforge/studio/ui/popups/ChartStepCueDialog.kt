@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,9 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.beatforge.studio.ChartEventSnapshot
 import com.beatforge.studio.StageCameraSnapshot
 import com.beatforge.studio.StageEntitySnapshot
@@ -107,14 +110,18 @@ fun ChartStepCueDialog(
     val secNum = stepRow.section.index + 1
     val secTimeText = String.format(Locale.US, "%.2fs", stepRow.stepTimeMs / 1000.0)
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = StudioColors.BgPanel,
             border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.65f)),
             modifier = Modifier
-                .fillMaxWidth()
-                .height(460.dp)
+                .fillMaxWidth(0.88f)
+                .heightIn(max = 490.dp)
+                .padding(10.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -127,43 +134,48 @@ fun ChartStepCueDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Eventos en Paso #${stepRow.stepInSec} (Sec. $secNum)",
                             color = StudioColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
+                            fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "Marca temporal: $secTimeText (${stepRow.stepTimeMs.roundToInt()} ms)",
                             color = StudioColors.TextMuted,
-                            fontSize = 11.sp
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
+                    Spacer(Modifier.width(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
                             onClick = {
                                 onMovePlayheadHere(stepRow.stepTimeMs)
                                 onDismiss()
                             },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             modifier = Modifier.height(30.dp)
                         ) {
                             Icon(Icons.Rounded.PlayArrow, null, tint = StudioColors.AccentEmerald, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(3.dp))
-                            Text("Hilo aquí", fontSize = 10.sp)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Hilo aquí", fontSize = 10.sp, maxLines = 1, softWrap = false)
                         }
                         OutlinedButton(
                             onClick = {
                                 onDismiss()
                                 onOpenStageEventsScript()
                             },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             modifier = Modifier.height(30.dp)
                         ) {
                             Icon(Icons.Rounded.Code, null, tint = StudioColors.AccentPurple, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("stage_events.lua", fontSize = 10.sp)
+                            Text("stage_events.lua", fontSize = 10.sp, maxLines = 1, softWrap = false)
                         }
                     }
                 }

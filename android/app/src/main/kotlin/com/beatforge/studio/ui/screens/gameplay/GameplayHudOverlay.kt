@@ -113,13 +113,14 @@ internal fun BoxScope.GameplayHealthBarAndStats(
     defaultOpponentLosingIcon: ImageBitmap?
 ) {
     if (!hud.hudVisible) return
-    val healthBarAlign = if (hud.downscroll) Alignment.TopCenter else Alignment.BottomCenter
+    val topHud = hud.downscroll || hud.controlMode != MobileControlMode.ClassicHitbox.key
+    val healthBarAlign = if (topHud) Alignment.TopCenter else Alignment.BottomCenter
     Column(
         modifier = Modifier
             .align(healthBarAlign)
             .padding(
-                top = if (hud.downscroll) 6.dp else 0.dp,
-                bottom = if (hud.downscroll) 0.dp else 8.dp
+                top = if (topHud) 6.dp else 0.dp,
+                bottom = if (topHud) 0.dp else 8.dp
             )
             .scale(hud.hudZoom.coerceIn(0.4f, 2f))
             .alpha(hud.hudOpacity.coerceIn(0f, 1f)),
@@ -483,18 +484,16 @@ internal fun BoxScope.GameplayGameOverOverlay(
 
 @Composable
 internal fun BoxScope.GameplayScriptBanner(hud: GameplayHudState) {
-    if (hud.scriptError.isBlank() && hud.scriptLog.isBlank()) return
-    val isErr = hud.scriptError.isNotBlank()
-    val text = if (isErr) hud.scriptError else hud.scriptLog
+    if (hud.scriptError.isBlank()) return
     Surface(
         modifier = Modifier
             .align(Alignment.BottomStart)
             .padding(start = 12.dp, bottom = 10.dp),
         shape = RoundedCornerShape(6.dp),
-        color = if (isErr) StudioColors.AccentCoral.copy(alpha = 0.88f) else StudioColors.BgCard.copy(alpha = 0.85f)
+        color = StudioColors.AccentCoral.copy(alpha = 0.88f)
     ) {
         Text(
-            text = text,
+            text = hud.scriptError,
             color = Color.White,
             fontSize = 10.sp,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)

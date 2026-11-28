@@ -547,7 +547,10 @@ pub fn bake_animate_atlas(
                 AnimSet {
                     prefix: slot.anim_name.clone(),
                     fps: doc.framerate,
-                    looped: low.contains("idle") || low.contains("dance") || low.contains("loop"),
+                    looped: low.contains("idle")
+                        || low.contains("danc")
+                        || low.contains("bop")
+                        || low.contains("loop"),
                     frames: Vec::new(),
                 }
             });

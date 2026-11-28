@@ -63,10 +63,10 @@ internal fun GameplayTouchOverlay(
                             val vh = frameState.virtualHeight.coerceAtLeast(1f)
                             val sx = w / vw
                             val sy = h / vh
-                            val useDownscrollTactile = frameState.downscroll
-                            val baseReceptorY = if (useDownscrollTactile) 595f * sy else 118f * sy
-                            val notePxSize = (if (useDownscrollTactile) 98f else 84f) * minOf(sx, sy)
-                            val maxHitX = if (useDownscrollTactile) 82f * sx else maxOf(105f * sx * 0.54f, notePxSize * 0.80f)
+                            val useDownscrollTactile = true
+                            val baseReceptorY = 595f * sy
+                            val notePxSize = 98f * minOf(sx, sy)
+                            val maxHitX = 82f * sx
                             val maxHitY = maxOf(notePxSize * 1.30f, 96f)
 
                             event.changes.forEach { change ->

@@ -73,7 +73,10 @@ impl SparrowAtlas {
         for (prefix, mut frames) in grouped {
             frames.sort_by(|a, b| natural_frame_cmp(&a.raw_name, &b.raw_name));
             let lower = prefix.to_ascii_lowercase();
-            let looped = lower.contains("idle") || lower.contains("dance") || lower.contains("loop");
+            let looped = lower.contains("idle")
+                || lower.contains("danc")
+                || lower.contains("bop")
+                || lower.contains("loop");
             animations.insert(
                 prefix.clone(),
                 AnimSet {

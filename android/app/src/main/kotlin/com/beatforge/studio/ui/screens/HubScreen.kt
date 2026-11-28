@@ -212,23 +212,60 @@ fun HubScreen(
                         )
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("Modo Downscroll", color = StudioColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Las flechas caen de arriba hacia abajo", color = StudioColors.TextMuted, fontSize = 11.sp)
+                    if (controlMode == MobileControlMode.ClassicHitbox.key) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Modo Downscroll", color = StudioColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Las flechas caen de arriba hacia abajo", color = StudioColors.TextMuted, fontSize = 11.sp)
+                            }
+                            Switch(
+                                checked = downscroll,
+                                onCheckedChange = {
+                                    downscroll = it
+                                    onUpdateMeta(name, author, it, controlMode, offsetMs, scrollSpeed)
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = StudioColors.AccentCyan)
+                            )
                         }
-                        Switch(
-                            checked = downscroll,
-                            onCheckedChange = {
-                                downscroll = it
-                                onUpdateMeta(name, author, it, controlMode, offsetMs, scrollSpeed)
-                            },
-                            colors = SwitchDefaults.colors(checkedThumbColor = StudioColors.AccentCyan)
-                        )
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = StudioColors.BgCard,
+                            border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Dirección de Notas",
+                                        color = StudioColors.TextPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Fijo abajo estilo FNF Mobile (notas cayendo hacia las 4 flechas)",
+                                        color = StudioColors.TextMuted,
+                                        fontSize = 10.5.sp
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Abajo (Fijo)",
+                                    color = StudioColors.AccentCyan,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
 
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

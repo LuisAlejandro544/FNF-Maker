@@ -41,8 +41,8 @@ fn compute_entity_frame_render<'a>(
     ent: &'a StageEntity,
     beat_pulse: f32,
 ) -> (f32, f32, f32, Option<&'a SparrowFrame>) {
-    let is_char = matches!(ent.role, EntityRole::Player | EntityRole::Opponent);
-    let clamp_idle = ent.active_anim == CharacterAnimKind::Idle && is_char;
+    let is_beat_synced = super::is_beat_synced_idle_entity(ent);
+    let clamp_idle = ent.active_anim == CharacterAnimKind::Idle && is_beat_synced;
     let frame = ent
         .atlas
         .as_ref()
@@ -53,7 +53,7 @@ fn compute_entity_frame_render<'a>(
         .map(|a| a.frame_count(CharacterAnimKind::Idle))
         .unwrap_or(0);
     let use_static_bpm_bounce =
-        is_char && ent.active_anim == CharacterAnimKind::Idle && idle_frames <= 1;
+        is_beat_synced && ent.active_anim == CharacterAnimKind::Idle && idle_frames <= 1;
     let base_y = if use_static_bpm_bounce {
         ent.y - beat_pulse * 6.0
     } else {

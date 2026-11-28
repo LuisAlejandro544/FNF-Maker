@@ -26,10 +26,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Face
-import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Place
@@ -200,7 +200,7 @@ fun SpriteLabScreen(
                         modifier = Modifier.height(28.dp)
                     ) {
                         Icon(
-                            Icons.Rounded.HelpOutline,
+                            Icons.AutoMirrored.Rounded.HelpOutline,
                             contentDescription = null,
                             tint = StudioColors.AccentCyan,
                             modifier = Modifier.size(14.dp)

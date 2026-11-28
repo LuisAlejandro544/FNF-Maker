@@ -22,9 +22,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.ArrowDownward
-import androidx.compose.material.icons.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material3.Icon
@@ -351,7 +351,7 @@ internal fun CameraSlotFovTab(
                 },
                 modifier = Modifier.size(32.dp)
             ) {
-                Icon(Icons.Rounded.ArrowBack, "Izquierda", tint = StudioColors.AccentCyan)
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Izquierda", tint = StudioColors.AccentCyan)
             }
             IconButton(
                 onClick = {
@@ -391,7 +391,7 @@ internal fun CameraSlotFovTab(
                 },
                 modifier = Modifier.size(32.dp)
             ) {
-                Icon(Icons.Rounded.ArrowForward, "Derecha", tint = StudioColors.AccentCyan)
+                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Derecha", tint = StudioColors.AccentCyan)
             }
         }
         IconButton(

@@ -37,16 +37,13 @@ pub(super) enum CompiledTexOutcome {
         path: PathBuf,
         extra_paths: Vec<PathBuf>,
         pixel_format: TexturePixelFormat,
-        palette_quantized: bool,
         repacked_atlas: Option<SparrowAtlas>,
-        repack_stats: Option<AtlasRepackStats>,
     },
     InMemory {
         entity_id: String,
         texture: OptimizedTexture,
         pixel_format: TexturePixelFormat,
         repacked_atlas: Option<SparrowAtlas>,
-        repack_stats: Option<AtlasRepackStats>,
     },
     PassThrough {
         entity_id: String,
@@ -517,9 +514,7 @@ where
                 path: target_webp,
                 extra_paths,
                 pixel_format,
-                palette_quantized: any_quantized,
                 repacked_atlas,
-                repack_stats,
             });
         }
     }
@@ -538,7 +533,6 @@ where
         },
         pixel_format: TexturePixelFormat::Argb8888,
         repacked_atlas,
-        repack_stats,
     })
 }
 

@@ -409,12 +409,12 @@ internal fun DrawScope.drawStrumsNotesAndSplashes(
 ) {
     if (frameState.gameOver) return
     val classicMode = frameState.controlMode == MobileControlMode.ClassicHitbox.key
-    val useDownscrollTactileLayout = frameState.downscroll && !classicMode
+    val useDownscrollTactileLayout = !classicMode
 
     val baseOppY = if (useDownscrollTactileLayout) 100f * sy else (if (frameState.downscroll) 575f else 118f) * sy
     val basePlrY = if (useDownscrollTactileLayout) 595f * sy else (if (frameState.downscroll) 575f else 118f) * sy
     val oppDownscroll = if (useDownscrollTactileLayout) false else frameState.downscroll
-    val plrDownscroll = frameState.downscroll
+    val plrDownscroll = if (useDownscrollTactileLayout) true else frameState.downscroll
 
     val oppNoteSize = if (useDownscrollTactileLayout) 58f * minOf(sx, sy) else 84f * minOf(sx, sy)
     val plrNoteSize = if (useDownscrollTactileLayout) 98f * minOf(sx, sy) else 84f * minOf(sx, sy)

@@ -25,12 +25,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.FlipToBack
 import androidx.compose.material.icons.rounded.FlipToFront
-import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
@@ -172,7 +172,7 @@ fun StageLayersPanel(
                     modifier = Modifier.size(26.dp)
                 ) {
                     Icon(
-                        Icons.Rounded.HelpOutline,
+                        Icons.AutoMirrored.Rounded.HelpOutline,
                         contentDescription = "¿Dónde van los archivos?",
                         tint = StudioColors.AccentCyan,
                         modifier = Modifier.size(15.dp)

@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Instalar dependencias nativas de compilación (C/C++/Clang/libclang/CMake)
         run: |
@@ -23,7 +23,7 @@ jobs:
           sudo apt-get install -y build-essential pkg-config clang libclang-dev llvm cmake ninja-build
 
       - name: Configurar Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -46,7 +46,7 @@ jobs:
 
       - name: Caché de cargo-ndk
         id: cache-cargo-ndk
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/cargo-ndk
           key: cargo-ndk-${{ runner.os }}-v1
@@ -56,7 +56,7 @@ jobs:
         run: cargo install cargo-ndk --locked
 
       - name: Configurar Gradle con caché de dependencias y wrapper
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '8.11.1'
 
@@ -87,14 +87,14 @@ jobs:
           (cd android && if [ -x ./gradlew ]; then ./gradlew compileDebugKotlin --no-daemon --continue -x buildRustDebug; else gradle compileDebugKotlin --no-daemon --continue -x buildRustDebug; fi) || true
 
       - name: Subir APK 64 bits (arm64-v8a Debug)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: BeatForgeStudio-64bit-arm64-v8a-Debug
           path: android/app/build/outputs/apk/debug/*arm64-v8a*debug.apk
           if-no-files-found: error
 
       - name: Subir APK 32 bits (armeabi-v7a Debug)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: BeatForgeStudio-32bit-armeabi-v7a-Debug
           path: android/app/build/outputs/apk/debug/*armeabi-v7a*debug.apk

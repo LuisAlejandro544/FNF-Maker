@@ -903,7 +903,10 @@ export function autoBindSparrowPrefixes(prefixes: string[]): SparrowBindings {
       }
       continue;
     }
-    if (!bindings.idle && (low.includes('idle') || low.includes('dance') || low.includes('reposo'))) {
+    if (
+      !bindings.idle &&
+      (low.includes('idle') || low.includes('danc') || low.includes('bop') || low.includes('reposo'))
+    ) {
       bindings.idle = prefix;
     } else if (!bindings.left && (low.includes('left') || low.includes('izq'))) {
       bindings.left = prefix;
@@ -1467,7 +1470,7 @@ export function computeReceptorLayout(params: {
   } = params;
   const sx = Math.max(1, screenWidth) / Math.max(1, virtualWidth);
   const sy = Math.max(1, screenHeight) / Math.max(1, virtualHeight);
-  const downscrollWideTactile = downscroll && controlMode === 'tap_arrows';
+  const downscrollWideTactile = controlMode === 'tap_arrows';
 
   if (downscrollWideTactile) {
     return {

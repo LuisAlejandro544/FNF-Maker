@@ -72,7 +72,10 @@ impl AnimateSpritemap {
         for (prefix, mut frames) in grouped {
             frames.sort_by(|a, b| natural_frame_cmp(&a.raw_name, &b.raw_name));
             let low = prefix.to_ascii_lowercase();
-            let looped = low.contains("idle") || low.contains("dance") || low == "spritemap";
+            let looped = low.contains("idle")
+                || low.contains("danc")
+                || low.contains("bop")
+                || low == "spritemap";
             animations.insert(
                 prefix.clone(),
                 AnimSet {
@@ -227,7 +230,10 @@ pub(super) fn parse_texture_packer_json(root: &Value) -> Result<SparrowAtlas, St
     for (prefix, mut frames) in grouped {
         frames.sort_by(|a, b| natural_frame_cmp(&a.raw_name, &b.raw_name));
         let low = prefix.to_ascii_lowercase();
-        let looped = low.contains("idle") || low.contains("dance") || low.contains("loop");
+        let looped = low.contains("idle")
+            || low.contains("danc")
+            || low.contains("bop")
+            || low.contains("loop");
         animations.insert(
             prefix.clone(),
             AnimSet {

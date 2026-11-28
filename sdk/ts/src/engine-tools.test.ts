@@ -341,6 +341,13 @@ test('autoBindSparrowPrefixes maps Idle, Left, Down, Up, Right and Miss animatio
   assert.equal(bindings.missDown, 'Hero_singDOWN_miss');
   assert.equal(bindings.missUp, 'Hero_singUP_miss');
   assert.equal(bindings.missRight, 'Hero_singRIGHT_miss');
+
+  const gfBindings = autoBindSparrowPrefixes([
+    'GF Cheer',
+    'GF Dancing Beat',
+    'GF sad',
+  ]);
+  assert.equal(gfBindings.idle, 'GF Dancing Beat');
 });
 
 test('validateAudioTrackCount enforces 1 to 3 audio files limit', () => {
@@ -621,7 +628,7 @@ test('computeSustainTailSpan shrinks tail smoothly into receptorY after head hit
   assert.equal(downscrollEnd.tailLength, 50);
 });
 
-test('resolveMobileTouchLanes uses wide bottom layout ONLY in downscroll tap_arrows and standard layout in upscroll', () => {
+test('resolveMobileTouchLanes always keeps FNF Mobile bottom layout for tap_arrows and lets classic_hitbox toggle downscroll', () => {
   const downLayout = computeReceptorLayout({
     controlMode: 'tap_arrows',
     downscroll: true,
@@ -633,18 +640,39 @@ test('resolveMobileTouchLanes uses wide bottom layout ONLY in downscroll tap_arr
   assert.equal(downLayout.playerY, 595);
   assert.equal(downLayout.opponentY, 100);
 
-  const upLayout = computeReceptorLayout({
+  // Aunque downscroll sea false, tap_arrows mantiene las 4 flechas táctiles abajo estilo FNF Mobile
+  const tapArrowsForcedBottom = computeReceptorLayout({
     controlMode: 'tap_arrows',
     downscroll: false,
     screenWidth: 1280,
     screenHeight: 720,
   });
-  assert.equal(upLayout.downscrollWideTactile, false);
-  assert.deepEqual(upLayout.playerXs, [765, 870, 975, 1080]);
-  assert.equal(upLayout.playerY, 118);
+  assert.equal(tapArrowsForcedBottom.downscrollWideTactile, true);
+  assert.deepEqual(tapArrowsForcedBottom.playerXs, [340, 495, 785, 940]);
+  assert.equal(tapArrowsForcedBottom.playerY, 595);
+  assert.equal(tapArrowsForcedBottom.opponentY, 100);
 
-  // Downscroll tap_arrows: tocar flechas separadas abajo (IZQ en 340, DER en 940)
-  const hitDownscrollBottom = resolveMobileTouchLanes({
+  // Hitbox clásico (Psych Mobile) sí respeta el selector Upscroll / Downscroll
+  const classicUpscroll = computeReceptorLayout({
+    controlMode: 'classic_hitbox',
+    downscroll: false,
+    screenWidth: 1280,
+    screenHeight: 720,
+  });
+  assert.equal(classicUpscroll.downscrollWideTactile, false);
+  assert.deepEqual(classicUpscroll.playerXs, [765, 870, 975, 1080]);
+  assert.equal(classicUpscroll.playerY, 118);
+
+  const classicDownscroll = computeReceptorLayout({
+    controlMode: 'classic_hitbox',
+    downscroll: true,
+    screenWidth: 1280,
+    screenHeight: 720,
+  });
+  assert.equal(classicDownscroll.playerY, 575);
+
+  // tap_arrows: tocar flechas separadas abajo (IZQ en 340, DER en 940) funciona siempre
+  const hitBottom = resolveMobileTouchLanes({
     controlMode: 'tap_arrows',
     touches: [
       { x: 342, y: 595 },
@@ -652,31 +680,19 @@ test('resolveMobileTouchLanes uses wide bottom layout ONLY in downscroll tap_arr
     ],
     screenWidth: 1280,
     screenHeight: 720,
-    downscroll: true,
+    downscroll: false,
   });
-  assert.equal(hitDownscrollBottom, (1 << 0) | (1 << 3));
+  assert.equal(hitBottom, (1 << 0) | (1 << 3));
 
-  // Upscroll tap_arrows: tocar fuera de las flechas superiores no cuenta
-  const missOutside = resolveMobileTouchLanes({
+  // Tocar arriba no activa flechas en tap_arrows
+  const missTop = resolveMobileTouchLanes({
     controlMode: 'tap_arrows',
-    touches: [{ x: 340, y: 595 }],
+    touches: [{ x: 765, y: 120 }],
     screenWidth: 1280,
     screenHeight: 720,
     downscroll: false,
   });
-  assert.equal(missOutside, 0);
-
-  const hitUpscrollTop = resolveMobileTouchLanes({
-    controlMode: 'tap_arrows',
-    touches: [
-      { x: 765, y: 120 },
-      { x: 1080, y: 115 },
-    ],
-    screenWidth: 1280,
-    screenHeight: 720,
-    downscroll: false,
-  });
-  assert.equal(hitUpscrollTop, (1 << 0) | (1 << 3));
+  assert.equal(missTop, 0);
 
   // Hitbox clásico (Psych Mobile): 4 columnas verticales completas sin importar Y
   const hitboxTouch = resolveMobileTouchLanes({

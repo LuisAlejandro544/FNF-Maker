@@ -17,33 +17,38 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Build
-import androidx.compose.material.icons.rounded.Chat
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Key
-import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Restore
-import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
@@ -74,11 +79,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -116,6 +124,7 @@ fun ScriptAiAssistantScreen(
 ) {
     var activeTab by remember { mutableIntStateOf(0) }
     var inspectedSkill by remember { mutableStateOf<AiSkillDoc?>(null) }
+    val isImeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
 
     val activeScript = snapshot.scripts.find { it.id == selectedScriptId }
         ?: snapshot.scripts.firstOrNull()
@@ -123,10 +132,10 @@ fun ScriptAiAssistantScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .padding(horizontal = 10.dp, vertical = if (isImeVisible) 5.dp else 10.dp),
+        verticalArrangement = Arrangement.spacedBy(if (isImeVisible) 5.dp else 8.dp)
     ) {
-        // Cabecera compacta con botón de retorno, contexto actual y pestañas
+        // Cabecera compacta con botón de retorno, contexto actual y pestañas (se comprime al abrir teclado)
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = StudioColors.BgPanel,
@@ -135,7 +144,10 @@ fun ScriptAiAssistantScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                    .padding(
+                        horizontal = 10.dp,
+                        vertical = if (isImeVisible && activeTab == 0) 5.dp else 8.dp
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -147,11 +159,11 @@ fun ScriptAiAssistantScreen(
                         onClick = onBackToScripts,
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
+                        modifier = Modifier.height(if (isImeVisible && activeTab == 0) 28.dp else 32.dp)
                     ) {
                         Icon(Icons.Rounded.ChevronLeft, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(2.dp))
-                        Text("Scripts", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Scripts", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, softWrap = false)
                     }
 
                     Spacer(Modifier.width(10.dp))
@@ -168,18 +180,21 @@ fun ScriptAiAssistantScreen(
                             text = "Asistente IA · OpenRouter",
                             color = StudioColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            maxLines = 1
-                        )
-                        val scriptLabel = activeScript?.name ?: "Sin script"
-                        val enabledSkillsCount = aiState.skills.count { it.enabled }
-                        Text(
-                            text = "Script: $scriptLabel · Modelo: ${aiState.settings.selectedModel} · $enabledSkillsCount/${aiState.skills.size} skills",
-                            color = StudioColors.TextMuted,
-                            fontSize = 10.sp,
+                            fontSize = if (isImeVisible && activeTab == 0) 13.sp else 14.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (!(isImeVisible && activeTab == 0)) {
+                            val scriptLabel = activeScript?.name ?: "Sin script"
+                            val enabledSkillsCount = aiState.skills.count { it.enabled }
+                            Text(
+                                text = "Script: $scriptLabel · Modelo: ${aiState.settings.selectedModel} · $enabledSkillsCount/${aiState.skills.size} skills",
+                                color = StudioColors.TextMuted,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 
@@ -188,7 +203,7 @@ fun ScriptAiAssistantScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TabPillButton(
                         label = "Chat y Herramientas",
-                        icon = Icons.Rounded.Chat,
+                        icon = Icons.AutoMirrored.Rounded.Chat,
                         selected = activeTab == 0,
                         accent = StudioColors.AccentPurple,
                         onClick = { activeTab = 0 }
@@ -207,6 +222,7 @@ fun ScriptAiAssistantScreen(
         if (activeTab == 0) {
             AiChatWorkspaceTab(
                 aiState = aiState,
+                isImeVisible = isImeVisible,
                 onOpenSettings = { activeTab = 1 },
                 onSendMessage = onSendMessage,
                 onStopStreaming = onStopStreaming,
@@ -238,7 +254,7 @@ fun ScriptAiAssistantScreen(
             textContentColor = StudioColors.TextPrimary,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.MenuBook, null, tint = StudioColors.AccentCyan, modifier = Modifier.size(18.dp))
+                    Icon(Icons.AutoMirrored.Rounded.MenuBook, null, tint = StudioColors.AccentCyan, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("${previewSkill.folderName}/SKILL.md", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
@@ -311,6 +327,7 @@ private fun TabPillButton(
 @Composable
 private fun AiChatWorkspaceTab(
     aiState: AiAssistantUiState,
+    isImeVisible: Boolean,
     onOpenSettings: () -> Unit,
     onSendMessage: (String) -> Unit,
     onStopStreaming: () -> Unit,
@@ -321,15 +338,15 @@ private fun AiChatWorkspaceTab(
     val scrollState = rememberScrollState()
 
     val lastMsgLength = aiState.messages.lastOrNull()?.content?.length ?: 0
-    LaunchedEffect(aiState.messages.size, lastMsgLength) {
+    LaunchedEffect(aiState.messages.size, lastMsgLength, isImeVisible) {
         scrollState.animateScrollTo(scrollState.maxValue)
     }
 
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(if (isImeVisible) 5.dp else 8.dp)
     ) {
-        if (aiState.settings.apiKey.isBlank()) {
+        if (aiState.settings.apiKey.isBlank() && !isImeVisible) {
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = StudioColors.AccentAmber.copy(alpha = 0.12f),
@@ -338,7 +355,7 @@ private fun AiChatWorkspaceTab(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -351,7 +368,9 @@ private fun AiChatWorkspaceTab(
                         Text(
                             text = "Falta configurar tu API Key de OpenRouter para chatear y parchear scripts en vivo.",
                             color = StudioColors.TextPrimary,
-                            fontSize = 11.sp
+                            fontSize = 11.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                     Spacer(Modifier.width(8.dp))
@@ -364,35 +383,49 @@ private fun AiChatWorkspaceTab(
                         ),
                         modifier = Modifier.height(28.dp)
                     ) {
-                        Text("Configurar Key", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Configurar Key", fontSize = 11.sp, fontWeight = FontWeight.Bold, softWrap = false)
                     }
                 }
             }
         }
 
-        // Atajos rápidos de flujo de trabajo
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            QUICK_PROMPTS.forEach { (title, fullPrompt) ->
-                Surface(
-                    modifier = Modifier.clickable(enabled = !aiState.isStreaming) {
-                        promptInput = fullPrompt
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = StudioColors.BgCard,
-                    border = BorderStroke(1.dp, StudioColors.BorderSubtle)
-                ) {
-                    Text(
-                        text = title,
-                        color = StudioColors.AccentCyan,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
+        // Atajos rápidos de flujo de trabajo (ocultos al abrir el teclado para priorizar chat + entrada)
+        if (!isImeVisible) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                QUICK_PROMPTS.forEach { (title, fullPrompt) ->
+                    Surface(
+                        modifier = Modifier.clickable(enabled = !aiState.isStreaming) {
+                            promptInput = fullPrompt
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = StudioColors.BgCard,
+                        border = BorderStroke(1.dp, StudioColors.BorderSubtle)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = StudioColors.AccentPurple,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = title,
+                                color = StudioColors.AccentCyan,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                softWrap = false
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -410,31 +443,67 @@ private fun AiChatWorkspaceTab(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(16.dp),
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.SmartToy,
-                            contentDescription = null,
-                            tint = StudioColors.AccentPurple,
-                            modifier = Modifier.size(32.dp)
-                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = StudioColors.AccentPurple.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, StudioColors.AccentPurple.copy(alpha = 0.55f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SmartToy,
+                                contentDescription = null,
+                                tint = StudioColors.AccentPurple,
+                                modifier = Modifier
+                                    .padding(8.dp)
+                                    .size(24.dp)
+                            )
+                        }
                         Text(
                             text = "Asistente de Scripts y Escenario",
                             color = StudioColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center
                         )
                         Text(
-                            text = "Puedo leer tus archivos .lua / .ts / .js, aplicar parches quirúrgicos (sin sobrescribir todo), consultar nombres/posiciones de tus sprites sin imágenes y revisar secciones del chart.",
+                            text = "Lee tus archivos .lua / .ts / .js, aplica parches quirúrgicos sin sobrescribir todo y consulta sprites o tiempos del chart.",
                             color = StudioColors.TextMuted,
                             fontSize = 11.sp,
-                            modifier = Modifier.widthIn(max = 500.dp)
+                            lineHeight = 15.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.widthIn(max = 520.dp)
                         )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            listOf(
+                                "Parches quirúrgicos" to StudioColors.AccentEmerald,
+                                "Nombres y posiciones" to StudioColors.AccentCyan,
+                                "Tiempos del Chart" to StudioColors.AccentAmber
+                            ).forEach { (badge, tint) ->
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = tint.copy(alpha = 0.10f),
+                                    border = BorderStroke(1.dp, tint.copy(alpha = 0.45f))
+                                ) {
+                                    Text(
+                                        text = badge,
+                                        color = tint,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             } else {
@@ -455,72 +524,84 @@ private fun AiChatWorkspaceTab(
             }
         }
 
-        // Barra inferior de envío y control de streaming
-        Row(
+        // Tarjeta inferior de envío y control de streaming siempre visible sobre el teclado
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            shape = RoundedCornerShape(12.dp),
+            color = StudioColors.BgPanel,
+            border = BorderStroke(1.dp, StudioColors.BorderSubtle)
         ) {
-            IconButton(
-                onClick = onClearChat,
-                enabled = aiState.messages.isNotEmpty(),
-                modifier = Modifier.size(38.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.DeleteSweep,
-                    contentDescription = "Limpiar chat",
-                    tint = if (aiState.messages.isNotEmpty()) StudioColors.TextMuted else StudioColors.BorderSubtle
-                )
-            }
-
-            OutlinedTextField(
-                value = promptInput,
-                onValueChange = { promptInput = it },
-                placeholder = {
-                    Text(
-                        "Pide traducir un Lua, mover cierto sprite en el beat 32 o corregir errores...",
-                        fontSize = 12.sp
+                IconButton(
+                    onClick = onClearChat,
+                    enabled = aiState.messages.isNotEmpty(),
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteSweep,
+                        contentDescription = "Limpiar chat",
+                        tint = if (aiState.messages.isNotEmpty()) StudioColors.TextMuted else StudioColors.BorderSubtle
                     )
-                },
-                maxLines = 3,
-                textStyle = TextStyle(fontSize = 12.sp, color = StudioColors.TextPrimary),
-                modifier = Modifier.weight(1f)
-            )
-
-            if (aiState.isStreaming) {
-                Button(
-                    onClick = onStopStreaming,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.AccentCoral,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                    modifier = Modifier.height(44.dp)
-                ) {
-                    Icon(Icons.Rounded.Stop, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Detener", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-            } else {
-                Button(
-                    onClick = {
-                        val toSend = promptInput.trim()
-                        if (toSend.isNotEmpty()) {
-                            promptInput = ""
-                            onSendMessage(toSend)
-                        }
+
+                OutlinedTextField(
+                    value = promptInput,
+                    onValueChange = { promptInput = it },
+                    placeholder = {
+                        Text(
+                            text = "Pide traducir un Lua, mover cierto sprite en el beat 32 o corregir errores...",
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     },
-                    enabled = promptInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.AccentPurple,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    modifier = Modifier.height(44.dp)
-                ) {
-                    Icon(Icons.Rounded.Send, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Enviar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    textStyle = TextStyle(fontSize = 12.sp, color = StudioColors.TextPrimary),
+                    modifier = Modifier.weight(1f)
+                )
+
+                if (aiState.isStreaming) {
+                    Button(
+                        onClick = onStopStreaming,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.AccentCoral,
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.height(42.dp)
+                    ) {
+                        Icon(Icons.Rounded.Stop, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Detener", fontSize = 12.sp, fontWeight = FontWeight.Bold, softWrap = false)
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            val toSend = promptInput.trim()
+                            if (toSend.isNotEmpty()) {
+                                promptInput = ""
+                                onSendMessage(toSend)
+                            }
+                        },
+                        enabled = promptInput.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.AccentPurple,
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.height(42.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.Send, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Enviar", fontSize = 12.sp, fontWeight = FontWeight.Bold, softWrap = false)
+                    }
                 }
             }
         }
@@ -892,7 +973,7 @@ private fun AiSettingsAndSkillsTab(
                         textStyle = TextStyle(fontSize = 11.sp, color = StudioColors.TextPrimary, lineHeight = 15.sp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(170.dp)
+                            .heightIn(min = 110.dp, max = 160.dp)
                     )
                 }
             }
@@ -914,7 +995,7 @@ private fun AiSettingsAndSkillsTab(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.MenuBook, null, tint = StudioColors.AccentEmerald, modifier = Modifier.size(17.dp))
+                    Icon(Icons.AutoMirrored.Rounded.MenuBook, null, tint = StudioColors.AccentEmerald, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
                         text = "Skills Modulares (SKILL.md)",

@@ -31,7 +31,7 @@ enum class MobileControlMode(val key: String, val label: String, val description
     TapArrows(
         key = "tap_arrows",
         label = "Tocar Flechas (Por defecto)",
-        description = "En Downscroll coloca las 4 flechas táctiles abajo estilo FNF Mobile"
+        description = "4 flechas táctiles fijas abajo (notas cayendo estilo FNF Mobile)"
     ),
     ClassicHitbox(
         key = "classic_hitbox",

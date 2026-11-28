@@ -32,6 +32,8 @@ impl EngineSession {
         self.project.audio_offset_ms = audio_offset_ms.clamp(-500.0, 500.0);
         self.project.chart.speed = scroll_speed.clamp(0.5, 5.0);
         if let Some(gp) = self.gameplay.as_mut() {
+            gp.active_downscroll = downscroll
+                || self.project.control_mode == pulse_core::project::MobileControlMode::TapArrows;
             gp.hud_revision = gp.hud_revision.wrapping_add(1);
         }
         self.invalidate_compiled_bundle();

@@ -27,7 +27,12 @@ impl SparrowAtlas {
                 } else {
                     bindings.entry(CharacterAnimKind::DeathStart).or_insert_with(|| (*prefix).clone());
                 }
-            } else if !is_miss && (low.contains("idle") || low.contains("dance") || low.contains("reposo")) {
+            } else if !is_miss
+                && (low.contains("idle")
+                    || low.contains("danc")
+                    || low.contains("bop")
+                    || low.contains("reposo"))
+            {
                 bindings.entry(CharacterAnimKind::Idle).or_insert_with(|| (*prefix).clone());
             } else if low.contains("left") || low.contains("izq") {
                 let kind = if is_miss { CharacterAnimKind::MissLeft } else { CharacterAnimKind::Left };

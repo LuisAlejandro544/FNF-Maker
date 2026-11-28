@@ -236,9 +236,7 @@ where
                 path,
                 extra_paths,
                 pixel_format,
-                palette_quantized: _,
                 repacked_atlas,
-                repack_stats: _,
             } => {
                 let mut pages = Vec::with_capacity(1 + extra_paths.len());
                 pages.push(path.clone());
@@ -259,7 +257,6 @@ where
                 texture,
                 pixel_format,
                 repacked_atlas,
-                repack_stats: _,
             } => {
                 texture_pixel_formats.insert(entity_id.clone(), pixel_format);
                 if let Some(atlas) = repacked_atlas {

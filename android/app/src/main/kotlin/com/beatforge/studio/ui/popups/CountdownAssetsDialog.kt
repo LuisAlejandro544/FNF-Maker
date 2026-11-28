@@ -351,8 +351,9 @@ private fun CountdownSlotCard(
                 ) {
                     val spriteSummary = buildString {
                         append(step?.imageName ?: "Sprite vectorial por defecto")
-                        if (hasXml && step != null) {
-                            append(" · ${step.xmlName} (${step.frames.size}f)")
+                        val xmlName = step?.xmlName
+                        if (step != null && xmlName != null) {
+                            append(" · $xmlName (${step.frames.size}f)")
                         }
                     }
                     Text(
@@ -408,12 +409,13 @@ private fun CountdownSlotCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val audioSummary = if (hasAudio && step != null) {
+                    val audioName = step?.audioName
+                    val audioSummary = if (step != null && audioName != null) {
                         val sec = step.audioDurationMs / 1000.0
                         if (sec > 0.0) {
-                            String.format(Locale.US, "%s (%.2fs)", step.audioName, sec)
+                            String.format(Locale.US, "%s (%.2fs)", audioName, sec)
                         } else {
-                            step.audioName ?: "Audio personalizado"
+                            audioName
                         }
                     } else {
                         "Voz/SFX: Tono sintetizado por defecto"

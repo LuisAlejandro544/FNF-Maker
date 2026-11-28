@@ -189,7 +189,7 @@ impl ModProject {
 
         let default_lua = r#"-- Script Lua de ejemplo para BeatForge Studio
 function onCreate()
-    log("Escena Lua iniciada!")
+    -- Escena Lua lista
 end
 
 function onBeatHit(beat)

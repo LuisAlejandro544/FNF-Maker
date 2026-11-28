@@ -199,7 +199,6 @@ pub(super) fn prune_audio_adapted_cache(
 enum SourceMixerStream {
     RawFiles {
         slots: Vec<(usize, f32, StreamingTrackDecoder, Option<StreamingStereoResampler>)>,
-        base_sr: u32,
         slot_chunks: Vec<Vec<f32>>,
         slot_resampled: Vec<Vec<f32>>,
         slot_eof: Vec<bool>,
@@ -208,7 +207,6 @@ enum SourceMixerStream {
         active: Vec<(Arc<DecodedTrack>, f32)>,
         frame_cursor: usize,
         max_frames: usize,
-        sample_rate: u32,
     },
     PreMergedWav {
         decoder: StreamingTrackDecoder,
@@ -257,7 +255,6 @@ impl SourceMixerStream {
             return Ok(Some((
                 Self::RawFiles {
                     slots: decoders,
-                    base_sr,
                     slot_chunks: vec![Vec::with_capacity(STREAM_BLOCK_FRAMES * 2); count],
                     slot_resampled: vec![Vec::with_capacity(STREAM_BLOCK_FRAMES * 2); count],
                     slot_eof: vec![false; count],
@@ -285,7 +282,6 @@ impl SourceMixerStream {
                     active: active_mem,
                     frame_cursor: 0,
                     max_frames,
-                    sample_rate: mem_sr,
                 },
                 mem_sr,
                 false,
@@ -314,7 +310,6 @@ impl SourceMixerStream {
         match self {
             Self::RawFiles {
                 slots,
-                base_sr: _,
                 slot_chunks,
                 slot_resampled,
                 slot_eof,
@@ -381,7 +376,6 @@ impl SourceMixerStream {
                 active,
                 frame_cursor,
                 max_frames: total_frames,
-                sample_rate: _,
             } => {
                 if *frame_cursor >= *total_frames {
                     return Ok(0);

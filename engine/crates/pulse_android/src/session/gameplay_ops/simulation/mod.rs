@@ -227,7 +227,7 @@ impl EngineSession {
 
                 for ent in &mut session.bundle.active_entities {
                     if ent.active_anim == CharacterAnimKind::Idle
-                        && matches!(ent.role, EntityRole::Player | EntityRole::Opponent)
+                        && super::is_beat_synced_idle_entity(ent)
                     {
                         let idle_dur = ent
                             .atlas

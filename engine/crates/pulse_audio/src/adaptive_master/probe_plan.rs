@@ -174,12 +174,12 @@ pub fn build_adaptive_dsp_plan(
     song: &SongAcousticAnalysis,
 ) -> AdaptiveDspPlan {
     let mut eq_bands = Vec::with_capacity(5);
-    let mut highpass_hz = 28.0_f32;
-    let mut target_lufs = -14.5_f32;
-    let mut ceiling_dbtp = -1.0_f32;
+    let highpass_hz: f32;
+    let target_lufs: f32;
+    let ceiling_dbtp: f32;
     let mut mono_fold_enabled = false;
-    let mut stereo_width = 1.0_f32;
-    let mut crossfeed_strength = 0.0_f32;
+    let stereo_width: f32;
+    let crossfeed_strength: f32;
     let mut summary_notes: Vec<String> = Vec::new();
 
     let sub = song.bands.sub_bass_20_90_hz;

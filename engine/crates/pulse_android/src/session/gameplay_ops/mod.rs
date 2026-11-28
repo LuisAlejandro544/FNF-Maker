@@ -339,7 +339,8 @@ impl EngineSession {
             retired_entities: HashSet::new(),
             reused_later_entities,
             active_scroll_speed: self.project.chart.speed.max(0.5),
-            active_downscroll: self.project.downscroll,
+            active_downscroll: self.project.downscroll
+                || self.project.control_mode == MobileControlMode::TapArrows,
             song_started: false,
             last_beat: -10,
             last_step: -40,
@@ -489,9 +490,32 @@ pub(super) fn enter_game_over(
     session.runtime.call_on_game_over();
 }
 
+/// Determina si una entidad debe reiniciar/sincronizar su animación `Idle` al ritmo del BPM.
+/// Incluye jugador, oponente y decoraciones de personaje tipo GF (`stage_speakers`,
+/// descriptores con `loop: false` o nombres `gf`/`cabina`).
+pub(super) fn is_beat_synced_idle_entity(ent: &StageEntity) -> bool {
+    if matches!(ent.role, EntityRole::Player | EntityRole::Opponent) {
+        return true;
+    }
+    if ent.role != EntityRole::Decoration {
+        return false;
+    }
+    let id_low = ent.id.to_ascii_lowercase();
+    let name_low = ent.display_name.to_ascii_lowercase();
+    id_low == "stage_speakers"
+        || id_low.contains("gf")
+        || name_low.contains("gf")
+        || name_low.contains("cabina")
+        || name_low.contains("bocina")
+        || ent.character_config_path.is_some()
+        || ent.pending_character_desc.is_some()
+        || ent.atlas.as_ref().is_some_and(|a| !a.is_idle_looped())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pulse_core::sparrow::SparrowAtlas;
 
     #[test]
     fn binary_gameplay_packet_encodes_header_entities_notes_and_hud_strings() {
@@ -528,6 +552,39 @@ mod tests {
         let vig_alpha = f32::from_le_bytes(buf[156..160].try_into().unwrap());
         assert_eq!(vig_color, 0xFF3B82F6);
         assert!((vig_alpha - 0.68).abs() < 0.01);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn gf_decoration_syncs_idle_to_bpm_and_tap_arrows_forces_active_downscroll() {
+        let tmp = std::env::temp_dir().join("beatforge_gf_downscroll_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut session = EngineSession::new_with_dirs(tmp.clone(), tmp.clone());
+        session.project.downscroll = false;
+        session.project.control_mode = MobileControlMode::TapArrows;
+
+        let gf_xml = r#"
+        <TextureAtlas imagePath="GF_assets.png">
+            <SubTexture name="GF Dancing Beat0000" x="0" y="0" width="120" height="140" />
+            <SubTexture name="GF Dancing Beat0001" x="120" y="0" width="120" height="140" />
+        </TextureAtlas>
+        "#;
+        let gf_atlas = SparrowAtlas::from_xml_str(gf_xml).unwrap();
+        if let Some(gf_ent) = session
+            .project
+            .stage
+            .entities
+            .iter_mut()
+            .find(|e| e.id == "stage_speakers")
+        {
+            gf_ent.atlas = Some(gf_atlas);
+            assert!(is_beat_synced_idle_entity(gf_ent));
+        }
+
+        let _ = session.start_gameplay();
+        let gp = session.gameplay.as_ref().unwrap();
+        assert!(gp.active_downscroll);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -162,3 +162,23 @@ fn align_animations_with_rgba_locks_asymmetric_poses_and_rotated_frames_to_feet(
         snapshot
     );
 }
+
+#[test]
+fn gf_dancing_beat_binds_as_idle_and_loops() {
+    let xml = r#"
+    <TextureAtlas imagePath="GF_assets.png">
+        <SubTexture name="GF Cheer0000" x="0" y="0" width="120" height="140" />
+        <SubTexture name="GF Dancing Beat0000" x="120" y="0" width="120" height="140" />
+        <SubTexture name="GF Dancing Beat0001" x="240" y="0" width="120" height="140" />
+        <SubTexture name="GF sad0000" x="360" y="0" width="120" height="140" />
+    </TextureAtlas>
+    "#;
+
+    let atlas = SparrowAtlas::from_xml_str(xml).unwrap();
+    assert_eq!(
+        atlas.bindings.get(&CharacterAnimKind::Idle).map(String::as_str),
+        Some("GF Dancing Beat")
+    );
+    assert!(atlas.is_idle_looped());
+    assert_eq!(atlas.frame_count(CharacterAnimKind::Idle), 2);
+}

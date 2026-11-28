@@ -9,7 +9,9 @@
 use crate::mixer::AudioMixerState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "android")]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 /// Telemetría real leída desde el stream activo de `libaaudio.so` (o estado de respaldo).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -186,6 +186,14 @@ impl SparrowAtlas {
         (anim.frames.len() as f32) / anim.fps.max(1.0)
     }
 
+    /// Indica si la animación `Idle` activa está marcada como bucle continuo.
+    pub fn is_idle_looped(&self) -> bool {
+        self.resolve_prefix(CharacterAnimKind::Idle)
+            .and_then(|prefix| self.animations.get(prefix))
+            .map(|anim| anim.looped)
+            .unwrap_or(false)
+    }
+
     /// Devuelve el fotograma correspondiente al tiempo transcurrido de animación.
     pub fn frame_at(&self, kind: CharacterAnimKind, elapsed_sec: f32) -> Option<&SparrowFrame> {
         self.frame_at_synced(kind, elapsed_sec, false)

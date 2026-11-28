@@ -155,10 +155,6 @@ impl SparrowAtlas {
                 foot_x: i32,
                 floor_y: i32,
                 frames: Vec<(i32, i32)>,
-                rect_min_x: i32,
-                rect_max_x: i32,
-                rect_min_y: i32,
-                rect_max_y: i32,
             },
             PerFrame {
                 prefix: String,
@@ -263,10 +259,6 @@ impl SparrowAtlas {
                     foot_x: anim_foot_x,
                     floor_y: anim_floor_y,
                     frames: raw_coords,
-                    rect_min_x,
-                    rect_max_x,
-                    rect_min_y,
-                    rect_max_y,
                 });
             }
         }
@@ -281,10 +273,6 @@ impl SparrowAtlas {
                     foot_x,
                     floor_y,
                     frames,
-                    rect_min_x: _,
-                    rect_max_x: _,
-                    rect_min_y: _,
-                    rect_max_y: _,
                 } => {
                     let Some(anim) = self.animations.get_mut(&prefix) else {
                         continue;
