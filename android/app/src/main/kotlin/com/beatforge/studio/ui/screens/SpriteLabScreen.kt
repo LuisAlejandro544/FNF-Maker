@@ -186,7 +186,7 @@ fun SpriteLabScreen(
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            text = "3-2-1",
+                            text = "2-1-¡YA!",
                             color = StudioColors.AccentAmber,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,

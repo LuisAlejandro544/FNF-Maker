@@ -22,7 +22,8 @@ pub use analysis::{
 };
 pub use aux_textures::{
     AuxTexturesCompileResult, compile_countdown_and_icons_with_manifest,
-    countdown_max_side_for_tier, icon_max_side_for_tier,
+    compile_countdown_and_icons_with_manifest_progress, countdown_max_side_for_tier,
+    icon_max_side_for_tier,
 };
 pub use fingerprints::{
     AssetFileFingerprint, AudioMergeFingerprint, AudioSlotFingerprint, DeviceResourceTier,

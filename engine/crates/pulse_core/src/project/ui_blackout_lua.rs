@@ -40,7 +40,7 @@ fn is_ui_blackout_event_name(lower_name: &str) -> bool {
 
 /// Genera o actualiza el bloque `-- [UI_BLACKOUT_START] ... -- [UI_BLACKOUT_END]` dentro de
 /// `ui_blackout.lua`. Permite ocultar la interfaz, las flechas y poner la pantalla en negro
-/// de forma independiente o combinada al comenzar la canción (conservando visible `"3, 2, 1, ¡YA!"`)
+/// de forma independiente o combinada al comenzar la canción (conservando visible `"2, 1, ¡YA!"`)
 /// y ejecutar apagones o desvanecimientos en cualquier paso del chart.
 pub fn render_ui_blackout_lua_script(chart: &ChartData, existing_source: Option<&str>) -> String {
     let mut sorted_events = chart.events.clone();
@@ -471,7 +471,7 @@ local UI_BLACKOUT_CUES = {{\n{}\n}}\n\
     format!(
         "-- Script maestro de Pantalla en Negro y Visibilidad de UI (BeatForge Studio)\n\
 {}\n\
--- Controla intros con pantalla negra y UI/flechas ocultas conservando visible el '3, 2, 1, ¡YA!'\n\
+-- Controla intros con pantalla negra y UI/flechas ocultas conservando visible el '2, 1, ¡YA!'\n\
 -- y apagones/desvanecimientos sincronizados con chart.json (uiBlackout) y eventos '#'.\n\
 {}\n\n\
 local cueCursor = 1\n\

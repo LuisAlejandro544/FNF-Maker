@@ -1,6 +1,6 @@
 //! Archivo: engine/crates/pulse_core/src/hot_compile/aux_textures.rs
 //! Propósito: Compilación incremental en caliente y caché en disco (WebP VP8L) para
-//! sprites de cuenta regresiva (`3`, `2`, `1`, `¡YA!`) e íconos de personaje (`Normal`/`Perdiendo`),
+//! sprites de cuenta regresiva (`2 / Ready?`, `1 / Set?`, `¡YA! / Go`) e íconos de personaje (`Normal`/`Perdiendo`),
 //! incluyendo registro PassThrough en manifiesto, escalado uniforme `Lanczos3` y ahorro de VRAM.
 
 use super::fingerprints::{AssetFileFingerprint, DeviceResourceTier, fnv1a_64_str};
@@ -109,7 +109,7 @@ fn sanitize_cache_token(raw: &str) -> String {
     format!("{}_{:08x}", slug, (fnv1a_64_str(raw) & 0xffff_ffff) as u32)
 }
 
-/// Compila en paralelo (`rayon`) y cachea los sprites de cuenta regresiva (`3-2-1-¡YA!`) y los
+/// Compila en paralelo (`rayon`) y cachea los sprites de cuenta regresiva (`2-1-¡YA!`) y los
 /// íconos de personaje presentes en `active_entities`, registrando tanto WebPs codificados como
 /// entradas `PassThrough` en los mapas del manifiesto incremental.
 pub fn compile_countdown_and_icons_with_manifest(
@@ -120,6 +120,31 @@ pub fn compile_countdown_and_icons_with_manifest(
     prev_countdown: &HashMap<usize, CachedAuxTextureEntry>,
     prev_icons: &HashMap<String, CachedAuxTextureEntry>,
 ) -> AuxTexturesCompileResult {
+    compile_countdown_and_icons_with_manifest_progress(
+        project,
+        active_entities,
+        tier,
+        out_dir,
+        prev_countdown,
+        prev_icons,
+        |_, _| {},
+    )
+}
+
+/// Variante de `compile_countdown_and_icons_with_manifest` con callback de progreso incremental
+/// (`(completados, total)`) invocado tras procesar cada sprite de cuenta regresiva o ícono.
+pub fn compile_countdown_and_icons_with_manifest_progress<F>(
+    project: &ModProject,
+    active_entities: &[StageEntity],
+    tier: DeviceResourceTier,
+    out_dir: Option<&Path>,
+    prev_countdown: &HashMap<usize, CachedAuxTextureEntry>,
+    prev_icons: &HashMap<String, CachedAuxTextureEntry>,
+    on_item_done: F,
+) -> AuxTexturesCompileResult
+where
+    F: Fn(usize, usize) + Send + Sync,
+{
     let mut targets: Vec<AuxTarget> = Vec::new();
 
     for slot in &project.countdown.slots {
@@ -153,45 +178,52 @@ pub fn compile_countdown_and_icons_with_manifest(
         return AuxTexturesCompileResult::default();
     }
 
+    let total_targets = targets.len();
+    let done_targets = AtomicUsize::new(0);
     let total_vram_saved = Arc::new(AtomicUsize::new(0));
 
     let outcomes: Vec<AuxOutcome> = targets
         .into_par_iter()
-        .filter_map(|target| match target {
-            AuxTarget::Countdown {
-                slot_index,
-                src_path,
-                has_frames,
-            } => compile_countdown_slot(
-                slot_index,
-                &src_path,
-                has_frames,
-                tier,
-                out_dir,
-                prev_countdown.get(&slot_index),
-                &total_vram_saved,
-            ),
-            AuxTarget::Icon {
-                entity_id,
-                is_losing,
-                src_path,
-            } => {
-                let key = if is_losing {
-                    format!("{}::losing", entity_id)
-                } else {
-                    format!("{}::normal", entity_id)
-                };
-                compile_character_icon(
-                    &entity_id,
-                    is_losing,
-                    &key,
+        .filter_map(|target| {
+            let outcome = match target {
+                AuxTarget::Countdown {
+                    slot_index,
+                    src_path,
+                    has_frames,
+                } => compile_countdown_slot(
+                    slot_index,
                     &src_path,
+                    has_frames,
                     tier,
                     out_dir,
-                    prev_icons.get(&key),
+                    prev_countdown.get(&slot_index),
                     &total_vram_saved,
-                )
-            }
+                ),
+                AuxTarget::Icon {
+                    entity_id,
+                    is_losing,
+                    src_path,
+                } => {
+                    let key = if is_losing {
+                        format!("{}::losing", entity_id)
+                    } else {
+                        format!("{}::normal", entity_id)
+                    };
+                    compile_character_icon(
+                        &entity_id,
+                        is_losing,
+                        &key,
+                        &src_path,
+                        tier,
+                        out_dir,
+                        prev_icons.get(&key),
+                        &total_vram_saved,
+                    )
+                }
+            };
+            let done = done_targets.fetch_add(1, Ordering::Relaxed) + 1;
+            on_item_done(done, total_targets);
+            outcome
         })
         .collect();
 

@@ -5,7 +5,7 @@
 //! - `editor_ops`: Edición de charts, audio, escenario, scripts y skins SVG.
 //! - `sprite_ops`: Carga de texturas `.png`/`.astc`, XML Sparrow y horneado Adobe Animate.
 //! - `gameplay_ops`: Compilación en caliente (`rayon`) y simulación frame a frame con cuenta regresiva BPM.
-//! - `countdown_ops`: Sprites, XML Sparrow opcional y voces separadas de cuenta regresiva (`3, 2, 1, ¡YA!`).
+//! - `countdown_ops`: Sprites, XML Sparrow opcional y voces separadas de cuenta regresiva (`2, 1, ¡YA!`).
 //! - `persistence_ops`: Persistencia automática instantánea en `filesDir` y menú de proyectos.
 //! - Espejo `flip_x`: intercambia `Left <-> Right` y `MissLeft <-> MissRight` al disparar notas.
 
@@ -96,7 +96,7 @@ impl EngineSession {
             project: ModProject::new_demo(),
             audio_engine: AudioEngineHandle::new_deferred(),
             decoded_tracks: [None, None, None],
-            decoded_countdown_cues: [None, None, None, None],
+            decoded_countdown_cues: [None, None, None],
             compiled_bundle: None,
             compiled_texture_paths: HashMap::new(),
             compiled_texture_pages: HashMap::new(),

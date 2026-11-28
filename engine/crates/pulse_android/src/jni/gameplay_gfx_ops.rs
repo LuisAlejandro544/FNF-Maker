@@ -37,10 +37,10 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeHotCom
         },
     );
     set_hot_compile_progress(
-        false,
+        true,
         0.90,
         "Motor Rust completado",
-        "Cargando texturas WebP y audio hacia gameplay",
+        "Decodificando texturas WebP y preparando gameplay",
     );
     to_jstr(&mut env, &json)
 }
@@ -68,10 +68,10 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeHotCom
         },
     );
     set_hot_compile_progress(
-        false,
+        true,
         0.90,
         "Motor Rust completado",
-        "Texturas pre-escaladas con Lanczos3 y scripts listos",
+        "Decodificando texturas WebP y preparando gameplay",
     );
     to_jstr(&mut env, &json)
 }

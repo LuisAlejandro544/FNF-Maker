@@ -66,9 +66,9 @@ fn vanilla_roundtrip_exports_and_imports_preserving_pixels_audio_and_dedup() {
     }
     proj.countdown.slots[0].raw_image_path = Some(png_path.clone());
     proj.countdown.slots[0].image_path = Some(png_path);
-    proj.countdown.slots[0].image_name = Some("three.png".to_string());
+    proj.countdown.slots[0].image_name = Some("ready.png".to_string());
     proj.countdown.slots[0].audio_path = Some(ogg_path);
-    proj.countdown.slots[0].audio_name = Some("intro3.ogg".to_string());
+    proj.countdown.slots[0].audio_name = Some("intro2.ogg".to_string());
 
     let mod_file = tmp_root.join("test_vanilla_mod.mod");
     let report = export_project_vanilla_mod(&proj, &mod_file, true).expect("exportación Vanilla");

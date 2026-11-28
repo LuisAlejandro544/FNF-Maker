@@ -1,7 +1,7 @@
 /**
  * Archivo: sdk/ts/src/engine-tools.ts
  * Propósito: Herramientas modulares en TypeScript para validar y serializar
- * `chart.json` completo, calcular el estado de cuenta regresiva BPM ("3, 2, 1, ¡YA!"),
+ * `chart.json` completo, calcular el estado de cuenta regresiva BPM ("2, 1, ¡YA!"),
  * inspeccionar cabeceras `.astc`, detectar formatos `.json` de spritesheets/Animate,
  * probar el algoritmo de auto-armado Sparrow y validar audio/hot-compile.
  */
@@ -70,7 +70,7 @@ export interface ParsedChart {
 export interface CountdownState {
   active: boolean;
   stage: number;
-  label: '' | '3' | '2' | '1' | '¡YA!';
+  label: '' | '2' | '1' | '¡YA!';
   progress: number;
   beatMs: number;
 }
@@ -791,10 +791,10 @@ export function computeCountdownState(songPosMs: number, bpm: number): Countdown
   if (songPosMs >= 0) {
     return { active: false, stage: -1, label: '', progress: 1, beatMs };
   }
-  const elapsedMs = Math.max(0, 4 * beatMs + songPosMs);
-  const stage = Math.min(3, Math.max(0, Math.floor(elapsedMs / beatMs)));
+  const elapsedMs = Math.max(0, 3 * beatMs + songPosMs);
+  const stage = Math.min(2, Math.max(0, Math.floor(elapsedMs / beatMs)));
   const progress = Math.min(1, Math.max(0, (elapsedMs - stage * beatMs) / beatMs));
-  const labels: Array<'3' | '2' | '1' | '¡YA!'> = ['3', '2', '1', '¡YA!'];
+  const labels: Array<'2' | '1' | '¡YA!'> = ['2', '1', '¡YA!'];
   return {
     active: true,
     stage,
@@ -7359,8 +7359,8 @@ export interface CountdownXmlFrameEntry {
 
 /**
  * Espejo puro de `pulse_core::project::countdown::parse_countdown_sparrow_xml`:
- * filtra fotogramas de un XML Sparrow combinado para el paso indicado (`0=3`, `1=2/ready`,
- * `2=1/set`, `3=go/ya`) o devuelve todos los frames de un XML individual ordenados naturalmente.
+ * filtra fotogramas de un XML Sparrow combinado para el paso indicado (`0=2/ready`,
+ * `1=1/set`, `2=go/ya`) o devuelve todos los frames de un XML individual ordenados naturalmente.
  */
 export function selectCountdownXmlFramesForSlot<T extends { rawName: string }>(
   frames: ReadonlyArray<T>,
@@ -7380,12 +7380,11 @@ export function selectCountdownXmlFramesForSlot<T extends { rawName: string }>(
   }
 
   const keywordsBySlot: Record<number, string[]> = {
-    0: ['three', 'tres', 'intro3', 'count3', '3'],
-    1: ['ready', 'two', 'dos', 'listos', 'intro2', 'count2', '2'],
-    2: ['set', 'one', 'uno', 'casi', 'intro1', 'count1', '1'],
-    3: ['go', 'ya', 'start', 'introgo', 'countgo'],
+    0: ['ready', 'two', 'dos', 'listos', 'intro2', 'count2', '2'],
+    1: ['set', 'one', 'uno', 'casi', 'intro1', 'count1', '1'],
+    2: ['go', 'ya', 'start', 'introgo', 'countgo'],
   };
-  const keywords = keywordsBySlot[Math.max(0, Math.min(3, Math.trunc(slotIndex)))] ?? keywordsBySlot[3];
+  const keywords = keywordsBySlot[Math.max(0, Math.min(2, Math.trunc(slotIndex)))] ?? keywordsBySlot[2];
 
   if (groups.size > 1) {
     const matched: T[] = [];
@@ -7444,7 +7443,7 @@ export function resolveCountdownAudioPlaybackSlot(
   slots: ReadonlyArray<CountdownAudioSlotDescriptor>,
   slotIndex: number,
 ): { mode: 'custom' | 'synth_fallback'; slotIndex: number; audioName: string | null } {
-  const safeIdx = Math.max(0, Math.min(3, Math.trunc(slotIndex)));
+  const safeIdx = Math.max(0, Math.min(2, Math.trunc(slotIndex)));
   const slot = slots.find((s) => s.slotIndex === safeIdx) ?? slots[safeIdx];
   if (slot?.hasCustomAudio) {
     return {
@@ -7458,6 +7457,29 @@ export function resolveCountdownAudioPlaybackSlot(
     slotIndex: safeIdx,
     audioName: null,
   };
+}
+
+/**
+ * Espejo puro de `pulse_core::project::countdown::deserialize_countdown_slots`:
+ * convierte arreglos legados de 4 pasos (`[3, Ready, Set, Go]`) en 3 pasos (`[Ready, Set, Go]`)
+ * renumerando `slotIndex` de `0..2`.
+ */
+export function migrateLegacyCountdownSlots<T extends { slotIndex?: number }>(
+  rawSlots: ReadonlyArray<T>,
+  createEmpty: (slotIndex: number) => T,
+): [T, T, T] {
+  if (rawSlots.length >= 4) {
+    return [
+      { ...rawSlots[1], slotIndex: 0 },
+      { ...rawSlots[2], slotIndex: 1 },
+      { ...rawSlots[3], slotIndex: 2 },
+    ];
+  }
+  return [
+    rawSlots[0] ? { ...rawSlots[0], slotIndex: 0 } : createEmpty(0),
+    rawSlots[1] ? { ...rawSlots[1], slotIndex: 1 } : createEmpty(1),
+    rawSlots[2] ? { ...rawSlots[2], slotIndex: 2 } : createEmpty(2),
+  ];
 }
 
 export interface PassThroughManifestSpec {
@@ -7548,7 +7570,7 @@ export interface AuxHotCompilePlan {
 
 /**
  * Espejo puro de `pulse_core::hot_compile::aux_textures`:
- * calcula el límite máximo de lado por tier (`1024/1536` para Cuenta Regresiva `3-2-1-¡YA!`;
+ * calcula el límite máximo de lado por tier (`1024/1536` para Cuenta Regresiva `2-1-¡YA!`;
  * `256/384/512` para ícono sencillo o `512/512/640` para tira doble FNF), preserva proporción
  * para coordenadas XML en countdown y decide entre `PassThrough` `.webp` o WebP VP8L optimizado.
  */
@@ -7793,4 +7815,86 @@ export function computeEffectiveSongPositionMs(
   return rawMixerMs - (manualAudioOffsetMs + autoAudioOffsetMs);
 }
 
+/**
+ * Espejo puro de `pulse_core::hot_compile::entity_compile::cleanup_orphan_compiled_assets`:
+ * detecta qué archivos dentro de `compiled_cache/<projectId>/` deben eliminarse por ser
+ * temporales interrumpidos (`.webp.tmp`, `manifest.json.tmp`, `*.tmp`) o `.webp`/`.png` huérfanos.
+ */
+export function planOrphanCompiledCacheCleanup(spec: {
+  filesInDir: ReadonlyArray<string>;
+  keptTexturePages: ReadonlyArray<string>;
+  keptCountdownPaths: ReadonlyArray<string>;
+  keptIconPaths: ReadonlyArray<string>;
+}): { deletePaths: string[]; keptPaths: string[] } {
+  const keepSet = new Set<string>([
+    ...spec.keptTexturePages,
+    ...spec.keptCountdownPaths,
+    ...spec.keptIconPaths,
+  ]);
+  const deletePaths: string[] = [];
+  const keptPaths: string[] = [];
 
+  for (const fullPath of spec.filesInDir) {
+    const lower = fullPath.toLowerCase();
+    const baseName = lower.split('/').pop() ?? lower;
+    if (baseName.endsWith('.tmp') || baseName.endsWith('.webp.tmp')) {
+      deletePaths.push(fullPath);
+      continue;
+    }
+    if (baseName.endsWith('.webp') || baseName.endsWith('.png')) {
+      if (keepSet.has(fullPath)) {
+        keptPaths.push(fullPath);
+      } else {
+        deletePaths.push(fullPath);
+      }
+      continue;
+    }
+    keptPaths.push(fullPath);
+  }
+
+  return { deletePaths, keptPaths };
+}
+
+export type HotCompileTailStage =
+  | 'entities'
+  | 'hud_arrows'
+  | 'icons_countdown'
+  | 'start_gameplay'
+  | 'ready';
+
+/**
+ * Espejo puro de `StudioGameplayCoordinator` para el tramo final `0.90 -> 1.00`:
+ * garantiza avance monotónico sin retrocesos al decodificar bitmaps y arrancar gameplay.
+ */
+export function computeHotCompileFinalTailProgress(spec: {
+  previousProgress: number;
+  stage: HotCompileTailStage;
+  decodedEntities?: number;
+  totalEntities?: number;
+}): number {
+  let raw = 0.90;
+  switch (spec.stage) {
+    case 'entities': {
+      const total = Math.max(0, Math.trunc(spec.totalEntities ?? 0));
+      const done = Math.max(0, Math.min(total, Math.trunc(spec.decodedEntities ?? 0)));
+      const frac = total > 0 ? done / total : 1;
+      raw = 0.90 + 0.05 * frac;
+      break;
+    }
+    case 'hud_arrows':
+      raw = 0.96;
+      break;
+    case 'icons_countdown':
+      raw = 0.978;
+      break;
+    case 'start_gameplay':
+      raw = 0.99;
+      break;
+    case 'ready':
+      raw = 1.0;
+      break;
+  }
+  const rounded = Math.round(raw * 1_000_000) / 1_000_000;
+  const clamped = Math.min(1.0, Math.max(0.90, rounded));
+  return Math.max(spec.previousProgress, clamped);
+}

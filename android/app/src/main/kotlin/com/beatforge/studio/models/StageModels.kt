@@ -1,6 +1,6 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/models/StageModels.kt
 // Propósito: Snapshots de entidades del escenario, cámara multi-slot con viñeta,
-// metadata de recortes Sparrow XML/Animate y pasos de cuenta regresiva (3-2-1-¡YA!).
+// metadata de recortes Sparrow XML/Animate y pasos de cuenta regresiva (2-1-¡YA!).
 
 package com.beatforge.studio
 

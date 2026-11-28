@@ -489,7 +489,7 @@ impl EngineSession {
         self.reload_project_countdown_cues();
     }
 
-    /// Recarga en RAM y en el mezclador lock-free las voces/SFX separadas de cuenta regresiva (`3, 2, 1, ¡YA!`).
+    /// Recarga en RAM y en el mezclador lock-free las voces/SFX separadas de cuenta regresiva (`2, 1, ¡YA!`).
     pub fn reload_project_countdown_cues(&mut self) {
         self.audio_engine.mixer.clear_countdown_cues();
         for slot in 0..COUNTDOWN_STEP_COUNT {

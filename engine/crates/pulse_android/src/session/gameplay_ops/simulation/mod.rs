@@ -69,14 +69,13 @@ impl EngineSession {
 
         let (countdown_stage, countdown_label, countdown_progress) = if in_countdown {
             let cd_beat_ms = 60_000.0 / self.project.chart.bpm.max(40.0);
-            let total_cd_ms = cd_beat_ms * 4.0;
+            let total_cd_ms = cd_beat_ms * 3.0;
             let elapsed_cd = (total_cd_ms + raw_mixer_ms).clamp(0.0, total_cd_ms - 0.001);
-            let stage = ((elapsed_cd / cd_beat_ms).floor() as i32).clamp(0, 3);
+            let stage = ((elapsed_cd / cd_beat_ms).floor() as i32).clamp(0, 2);
             let progress = ((elapsed_cd % cd_beat_ms) / cd_beat_ms) as f32;
             let label = match stage {
-                0 => "3",
-                1 => "2",
-                2 => "1",
+                0 => "2",
+                1 => "1",
                 _ => "¡YA!",
             };
             (stage, label.to_string(), progress.clamp(0.0, 1.0))

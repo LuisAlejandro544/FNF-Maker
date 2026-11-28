@@ -1,6 +1,6 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/popups/CountdownAssetsDialog.kt
-// Propósito: Ventana emergente modal para configurar de forma independiente los 4 pasos de
-// la cuenta regresiva ("3", "2 / Listos", "1 / Ya casi", "¡YA! / Go"): cada paso permite
+// Propósito: Ventana emergente modal para configurar de forma independiente los 3 pasos de
+// la cuenta regresiva estilo FNF ("2 / Ready?", "1 / Set?", "¡YA! / Go"): cada paso permite
 // importar un PNG/.astc/.webp separado, su atlas Sparrow `.xml` opcional (o usar uno combinado),
 // y su efecto de voz separado (.ogg/.wav/.mp3) con botón de prueba en vivo y limpieza por slot.
 
@@ -75,28 +75,21 @@ private data class CountdownSlotMeta(
 private val COUNTDOWN_SLOTS_META = listOf(
     CountdownSlotMeta(
         slotIndex = 0,
-        title = "Paso 1 · 3",
-        badgeText = "3",
-        typicalFiles = "Sprite: 3.png (+ .xml opcional) · Voz: intro3.ogg",
-        accent = StudioColors.AccentCoral
-    ),
-    CountdownSlotMeta(
-        slotIndex = 1,
-        title = "Paso 2 · 2 (Listos / Ready)",
+        title = "Paso 1 · 2 (Ready?)",
         badgeText = "2",
         typicalFiles = "Sprite: ready.png (+ .xml opcional) · Voz: intro2.ogg",
         accent = StudioColors.AccentAmber
     ),
     CountdownSlotMeta(
-        slotIndex = 2,
-        title = "Paso 3 · 1 (Ya casi / Set)",
+        slotIndex = 1,
+        title = "Paso 2 · 1 (Set?)",
         badgeText = "1",
         typicalFiles = "Sprite: set.png (+ .xml opcional) · Voz: intro1.ogg",
         accent = StudioColors.AccentCyan
     ),
     CountdownSlotMeta(
-        slotIndex = 3,
-        title = "Paso 4 · ¡YA! (Go)",
+        slotIndex = 2,
+        title = "Paso 3 · ¡YA! (Go)",
         badgeText = "¡YA!",
         typicalFiles = "Sprite: go.png (+ .xml opcional) · Voz: introGo.ogg",
         accent = StudioColors.AccentEmerald
@@ -144,7 +137,7 @@ fun CountdownAssetsDialog(
                     Spacer(Modifier.width(8.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Sprites y Voces de Cuenta Regresiva (3 · 2 · 1 · ¡YA!)",
+                            text = "Sprites y Voces de Cuenta Regresiva (2 · 1 · ¡YA!)",
                             color = StudioColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp
@@ -200,7 +193,7 @@ fun CountdownAssetsDialog(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "Restaurar 3-2-1 por defecto",
+                            text = "Restaurar 2-1-¡YA! por defecto",
                             color = StudioColors.AccentAmber,
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -318,7 +311,7 @@ private fun CountdownSlotCard(
                         text = meta.badgeText,
                         color = meta.accent,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = if (meta.slotIndex == 3) 17.sp else 24.sp
+                        fontSize = if (meta.slotIndex == 2) 17.sp else 24.sp
                     )
                 }
             }

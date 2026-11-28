@@ -129,7 +129,7 @@ internal fun CueBlackoutTab(
                     modifier = Modifier.weight(1f)
                 )
                 ActionChip(
-                    label = "Inicio 0:00 (3-2-1-¡YA!)",
+                    label = "Inicio 0:00 (2-1-¡YA!)",
                     selected = state.uiStartAtZero,
                     color = StudioColors.AccentAmber,
                     onClick = {

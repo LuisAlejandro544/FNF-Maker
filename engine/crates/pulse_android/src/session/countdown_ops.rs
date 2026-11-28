@@ -1,8 +1,8 @@
 //! Archivo: engine/crates/pulse_android/src/session/countdown_ops.rs
 //! Propósito: Gestión en Rust de los recursos personalizados de cuenta regresiva
-//! ("3", "2", "1", "¡YA!"): importación de imágenes independientes (PNG/WebP/ASTC),
-//! atlas Sparrow `.xml` opcionales por paso, audios/voces separados (`intro3`..`introGo`)
-//! y preescucha inmediata en el mezclador AAudio.
+//! ("2 / Ready?", "1 / Set?", "¡YA! / Go"): importación de imágenes independientes
+//! (PNG/WebP/ASTC), atlas Sparrow `.xml` opcionales por paso, audios/voces separados
+//! (`intro2`, `intro1`, `introGo`) y preescucha inmediata en el mezclador AAudio.
 
 use super::{EngineSession, friendly_import_name};
 use pulse_audio::decode_audio_file_cached;
@@ -18,11 +18,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 impl EngineSession {
-    /// Importa una imagen independiente (`.png`, `.webp`, `.jpg`, `.astc`) para el paso `slot` (`0..=3`).
+    /// Importa una imagen independiente (`.png`, `.webp`, `.jpg`, `.astc`) para el paso `slot` (`0..=2`).
     pub fn import_countdown_image(&mut self, slot: usize, path: PathBuf) -> String {
         if slot >= COUNTDOWN_STEP_COUNT {
             return self.err_response(format!(
-                "Paso de cuenta regresiva inválido ({}): solo existen 0..3",
+                "Paso de cuenta regresiva inválido ({}): solo existen 0..2",
                 slot
             ));
         }
@@ -82,11 +82,11 @@ impl EngineSession {
         ))
     }
 
-    /// Importa y parsea un atlas Sparrow `.xml` opcional para animar el paso `slot` (`0..=3`).
+    /// Importa y parsea un atlas Sparrow `.xml` opcional para animar el paso `slot` (`0..=2`).
     pub fn import_countdown_xml(&mut self, slot: usize, path: PathBuf) -> String {
         if slot >= COUNTDOWN_STEP_COUNT {
             return self.err_response(format!(
-                "Paso de cuenta regresiva inválido ({}): solo existen 0..3",
+                "Paso de cuenta regresiva inválido ({}): solo existen 0..2",
                 slot
             ));
         }
@@ -137,11 +137,11 @@ impl EngineSession {
         ))
     }
 
-    /// Importa un clip de audio/voz separado (`.ogg`, `.wav`, `.mp3`) para el paso `slot` (`0..=3`).
+    /// Importa un clip de audio/voz separado (`.ogg`, `.wav`, `.mp3`) para el paso `slot` (`0..=2`).
     pub fn import_countdown_audio(&mut self, slot: usize, path: PathBuf) -> String {
         if slot >= COUNTDOWN_STEP_COUNT {
             return self.err_response(format!(
-                "Paso de audio inválido ({}): solo existen 0..3",
+                "Paso de audio inválido ({}): solo existen 0..2",
                 slot
             ));
         }
@@ -217,7 +217,7 @@ impl EngineSession {
         ))
     }
 
-    /// Dispara la preescucha inmediata del paso `slot` (`0..=3`) en AAudio (personalizada o sinte).
+    /// Dispara la preescucha inmediata del paso `slot` (`0..=2`) en AAudio (personalizada o sinte).
     pub fn preview_countdown_audio(&mut self, slot: usize) -> String {
         if slot >= COUNTDOWN_STEP_COUNT {
             return self.err_response("Paso de audio fuera de rango");
@@ -228,7 +228,7 @@ impl EngineSession {
         self.ok_response(format!("Probando sonido de {}", countdown_step_label(slot)))
     }
 
-    /// Restaura los 4 pasos ("3", "2", "1", "¡YA!") al estilo visual y sonoro integrado por defecto.
+    /// Restaura los 3 pasos ("2 / Ready?", "1 / Set?", "¡YA! / Go") al estilo visual y sonoro integrado por defecto.
     pub fn restore_default_countdown_assets(&mut self) -> String {
         let mut old_paths: Vec<PathBuf> = Vec::new();
         for cd in &mut self.project.countdown.slots {
@@ -243,7 +243,7 @@ impl EngineSession {
             }
         }
         self.project.countdown = CountdownAssetsConfig::default();
-        self.decoded_countdown_cues = [None, None, None, None];
+        self.decoded_countdown_cues = [None, None, None];
         self.audio_engine.mixer.clear_countdown_cues();
 
         for p in old_paths {

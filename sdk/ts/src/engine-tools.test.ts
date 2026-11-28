@@ -125,6 +125,9 @@ import {
   selectCountdownXmlFramesForSlot,
   resolveCountdownFrameAtProgress,
   resolveCountdownAudioPlaybackSlot,
+  planOrphanCompiledCacheCleanup,
+  computeHotCompileFinalTailProgress,
+  migrateLegacyCountdownSlots,
 } from './engine-tools';
 
 test('parseChartJson normalizes mustHitSection player and opponent lanes', () => {
@@ -232,25 +235,21 @@ test('parseChartJson and serializeChartJson preserve full chart.json metadata, c
   assert.equal(roundTripped.notes[1].sustainMs, 240);
 });
 
-test('computeCountdownState maps 4 BPM-synced beats to 3, 2, 1, ¡YA!', () => {
-  // BPM 120 -> beatMs = 500ms, inicio en -2000ms
-  const s0 = computeCountdownState(-1900, 120);
+test('computeCountdownState maps 3 BPM-synced beats to 2, 1, ¡YA! (Ready, Set, Go)', () => {
+  // BPM 120 -> beatMs = 500ms, inicio en -1500ms
+  const s0 = computeCountdownState(-1400, 120);
   assert.equal(s0.active, true);
   assert.equal(s0.stage, 0);
-  assert.equal(s0.label, '3');
+  assert.equal(s0.label, '2');
 
-  const s1 = computeCountdownState(-1400, 120);
+  const s1 = computeCountdownState(-800, 120);
   assert.equal(s1.stage, 1);
-  assert.equal(s1.label, '2');
+  assert.equal(s1.label, '1');
 
-  const s2 = computeCountdownState(-800, 120);
+  const s2 = computeCountdownState(-250, 120);
   assert.equal(s2.stage, 2);
-  assert.equal(s2.label, '1');
-
-  const s3 = computeCountdownState(-250, 120);
-  assert.equal(s3.stage, 3);
-  assert.equal(s3.label, '¡YA!');
-  assert.ok(Math.abs(s3.progress - 0.5) < 0.001);
+  assert.equal(s2.label, '¡YA!');
+  assert.ok(Math.abs(s2.progress - 0.5) < 0.001);
 
   const done = computeCountdownState(0, 120);
   assert.equal(done.active, false);
@@ -720,7 +719,7 @@ test('decodeBinaryGameplayFrame decodes BFGP v2 header, rotated entities, strums
   ); // + flashOverHud + vignetteOverHud
   view.setUint32(8, 7, true); // hudRevision
   view.setUint32(12, 0b0010_0000_0101 | (1 << 16) | (3 << 20), true); // player=5, opp=2, rating=1(Sick), splashLane=3
-  view.setInt32(16, 3, true); // countdownStage
+  view.setInt32(16, 2, true); // countdownStage (2 = ¡YA!)
   view.setFloat32(20, 0.75, true);
   view.setFloat64(24, 1234.5, true); // songPosMs
   view.setFloat64(32, 90000.0, true); // durationMs
@@ -3087,34 +3086,30 @@ test('removeStageEntityAndCleanCameras and clearStageEntitiesAndCleanCameras saf
   assert.equal(afterClear.cameras[2].panStrength, 0);
 });
 
-test('selectCountdownXmlFramesForSlot, resolveCountdownFrameAtProgress and resolveCountdownAudioPlaybackSlot handle separate/combined XMLs and per-slot audio fallback', () => {
+test('selectCountdownXmlFramesForSlot, resolveCountdownFrameAtProgress, resolveCountdownAudioPlaybackSlot and migrateLegacyCountdownSlots handle 3-step Ready/Set/Go', () => {
   const combinedXmlFrames = [
     { rawName: 'ready0010', x: 100, y: 0, width: 100, height: 60 },
     { rawName: 'ready0002', x: 0, y: 0, width: 100, height: 60 },
     { rawName: 'set0001', x: 200, y: 0, width: 100, height: 60 },
     { rawName: 'set0002', x: 300, y: 0, width: 100, height: 60 },
     { rawName: 'go0001', x: 400, y: 0, width: 120, height: 80 },
-    { rawName: 'intro3_0001', x: 520, y: 0, width: 90, height: 90 },
   ];
 
   const slot0Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 0);
-  assert.deepEqual(slot0Frames.map((f) => f.rawName), ['intro3_0001']);
+  assert.deepEqual(slot0Frames.map((f) => f.rawName), ['ready0002', 'ready0010']);
 
   const slot1Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 1);
-  assert.deepEqual(slot1Frames.map((f) => f.rawName), ['ready0002', 'ready0010']);
+  assert.deepEqual(slot1Frames.map((f) => f.rawName), ['set0001', 'set0002']);
 
   const slot2Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 2);
-  assert.deepEqual(slot2Frames.map((f) => f.rawName), ['set0001', 'set0002']);
-
-  const slot3Frames = selectCountdownXmlFramesForSlot(combinedXmlFrames, 3);
-  assert.deepEqual(slot3Frames.map((f) => f.rawName), ['go0001']);
+  assert.deepEqual(slot2Frames.map((f) => f.rawName), ['go0001']);
 
   const singleStepFrames = [
     { rawName: 'custom_anim_10', x: 10, y: 0, width: 50, height: 50 },
     { rawName: 'custom_anim_2', x: 20, y: 0, width: 50, height: 50 },
     { rawName: 'custom_anim_1', x: 0, y: 0, width: 50, height: 50 },
   ];
-  const sortedSingle = selectCountdownXmlFramesForSlot(singleStepFrames, 1);
+  const sortedSingle = selectCountdownXmlFramesForSlot(singleStepFrames, 0);
   assert.deepEqual(sortedSingle.map((f) => f.rawName), [
     'custom_anim_1',
     'custom_anim_2',
@@ -3127,15 +3122,14 @@ test('selectCountdownXmlFramesForSlot, resolveCountdownFrameAtProgress and resol
   assert.equal(resolveCountdownFrameAtProgress(sortedSingle, 1.0)?.frame.rawName, 'custom_anim_10');
 
   const audioSlots = [
-    { slotIndex: 0, hasCustomAudio: true, audioName: 'intro3.ogg' },
+    { slotIndex: 0, hasCustomAudio: true, audioName: 'intro2.ogg' },
     { slotIndex: 1, hasCustomAudio: false, audioName: null },
-    { slotIndex: 2, hasCustomAudio: true, audioName: 'intro1.wav' },
-    { slotIndex: 3, hasCustomAudio: false, audioName: null },
+    { slotIndex: 2, hasCustomAudio: true, audioName: 'introGo.wav' },
   ];
   assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 0), {
     mode: 'custom',
     slotIndex: 0,
-    audioName: 'intro3.ogg',
+    audioName: 'intro2.ogg',
   });
   assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 1), {
     mode: 'synth_fallback',
@@ -3145,13 +3139,23 @@ test('selectCountdownXmlFramesForSlot, resolveCountdownFrameAtProgress and resol
   assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 2), {
     mode: 'custom',
     slotIndex: 2,
-    audioName: 'intro1.wav',
+    audioName: 'introGo.wav',
   });
-  assert.deepEqual(resolveCountdownAudioPlaybackSlot(audioSlots, 3), {
-    mode: 'synth_fallback',
-    slotIndex: 3,
-    audioName: null,
-  });
+
+  const migrated = migrateLegacyCountdownSlots(
+    [
+      { slotIndex: 0, imageName: 'three.png' },
+      { slotIndex: 1, imageName: 'ready.png' },
+      { slotIndex: 2, imageName: 'set.png' },
+      { slotIndex: 3, imageName: 'go.png' },
+    ],
+    (slotIndex) => ({ slotIndex, imageName: '' }),
+  );
+  assert.deepEqual(migrated, [
+    { slotIndex: 0, imageName: 'ready.png' },
+    { slotIndex: 1, imageName: 'set.png' },
+    { slotIndex: 2, imageName: 'go.png' },
+  ]);
 });
 
 import {
@@ -3193,7 +3197,7 @@ test('resolvePassThroughManifestUpdate registers PassThrough WebPs in manifest a
 test('resolveAuxHotCompilePlan scales countdown sprites and character icons proportionally and respects WebP PassThrough', () => {
   const cdLow = resolveAuxHotCompilePlan({
     kind: 'countdown',
-    key: 'countdown_slot_3',
+    key: 'countdown_slot_2',
     sourcePath: '/mods/demo/go.png',
     origWidth: 2048,
     origHeight: 1024,
@@ -3211,7 +3215,7 @@ test('resolveAuxHotCompilePlan scales countdown sprites and character icons prop
   const cdOptimalWebp = resolveAuxHotCompilePlan({
     kind: 'countdown',
     key: 'countdown_slot_0',
-    sourcePath: '/mods/demo/three.webp',
+    sourcePath: '/mods/demo/ready.webp',
     origWidth: 960,
     origHeight: 480,
     tier: 'balanced',
@@ -3219,7 +3223,7 @@ test('resolveAuxHotCompilePlan scales countdown sprites and character icons prop
   });
   assert.equal(cdOptimalWebp.mode, 'passthrough_webp');
   assert.equal(cdOptimalWebp.downscaled, false);
-  assert.equal(cdOptimalWebp.outputPath, '/mods/demo/three.webp');
+  assert.equal(cdOptimalWebp.outputPath, '/mods/demo/ready.webp');
 
   const dualIconBalanced = resolveAuxHotCompilePlan({
     kind: 'icon',
@@ -3377,6 +3381,76 @@ test('computeAudioAdaptCacheKeyV3 ignores preMergedWav when raw tracks exist and
   assert.equal(prune.keptPairs, 2);
 });
 
+test('planOrphanCompiledCacheCleanup removes stale .webp.tmp, .tmp and unreferenced webp/png files', () => {
+  const res = planOrphanCompiledCacheCleanup({
+    filesInDir: [
+      '/cache/proj/hero_1.webp',
+      '/cache/proj/hero_1_p1.webp',
+      '/cache/proj/hero_1.webp.tmp',
+      '/cache/proj/manifest.json',
+      '/cache/proj/manifest.json.tmp',
+      '/cache/proj/deleted_stage.webp',
+      '/cache/proj/countdown_slot_0.webp',
+      '/cache/proj/icon_hero_1_normal.webp',
+      '/cache/proj/old_sprite.png',
+    ],
+    keptTexturePages: ['/cache/proj/hero_1.webp', '/cache/proj/hero_1_p1.webp'],
+    keptCountdownPaths: ['/cache/proj/countdown_slot_0.webp'],
+    keptIconPaths: ['/cache/proj/icon_hero_1_normal.webp'],
+  });
 
+  assert.deepEqual(res.deletePaths, [
+    '/cache/proj/hero_1.webp.tmp',
+    '/cache/proj/manifest.json.tmp',
+    '/cache/proj/deleted_stage.webp',
+    '/cache/proj/old_sprite.png',
+  ]);
+  assert.ok(res.keptPaths.includes('/cache/proj/hero_1.webp'));
+  assert.ok(res.keptPaths.includes('/cache/proj/hero_1_p1.webp'));
+  assert.ok(res.keptPaths.includes('/cache/proj/manifest.json'));
+  assert.ok(res.keptPaths.includes('/cache/proj/countdown_slot_0.webp'));
+  assert.ok(res.keptPaths.includes('/cache/proj/icon_hero_1_normal.webp'));
+});
 
+test('computeHotCompileFinalTailProgress advances monotonically from 90% to 100%', () => {
+  let pct = 0.90;
+  pct = computeHotCompileFinalTailProgress({
+    previousProgress: pct,
+    stage: 'entities',
+    decodedEntities: 1,
+    totalEntities: 4,
+  });
+  assert.ok(pct > 0.90 && pct < 0.92);
 
+  const p2 = computeHotCompileFinalTailProgress({
+    previousProgress: pct,
+    stage: 'entities',
+    decodedEntities: 4,
+    totalEntities: 4,
+  });
+  assert.equal(p2, 0.95);
+
+  const p3 = computeHotCompileFinalTailProgress({
+    previousProgress: p2,
+    stage: 'hud_arrows',
+  });
+  assert.equal(p3, 0.96);
+
+  const p4 = computeHotCompileFinalTailProgress({
+    previousProgress: p3,
+    stage: 'icons_countdown',
+  });
+  assert.equal(p4, 0.978);
+
+  const p5 = computeHotCompileFinalTailProgress({
+    previousProgress: p4,
+    stage: 'start_gameplay',
+  });
+  assert.equal(p5, 0.99);
+
+  const p6 = computeHotCompileFinalTailProgress({
+    previousProgress: p5,
+    stage: 'ready',
+  });
+  assert.equal(p6, 1.0);
+});

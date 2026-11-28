@@ -131,7 +131,7 @@ fun AudioScreen(
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
-                        text = "Voces 3-2-1",
+                        text = "Voces 2-1",
                         color = StudioColors.AccentAmber,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,

@@ -480,7 +480,7 @@ fn hot_compile_optimizes_and_caches_countdown_sprites_and_character_icons() {
     let mut player = StageEntity::new("bf", "Jugador", EntityRole::Player);
     player.icon_normal_path = Some(icon_png);
     project.stage.entities.push(player);
-    project.countdown.slots[3].image_path = Some(cd_png);
+    project.countdown.slots[2].image_path = Some(cd_png);
 
     let b1 = hot_compile_project_to_dir(
         &project,
@@ -491,7 +491,7 @@ fn hot_compile_optimizes_and_caches_countdown_sprites_and_character_icons() {
     assert_eq!(b1.report.compiled_countdown_count, 1);
     assert_eq!(b1.report.compiled_icon_count, 1);
 
-    let out_cd = b1.compiled_countdown_paths.get(&3).unwrap();
+    let out_cd = b1.compiled_countdown_paths.get(&2).unwrap();
     let out_icon = b1.compiled_icon_normal_paths.get("bf").unwrap();
     assert!(out_cd.exists());
     assert!(out_icon.exists());
@@ -499,7 +499,7 @@ fn hot_compile_optimizes_and_caches_countdown_sprites_and_character_icons() {
     assert_eq!(out_icon.extension().and_then(|e| e.to_str()), Some("webp"));
 
     let manifest = HotCompileManifest::load_or_default(&cache_dir, &project.id);
-    assert!(manifest.countdown.contains_key(&3));
+    assert!(manifest.countdown.contains_key(&2));
     assert!(manifest.icons.contains_key("bf::normal"));
 
     // Segunda compilación: verifica que la limpieza de huérfanos en out_dir no borre countdown ni íconos
@@ -511,8 +511,62 @@ fn hot_compile_optimizes_and_caches_countdown_sprites_and_character_icons() {
     );
     assert_eq!(b2.report.compiled_countdown_count, 1);
     assert_eq!(b2.report.compiled_icon_count, 1);
-    assert!(b2.compiled_countdown_paths.get(&3).unwrap().exists());
+    assert!(b2.compiled_countdown_paths.get(&2).unwrap().exists());
     assert!(b2.compiled_icon_normal_paths.get("bf").unwrap().exists());
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}
+
+#[test]
+fn hot_compile_cleans_orphan_tmp_files_and_reports_aux_progress() {
+    let base_dir = std::env::temp_dir().join("beatforge_orphan_tmp_cleanup_test");
+    let _ = std::fs::remove_dir_all(&base_dir);
+    let cache_dir = base_dir.join("compiled_cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+
+    // Simular archivos temporales huérfanos dejados por una compilación interrumpida
+    let stale_webp_tmp = cache_dir.join("hero_1.webp.tmp");
+    let stale_manifest_tmp = cache_dir.join("manifest.json.tmp");
+    let stale_orphan_webp = cache_dir.join("deleted_prop.webp");
+    std::fs::write(&stale_webp_tmp, b"partial_webp").unwrap();
+    std::fs::write(&stale_manifest_tmp, b"partial_manifest").unwrap();
+    std::fs::write(&stale_orphan_webp, b"old_webp").unwrap();
+
+    let cd_png = base_dir.join("ready.png");
+    DynamicImage::ImageRgba8(RgbaImage::from_pixel(64, 64, Rgba([255, 220, 40, 255])))
+        .save_with_format(&cd_png, image::ImageFormat::Png)
+        .unwrap();
+
+    let mut project = ModProject::new_demo();
+    project.stage.entities.clear();
+    project.countdown.slots[0].image_path = Some(cd_png);
+
+    let reported = std::sync::Mutex::new(Vec::<f32>::new());
+    let _bundle = hot_compile_project_to_dir(
+        &project,
+        DeviceResourceTier::Balanced,
+        Some(&cache_dir),
+        |pct, _detail| {
+            reported.lock().unwrap().push(pct);
+        },
+    );
+
+    assert!(!stale_webp_tmp.exists(), "Debe borrar .webp.tmp huérfanos");
+    assert!(
+        !stale_manifest_tmp.exists(),
+        "Debe borrar manifest.json.tmp huérfanos"
+    );
+    assert!(
+        !stale_orphan_webp.exists(),
+        "Debe borrar .webp huérfanos no referenciados"
+    );
+
+    let vals = reported.into_inner().unwrap();
+    assert!(
+        vals.iter().any(|&p| (0.60..=0.68).contains(&p)),
+        "Debe reportar progreso intermedio durante aux_textures: {:?}",
+        vals
+    );
 
     let _ = std::fs::remove_dir_all(&base_dir);
 }

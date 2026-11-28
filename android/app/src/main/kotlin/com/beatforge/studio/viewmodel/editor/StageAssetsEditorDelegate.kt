@@ -1,6 +1,6 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/viewmodel/editor/StageAssetsEditorDelegate.kt
 // Propósito: Subdelegado de edición visual del escenario, multicámara/viñeta, sprites Sparrow,
-// offsets de animación, íconos, skins SVG, assets de cuenta regresiva 3-2-1 y scripts Lua/TS/JS.
+// offsets de animación, íconos, skins SVG, assets de cuenta regresiva 2-1-¡YA! y scripts Lua/TS/JS.
 
 package com.beatforge.studio.viewmodel.editor
 

@@ -205,7 +205,7 @@ fun ChartJsonDetailsDialog(
                     fontSize = 12.sp
                 )
                 Text(
-                    text = "Se guarda dentro de chart.json (uiBlackout) y se aplica al Frame 0 sin ocultar '3, 2, 1, ¡YA!' ni Pausa.",
+                    text = "Se guarda dentro de chart.json (uiBlackout) y se aplica al Frame 0 sin ocultar '2, 1, ¡YA!' ni Pausa.",
                     color = StudioColors.TextMuted,
                     fontSize = 10.sp,
                     lineHeight = 13.sp
@@ -256,7 +256,7 @@ fun ChartJsonDetailsDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Revelar al terminar '3, 2, 1, ¡YA!'", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Text("Revelar al terminar '2, 1, ¡YA!'", color = StudioColors.TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
                     Switch(checked = introRevealOnSongStart, onCheckedChange = { introRevealOnStart -> introRevealOnSongStart = introRevealOnStart })
                 }
 

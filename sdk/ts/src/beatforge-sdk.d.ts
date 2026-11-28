@@ -176,6 +176,7 @@ declare function onSongStart(): void;
 declare function onUpdate(dt: number): void;
 declare function onBeatHit(beat: number): void;
 declare function onStepHit(step: number): void;
+/** stage: 0 = "2" (Ready?), 1 = "1" (Set?), 2 = "¡YA!" (Go) */
 declare function onCountdownTick(stage: number): void;
 declare function onNoteHit(lane: number, isPlayer: boolean, noteType?: string): void;
 declare function onNoteMiss(lane: number, isPlayer: boolean, noteType?: string): void;

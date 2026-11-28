@@ -1,24 +1,24 @@
 //! Archivo: engine/crates/pulse_core/src/project/countdown.rs
-//! Propósito: Modelo y utilidades para personalizar los 4 recursos de la cuenta regresiva
-//! inicial (`3`, `2`, `1`, `¡YA!`): imágenes independientes (PNG/WebP/ASTC), atlas Sparrow `.xml`
-//! opcionales por paso (o un `.xml` combinado) y pistas de voz/SFX separadas (`intro3`, `intro2`,
-//! `intro1`, `introGo`), manteniendo fallback automático paso a paso si alguno falta.
+//! Propósito: Modelo y utilidades para personalizar los 3 recursos de la cuenta regresiva
+//! inicial estilo FNF (`2 / Ready?`, `1 / Set?`, `¡YA! / Go`): imágenes independientes
+//! (PNG/WebP/ASTC), atlas Sparrow `.xml` opcionales por paso (o un `.xml` combinado) y pistas de
+//! voz/SFX separadas (`intro2`, `intro1`, `introGo`), manteniendo fallback automático paso a paso
+//! y migración compatible si se abre un proyecto antiguo de 4 slots.
 
 use crate::sparrow::{SparrowAtlas, SparrowFrame};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::cmp::Ordering;
 use std::path::PathBuf;
 
-/// Cantidad fija de pasos en la cuenta regresiva estilo FNF: `0 = 3`, `1 = 2`, `2 = 1`, `3 = ¡YA!`.
-pub const COUNTDOWN_STEP_COUNT: usize = 4;
+/// Cantidad fija de pasos en la cuenta regresiva estilo FNF: `0 = 2 (Ready?)`, `1 = 1 (Set?)`, `2 = ¡YA! (Go)`.
+pub const COUNTDOWN_STEP_COUNT: usize = 3;
 
 /// Nombres legibles en español para cada paso de la cuenta regresiva.
 pub fn countdown_step_label(slot_index: usize) -> &'static str {
     match slot_index {
-        0 => "Paso 1 · \"3\"",
-        1 => "Paso 2 · \"2\" (Listos)",
-        2 => "Paso 3 · \"1\" (Ya casi)",
-        _ => "Paso 4 · \"¡YA!\" (Go)",
+        0 => "Paso 1 · \"2\" (Ready?)",
+        1 => "Paso 2 · \"1\" (Set?)",
+        _ => "Paso 3 · \"¡YA!\" (Go)",
     }
 }
 
@@ -103,9 +103,40 @@ impl CountdownStepAsset {
     }
 }
 
-/// Contenedor serializable de los 4 pasos (`3`, `2`, `1`, `¡YA!`) dentro de `ModProject`.
+/// Deserializa `slots` de 3 pasos (`2`, `1`, `¡YA!`) y migra automáticamente arreglos legados
+/// de 4 pasos (`[3, Ready, Set, Go]` -> `[Ready, Set, Go]`) sin romper proyectos guardados.
+fn deserialize_countdown_slots<'de, D>(
+    deserializer: D,
+) -> Result<[CountdownStepAsset; COUNTDOWN_STEP_COUNT], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Vec::<CountdownStepAsset>::deserialize(deserializer)?;
+    let mut out = [
+        CountdownStepAsset::empty(0),
+        CountdownStepAsset::empty(1),
+        CountdownStepAsset::empty(2),
+    ];
+
+    if raw.len() >= 4 {
+        for (dst_idx, src_idx) in (1..=3).enumerate() {
+            let mut item = raw[src_idx].clone();
+            item.slot_index = dst_idx;
+            out[dst_idx] = item;
+        }
+    } else {
+        for (idx, mut item) in raw.into_iter().take(COUNTDOWN_STEP_COUNT).enumerate() {
+            item.slot_index = idx;
+            out[idx] = item;
+        }
+    }
+    Ok(out)
+}
+
+/// Contenedor serializable de los 3 pasos (`2 / Ready?`, `1 / Set?`, `¡YA! / Go`) dentro de `ModProject`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountdownAssetsConfig {
+    #[serde(deserialize_with = "deserialize_countdown_slots")]
     pub slots: [CountdownStepAsset; COUNTDOWN_STEP_COUNT],
 }
 
@@ -116,7 +147,6 @@ impl Default for CountdownAssetsConfig {
                 CountdownStepAsset::empty(0),
                 CountdownStepAsset::empty(1),
                 CountdownStepAsset::empty(2),
-                CountdownStepAsset::empty(3),
             ],
         }
     }
@@ -143,9 +173,9 @@ impl CountdownAssetsConfig {
     }
 }
 
-/// Parsea un archivo `.xml` Sparrow para el paso `slot_index` (`0..=3`):
+/// Parsea un archivo `.xml` Sparrow para el paso `slot_index` (`0..=2`):
 /// - Si el XML contiene múltiples animaciones (atlas combinado), prioriza los prefijos del paso
-///   (`three/3/tres`, `two/ready/2/dos`, `one/set/1/uno`, `go/ya/start`).
+///   (`ready/two/2/dos`, `set/one/1/uno`, `go/ya/start`).
 /// - Si contiene una sola animación o ningún prefijo coincide con palabras clave, aplana todos
 ///   los `<SubTexture>` ordenados de forma natural por nombre.
 pub fn parse_countdown_sparrow_xml(
@@ -160,9 +190,8 @@ pub fn parse_countdown_sparrow_xml(
     }
 
     let keywords: &[&str] = match slot_index {
-        0 => &["three", "tres", "intro3", "count3", "3"],
-        1 => &["ready", "two", "dos", "listos", "intro2", "count2", "2"],
-        2 => &["set", "one", "uno", "casi", "intro1", "count1", "1"],
+        0 => &["ready", "two", "dos", "listos", "intro2", "count2", "2"],
+        1 => &["set", "one", "uno", "casi", "intro1", "count1", "1"],
         _ => &["go", "ya", "start", "introgo", "countgo"],
     };
 
@@ -260,7 +289,7 @@ mod tests {
             <SubTexture name="ready_0001" x="0" y="80" width="100" height="80" frameX="0" frameY="0" frameWidth="130" frameHeight="90"/>
         </TextureAtlas>
         "#;
-        let frames = parse_countdown_sparrow_xml(xml, 1).expect("parse xml");
+        let frames = parse_countdown_sparrow_xml(xml, 0).expect("parse xml");
         assert_eq!(frames.len(), 3);
         assert_eq!(frames[0].raw_name, "ready_0001");
         assert_eq!(frames[1].raw_name, "ready_0002");
@@ -279,15 +308,15 @@ mod tests {
         </TextureAtlas>
         "#;
 
-        let ready_frames = parse_countdown_sparrow_xml(xml, 1).unwrap();
+        let ready_frames = parse_countdown_sparrow_xml(xml, 0).unwrap();
         assert_eq!(ready_frames.len(), 2);
         assert!(ready_frames.iter().all(|f| f.raw_name.starts_with("ready")));
 
-        let set_frames = parse_countdown_sparrow_xml(xml, 2).unwrap();
+        let set_frames = parse_countdown_sparrow_xml(xml, 1).unwrap();
         assert_eq!(set_frames.len(), 1);
         assert_eq!(set_frames[0].raw_name, "set0000");
 
-        let go_frames = parse_countdown_sparrow_xml(xml, 3).unwrap();
+        let go_frames = parse_countdown_sparrow_xml(xml, 2).unwrap();
         assert_eq!(go_frames.len(), 2);
         assert!(go_frames.iter().all(|f| f.raw_name.starts_with("go")));
     }
@@ -302,13 +331,36 @@ mod tests {
             <SubTexture name="go3" x="150" y="0" width="50" height="50"/>
         </TextureAtlas>
         "#;
-        let mut step = CountdownStepAsset::empty(3);
-        step.frames = parse_countdown_sparrow_xml(xml, 3).unwrap();
+        let mut step = CountdownStepAsset::empty(2);
+        step.frames = parse_countdown_sparrow_xml(xml, 2).unwrap();
 
         assert_eq!(step.frame_at_progress(0.0).unwrap().raw_name, "go0");
         assert_eq!(step.frame_at_progress(0.3).unwrap().raw_name, "go1");
         assert_eq!(step.frame_at_progress(0.6).unwrap().raw_name, "go2");
         assert_eq!(step.frame_at_progress(1.0).unwrap().raw_name, "go3");
         assert_eq!(step.frame_at_progress(f32::NAN).unwrap().raw_name, "go0");
+    }
+
+    #[test]
+    fn migrates_legacy_four_slot_countdown_json_to_three_steps() {
+        let legacy_json = r#"{
+            "slots": [
+                {"slot_index": 0, "image_name": "three.png", "audio_name": "intro3.ogg"},
+                {"slot_index": 1, "image_name": "ready.png", "audio_name": "intro2.ogg"},
+                {"slot_index": 2, "image_name": "set.png", "audio_name": "intro1.ogg"},
+                {"slot_index": 3, "image_name": "go.png", "audio_name": "introGo.ogg"}
+            ]
+        }"#;
+        let parsed: CountdownAssetsConfig =
+            serde_json::from_str(legacy_json).expect("deserializa legado 4 slots");
+        assert_eq!(parsed.slots.len(), 3);
+        assert_eq!(parsed.slots[0].slot_index, 0);
+        assert_eq!(parsed.slots[0].image_name.as_deref(), Some("ready.png"));
+        assert_eq!(parsed.slots[0].audio_name.as_deref(), Some("intro2.ogg"));
+        assert_eq!(parsed.slots[1].slot_index, 1);
+        assert_eq!(parsed.slots[1].image_name.as_deref(), Some("set.png"));
+        assert_eq!(parsed.slots[2].slot_index, 2);
+        assert_eq!(parsed.slots[2].image_name.as_deref(), Some("go.png"));
+        assert_eq!(parsed.slots[2].audio_name.as_deref(), Some("introGo.ogg"));
     }
 }

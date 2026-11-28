@@ -154,20 +154,17 @@ internal class StudioGameplayCoordinator(
                     it.copy(
                         snapshot = snap,
                         audioAdaptProgress = AudioAdaptProgress(
-                            active = false,
-                            progress = 1.0f,
+                            active = true,
+                            progress = maxOf(it.audioAdaptProgress.progress, 0.90f),
                             phase = if (report?.cacheReused == true) {
                                 "Sonido listo al instante"
                             } else {
                                 "Audio calibrado para ${report?.device?.routeLabel ?: "tu teléfono"}"
                             },
                             detail = report?.dspPlan?.adaptationSummary
-                                ?: "Cargando personajes y escenario..."
+                                ?: "Decodificando personajes y escenario..."
                         )
                     )
-                }
-                if (report != null && !report.bypassed) {
-                    delay(420L)
                 }
             } else {
                 // Aunque DSP esté desactivado, conservar sondeo de ruta AAudio para compensación de latencia Bluetooth
@@ -175,13 +172,40 @@ internal class StudioGameplayCoordinator(
                 snap = StudioJsonParser.parseActionResult(bypassRaw).snapshot ?: snap
                 uiState.update {
                     it.copy(
+                        snapshot = snap,
                         hotCompileProgress = HotCompileProgress(
                             active = true,
-                            progress = 0.92f,
+                            progress = maxOf(it.hotCompileProgress.progress, 0.90f),
                             phase = "Cargando personajes en pantalla...",
-                            detail = "Preparando elementos visibles de la escena"
+                            detail = "Decodificando elementos visibles de la escena"
                         )
                     )
+                }
+            }
+
+            fun updateFinalLoadProgress(targetPct: Float, phase: String, detail: String) {
+                uiState.update { st ->
+                    if (snap.audioAdaptEnabled) {
+                        val clamped = maxOf(st.audioAdaptProgress.progress, targetPct.coerceIn(0.90f, 1.0f))
+                        st.copy(
+                            audioAdaptProgress = st.audioAdaptProgress.copy(
+                                active = clamped < 0.999f,
+                                progress = clamped,
+                                phase = phase,
+                                detail = detail
+                            )
+                        )
+                    } else {
+                        val clamped = maxOf(st.hotCompileProgress.progress, targetPct.coerceIn(0.90f, 1.0f))
+                        st.copy(
+                            hotCompileProgress = HotCompileProgress(
+                                active = clamped < 0.999f,
+                                progress = clamped,
+                                phase = phase,
+                                detail = detail
+                            )
+                        )
+                    }
                 }
             }
 
@@ -193,12 +217,33 @@ internal class StudioGameplayCoordinator(
                 onlyInitiallyVisible = true,
                 repackedEntityIds = repackedIds,
                 compiledPages = snap.lastCompileReport?.compiledTexturePages ?: emptyMap(),
-                texturePixelFormats = snap.lastCompileReport?.texturePixelFormats ?: emptyMap()
+                texturePixelFormats = snap.lastCompileReport?.texturePixelFormats ?: emptyMap(),
+                onEntityDecoded = { done, total, entityName ->
+                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 1f
+                    val pct = 0.90f + 0.05f * frac
+                    updateFinalLoadProgress(
+                        targetPct = pct,
+                        phase = "Decodificando personajes ($done/$total)...",
+                        detail = "Cargando $entityName en memoria"
+                    )
+                }
+            )
+
+            updateFinalLoadProgress(
+                targetPct = 0.96f,
+                phase = "Preparando flechas y HUD...",
+                detail = "Cargando notas, receptores, barra de vida y calificaciones"
             )
             val arrows = bitmapLoader.loadArrowBitmaps()
             val receptors = bitmapLoader.loadReceptorBitmaps()
             val hurtX = bitmapLoader.loadHurtArrowXBitmap()
             val hudAssets = bitmapLoader.loadHudSvgAssets()
+
+            updateFinalLoadProgress(
+                targetPct = 0.978f,
+                phase = "Cargando íconos y cuenta regresiva...",
+                detail = "Preparando íconos de personaje y 2 · 1 · ¡YA!"
+            )
             val (normalIcons, losingIcons) = bitmapLoader.loadEntityIcons(
                 entities = snap.stageEntities,
                 compiledNormalPaths = snap.lastCompileReport?.compiledIconNormalPaths ?: emptyMap(),
@@ -210,16 +255,11 @@ internal class StudioGameplayCoordinator(
                 compiledPaths = snap.lastCompileReport?.compiledCountdownPaths ?: emptyMap()
             )
 
-            uiState.update {
-                it.copy(
-                    hotCompileProgress = HotCompileProgress(
-                        active = true,
-                        progress = 0.97f,
-                        phase = "Sincronizando música y eventos...",
-                        detail = "Todo casi listo para empezar a jugar"
-                    )
-                )
-            }
+            updateFinalLoadProgress(
+                targetPct = 0.99f,
+                phase = "Sincronizando música y eventos...",
+                detail = "Iniciando simulación y reloj de audio"
+            )
 
             NativeEngineBridge.nativeStartGameplay()
             val stNow = uiState.value
@@ -234,6 +274,13 @@ internal class StudioGameplayCoordinator(
                 gameplayFrameState.seedFromJsonStep(gpStep)
             }
 
+            updateFinalLoadProgress(
+                targetPct = 1.0f,
+                phase = "¡Todo listo!",
+                detail = "Entrando al escenario..."
+            )
+            delay(if (snap.audioAdaptEnabled && snap.lastAudioAdaptReport?.bypassed == false) 220L else 120L)
+
             uiState.update {
                 it.copy(
                     isBusy = false,
@@ -242,6 +289,10 @@ internal class StudioGameplayCoordinator(
                         progress = 1.0f,
                         phase = "¡Todo listo!",
                         detail = "Entrando al escenario..."
+                    ),
+                    audioAdaptProgress = it.audioAdaptProgress.copy(
+                        active = false,
+                        progress = 1.0f
                     ),
                     snapshot = snap,
                     compiledBitmaps = compiledMap,

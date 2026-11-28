@@ -3,7 +3,7 @@
 //! - Modo estudio/editor: hasta 3 pistas compactas `i16` en RAM (`tracks`) con soft-clip `tanh()`.
 //! - Modo gameplay compilado: 1 único stream en disco (`stream_source`) vía buffer circular
 //!   lock-free de ~512 KB, pasando linealmente sin `tanh()` para preservar la masterización True Peak.
-//! Incluye cuenta regresiva sincronizada al BPM ("3, 2, 1, ¡YA!") con reloj maestro `AtomicU64`.
+//! Incluye cuenta regresiva sincronizada al BPM ("2, 1, ¡YA!") con reloj maestro `AtomicU64`.
 
 use crate::decoder::DecodedTrack;
 use crate::streaming::StreamingAudioSource;
@@ -82,7 +82,7 @@ impl AudioMixerState {
             max_track_duration_ms_bits: AtomicU64::new(0.0_f64.to_bits()),
             chart_duration_ms_bits: AtomicU64::new(0.0_f64.to_bits()),
             tracks: RwLock::new([None, None, None]),
-            countdown_cues: RwLock::new([None, None, None, None]),
+            countdown_cues: RwLock::new([None, None, None]),
             countdown_preview_slot: AtomicI32::new(-1),
             countdown_preview_frame: AtomicU64::new(0),
             stream_source: RwLock::new(None),
@@ -130,7 +130,7 @@ impl AudioMixerState {
         self.countdown_preview_frame.store(0, Ordering::Release);
     }
 
-    /// Reproduce un solo paso (`0 = 3`, `1 = 2`, `2 = 1`, `3 = ¡YA!`) mientras el mezclador está pausado.
+    /// Reproduce un solo paso (`0 = 2 (Ready?)`, `1 = 1 (Set?)`, `2 = ¡YA! (Go)`) mientras el mezclador está pausado.
     pub fn trigger_countdown_cue_preview(&self, slot: usize) {
         if slot < COUNTDOWN_STEP_COUNT {
             self.countdown_preview_frame.store(0, Ordering::Release);
@@ -175,12 +175,12 @@ impl AudioMixerState {
         self.gameover_sfx_total_frames.store(0, Ordering::Release);
     }
 
-    /// Inicia una cuenta regresiva de 4 pulsos ("3, 2, 1, ¡YA!") sincronizada exactamente al BPM.
+    /// Inicia una cuenta regresiva de 3 pulsos ("2 / Ready?, 1 / Set?, ¡YA! / Go") sincronizada exactamente al BPM.
     pub fn start_countdown(&self, bpm: f64) {
         let sr = self.sample_rate.load(Ordering::Relaxed).max(8000) as f64;
         let safe_bpm = bpm.clamp(40.0, 320.0);
         let beat_frames = ((60.0 / safe_bpm) * sr).round().max(1.0) as u64;
-        let total_frames = beat_frames * 4;
+        let total_frames = beat_frames * (COUNTDOWN_STEP_COUNT as u64);
         self.frame_cursor.store(0, Ordering::Release);
         if let Some(stream) = self.stream_source.read().as_ref() {
             stream.seek_frame(0);
@@ -259,7 +259,7 @@ impl AudioMixerState {
         (pos_ms, playing, duration_ms)
     }
 
-    /// Devuelve el tiempo actual en milisegundos (negativo durante la cuenta regresiva 3-2-1-¡YA!).
+    /// Devuelve el tiempo actual en milisegundos (negativo durante la cuenta regresiva 2-1-¡YA!).
     pub fn position_ms(&self) -> f64 {
         let sr = self.sample_rate.load(Ordering::Relaxed).max(1) as f64;
         let rem = self.countdown_remaining_frames.load(Ordering::Acquire);
@@ -361,7 +361,7 @@ impl AudioMixerState {
 
             for f in 0..cd_frames {
                 let elapsed = elapsed_start + (f as u64);
-                let beat_idx = (elapsed / beat_frames).min(3) as usize;
+                let beat_idx = (elapsed / beat_frames).min((COUNTDOWN_STEP_COUNT - 1) as u64) as usize;
                 let in_beat = elapsed % beat_frames;
                 if let Some(track) = cues_guard.as_ref().and_then(|g| g[beat_idx].as_ref()) {
                     let idx = in_beat as usize;
@@ -479,36 +479,28 @@ impl AudioMixerState {
     }
 }
 
-/// Sintetiza de forma determinista y libre de derechos las 4 señales de voz/formante:
-/// 0 -> "3", 1 -> "2", 2 -> "1", 3 -> "¡YA!" (acorde ascendente brillante).
+/// Sintetiza de forma determinista y libre de derechos las 3 señales de voz/formante:
+/// 0 -> "2" (Ready?), 1 -> "1" (Set?), 2 -> "¡YA!" (Go, acorde ascendente brillante).
 #[inline]
 fn synthesize_countdown_cue(beat_idx: u8, t: f32) -> f32 {
     if t > 0.34 {
         return 0.0;
     }
     let attack = (t / 0.012).min(1.0);
-    let decay_rate = if beat_idx >= 3 { 9.5 } else { 14.0 };
+    let decay_rate = if beat_idx >= 2 { 9.5 } else { 14.0 };
     let env = attack * (-t * decay_rate).exp();
 
     match beat_idx {
         0 => {
-            // "3" — tono cálido con formante vocal grave-medio
-            let f0 = 329.63; // E4
-            let base = (2.0 * PI * f0 * t).sin() * 0.55;
-            let formant1 = (2.0 * PI * (f0 * 2.0) * t).sin() * 0.30;
-            let formant2 = (2.0 * PI * 980.0 * t).sin() * 0.16 * (-t * 22.0).exp();
-            (base + formant1 + formant2) * env * 0.42
-        }
-        1 => {
-            // "2" — tono medio ascendente
+            // "2" / Ready? — tono cálido medio
             let f0 = 392.00; // G4
             let base = (2.0 * PI * f0 * t).sin() * 0.55;
             let formant1 = (2.0 * PI * (f0 * 2.0) * t).sin() * 0.30;
             let formant2 = (2.0 * PI * 1180.0 * t).sin() * 0.16 * (-t * 22.0).exp();
             (base + formant1 + formant2) * env * 0.44
         }
-        2 => {
-            // "1" — tono firme de preparación
+        1 => {
+            // "1" / Set? — tono firme de preparación
             let f0 = 440.00; // A4
             let base = (2.0 * PI * f0 * t).sin() * 0.55;
             let formant1 = (2.0 * PI * (f0 * 2.0) * t).sin() * 0.32;
@@ -516,7 +508,7 @@ fn synthesize_countdown_cue(beat_idx: u8, t: f32) -> f32 {
             (base + formant1 + formant2) * env * 0.46
         }
         _ => {
-            // "¡YA!" — acorde brillante de arranque con barrido vocal ascendente
+            // "¡YA!" / Go — acorde brillante de arranque con barrido vocal ascendente
             let sweep = 523.25 + 90.0 * (1.0 - (-t * 16.0).exp());
             let c1 = (2.0 * PI * sweep * t).sin() * 0.48;
             let c2 = (2.0 * PI * 659.25 * t).sin() * 0.32; // E5
@@ -558,20 +550,20 @@ mod tests {
     #[test]
     fn countdown_respects_bpm_and_transitions_seamlessly_to_zero() {
         let mixer = AudioMixerState::new(48_000);
-        // 120 BPM => 500 ms por beat => 4 beats = 2000 ms totales (-2000.0 ms al iniciar)
+        // 120 BPM => 500 ms por beat => 3 beats (Ready, Set, Go) = 1500 ms totales (-1500.0 ms al iniciar)
         mixer.start_countdown(120.0);
         mixer.play();
 
-        assert!((mixer.position_ms() - (-2000.0)).abs() < 0.1);
+        assert!((mixer.position_ms() - (-1500.0)).abs() < 0.1);
 
-        // Renderizar exactamente 1 segundo (48,000 frames stereo) -> mitad de cuenta regresiva
+        // Renderizar exactamente 1 segundo (48,000 frames stereo) -> quedan 500 ms ("¡YA!")
         let mut buf = vec![0.0_f32; 48_000 * 2];
         mixer.render_audio_frames(&mut buf);
-        assert!((mixer.position_ms() - (-1000.0)).abs() < 0.1);
+        assert!((mixer.position_ms() - (-500.0)).abs() < 0.1);
         assert!(buf.iter().any(|s| s.abs() > 0.01));
 
-        // Renderizar otro segundo + 240 frames (5 ms) -> debe cruzar a +5.0 ms en música
-        let mut buf2 = vec![0.0_f32; (48_000 + 240) * 2];
+        // Renderizar otro medio segundo + 240 frames (5 ms) -> debe cruzar a +5.0 ms en música
+        let mut buf2 = vec![0.0_f32; (24_000 + 240) * 2];
         mixer.render_audio_frames(&mut buf2);
         assert!((mixer.position_ms() - 5.0).abs() < 0.1);
     }
@@ -691,7 +683,7 @@ mod tests {
     #[test]
     fn custom_countdown_cue_mixes_per_slot_with_synth_fallback_and_preview() {
         let mixer = AudioMixerState::new(48_000);
-        // Paso 0 ("3") personalizado con señal DC constante (~0.5)
+        // Paso 0 ("2 / Ready?") personalizado con señal DC constante (~0.5)
         let custom_cue = Arc::new(DecodedTrack {
             sample_rate: 48_000,
             stereo_samples: vec![16_384_i16; 12_000 * 2], // 250 ms

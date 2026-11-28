@@ -34,11 +34,27 @@ pub fn precompile_scripts_with_cache(
     manifest: &mut HotCompileManifest,
     scripts_cache_dir: Option<&Path>,
 ) -> ScriptPrecompileStats {
+    precompile_scripts_with_cache_progress(scripts, manifest, scripts_cache_dir, |_, _, _| {})
+}
+
+/// Variante con callback incremental `(completados, total, nombre_script)` al precompilar o
+/// reutilizar bytecode/JS en caché durante `hot_compile`.
+pub fn precompile_scripts_with_cache_progress<F>(
+    scripts: &mut [ScriptAsset],
+    manifest: &mut HotCompileManifest,
+    scripts_cache_dir: Option<&Path>,
+    mut on_progress: F,
+) -> ScriptPrecompileStats
+where
+    F: FnMut(usize, usize, &str),
+{
     let mut stats = ScriptPrecompileStats::default();
     if let Some(dir) = scripts_cache_dir {
         let _ = std::fs::create_dir_all(dir);
     }
 
+    let total_enabled = scripts.iter().filter(|s| s.enabled).count();
+    let mut done_enabled = 0usize;
     let mut kept_artifacts: HashSet<PathBuf> = HashSet::new();
 
     for script in scripts.iter_mut() {
@@ -84,6 +100,8 @@ pub fn precompile_scripts_with_cache(
             if loaded_ok {
                 kept_artifacts.insert(artifact);
                 stats.cached_reused_count += 1;
+                done_enabled += 1;
+                on_progress(done_enabled, total_enabled, &script.name);
                 continue;
             }
         }
@@ -171,9 +189,12 @@ pub fn precompile_scripts_with_cache(
                 }
             }
         }
+
+        done_enabled += 1;
+        on_progress(done_enabled, total_enabled, &script.name);
     }
 
-    // Limpiar artefactos huérfanos o de scripts deshabilitados/eliminados en `scripts_cache_dir`
+    // Limpiar artefactos huérfanos (incluidos `.tmp`) o de scripts deshabilitados/eliminados en `scripts_cache_dir`
     if let Some(dir) = scripts_cache_dir {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for ent in entries.flatten() {

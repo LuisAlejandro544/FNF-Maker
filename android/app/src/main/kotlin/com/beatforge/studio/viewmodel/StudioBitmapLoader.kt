@@ -282,14 +282,18 @@ internal class StudioBitmapLoader {
         onlyInitiallyVisible: Boolean = true,
         repackedEntityIds: Set<String> = emptySet(),
         compiledPages: Map<String, List<String>> = emptyMap(),
-        texturePixelFormats: Map<String, String> = emptyMap()
+        texturePixelFormats: Map<String, String> = emptyMap(),
+        onEntityDecoded: (done: Int, total: Int, entityName: String) -> Unit = { _, _, _ -> }
     ): Map<String, LoadedEntityBitmap> {
         val out = linkedMapOf<String, LoadedEntityBitmap>()
         val origPaths = entities.associate { it.id to it.imagePath }
-        for (ent in entities) {
-            if (onlyInitiallyVisible && (!ent.visible || ent.opacity <= 0.005f)) {
-                continue
-            }
+        val targetEntities = if (onlyInitiallyVisible) {
+            entities.filter { it.visible && it.opacity > 0.005f }
+        } else {
+            entities
+        }
+        val total = targetEntities.size
+        targetEntities.forEachIndexed { idx, ent ->
             decodeCompiledPagesForEntity(
                 entityId = ent.id,
                 ent = ent,
@@ -302,6 +306,7 @@ internal class StudioBitmapLoader {
             )?.let { loaded ->
                 out[ent.id] = loaded
             }
+            onEntityDecoded(idx + 1, total, ent.displayName.ifBlank { ent.id })
         }
         return out
     }

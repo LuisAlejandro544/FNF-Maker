@@ -14,7 +14,7 @@ use pulse_core::hot_compile::{
     AudioMergeFingerprint, CachedAudioEntry, DeviceResourceTier, HotCompileManifest,
     ScreenViewportMetrics, hot_compile_project_to_dir_with_manifest_viewport,
 };
-use pulse_scripting::precompile_scripts_with_cache;
+use pulse_scripting::precompile_scripts_with_cache_progress;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
@@ -97,15 +97,23 @@ impl EngineSession {
         );
 
         on_progress(
-            0.75,
+            0.73,
             "Preparando scripts y eventos",
             "Activando animaciones y efectos personalizados",
         );
         let scripts_cache_dir = out_dir.join("scripts");
-        let script_precompile = precompile_scripts_with_cache(
+        let script_precompile = precompile_scripts_with_cache_progress(
             &mut bundle.optimized_scripts,
             &mut manifest,
             Some(&scripts_cache_dir),
+            |done, total, script_name| {
+                let pct = 0.73 + 0.08 * ((done as f32) / (total.max(1) as f32));
+                on_progress(
+                    pct,
+                    "Preparando scripts y eventos",
+                    &format!("Script listo: {} ({}/{})", script_name, done, total),
+                );
+            },
         );
         bundle.report.precompiled_scripts = script_precompile.precompiled_count;
         bundle.report.cached_scripts_reused = script_precompile.cached_reused_count;
@@ -220,6 +228,11 @@ impl EngineSession {
                             merged_tracks: merge_rep.merged_tracks,
                             estimated_ram_saved_kb: merge_rep.estimated_ram_saved_kb,
                         });
+                        on_progress(
+                            0.87,
+                            "Mezcla de música lista",
+                            "Streaming WAV optimizado en caché",
+                        );
                     }
                     _ => {
                         let _ = std::fs::remove_file(&compiled_wav);
@@ -231,7 +244,7 @@ impl EngineSession {
                 // Con el adaptador acústico f32 activo o sin pistas activas, evitamos doble mezcla WAV
                 if skip_hot_compile_mix {
                     on_progress(
-                        0.85,
+                        0.86,
                         "Audio listo para calibración f32",
                         "Se procesará en streaming directo sin doble mezcla",
                     );
@@ -246,6 +259,11 @@ impl EngineSession {
             }
         }
 
+        on_progress(
+            0.88,
+            "Guardando caché incremental...",
+            "Actualizando manifiesto y limpiando archivos temporales",
+        );
         let _ = manifest.save_to_dir(&out_dir);
         touch_dir_last_used(&out_dir);
         let safe_active = sanitize_project_id(&self.project.id);
@@ -257,8 +275,8 @@ impl EngineSession {
 
         on_progress(
             0.90,
-            "Escenario guardado y listo",
-            "Cargando todo para empezar la partida",
+            "Compilación Rust lista",
+            "Pasando a decodificación de imágenes en Android",
         );
 
         self.compiled_texture_paths = texture_paths;

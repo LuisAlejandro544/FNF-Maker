@@ -600,7 +600,7 @@ class GameplayFrameState {
         val prevHudZoom = (prev.hudZoom * 100f).toInt()
         val quantizedArrowsOp = (arrowsOpacity * 50f).toInt()
         val prevArrowsOp = (prev.arrowsOpacity * 50f).toInt()
-        val countdownAnimating = cdStage in 0..3 && !paused && !finished && !gameOver
+        val countdownAnimating = cdStage in 0..2 && !paused && !finished && !gameOver
 
         val hudNeedsUpdate = hasHudStrings ||
             prev.active != active ||
@@ -642,7 +642,7 @@ class GameplayFrameState {
                 activeBpm = activeBpm,
                 countdownStage = cdStage,
                 countdownLabel = cachedCountdownLabel,
-                countdownProgress = if (cdStage in 0..3) cdProgress else 0f,
+                countdownProgress = if (cdStage in 0..2) cdProgress else 0f,
                 score = scoreVal,
                 combo = comboVal,
                 maxCombo = maxComboVal,

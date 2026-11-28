@@ -7,7 +7,7 @@ use super::analysis::{
     EntityLifecycleWindow, collect_script_referenced_ids, compute_project_max_camera_zoom,
     compute_timeline_asset_lifecycle, is_permanently_invisible,
 };
-use super::aux_textures::compile_countdown_and_icons_with_manifest;
+use super::aux_textures::compile_countdown_and_icons_with_manifest_progress;
 use super::entity_compile::{
     CompileCounters, CompiledTexOutcome, EntityCompileContext, cleanup_orphan_compiled_assets,
     compile_single_entity_texture,
@@ -138,7 +138,7 @@ where
     let (optimized_scripts, discarded_heavy_loops, neutralized_unbounded_loops) =
         optimize_scripts_with_manifest(&project.scripts, manifest);
 
-    on_progress(0.14, "Organizando apariciones en el escenario...");
+    on_progress(0.12, "Organizando apariciones en el escenario...");
 
     let timeline_windows: Vec<EntityLifecycleWindow> = compute_timeline_asset_lifecycle(project);
     let scheduled_preload_entities = timeline_windows
@@ -173,7 +173,7 @@ where
         let _ = std::fs::create_dir_all(dir);
     }
 
-    on_progress(0.22, "Preparando personajes y fondos...");
+    on_progress(0.20, "Preparando personajes y fondos...");
 
     let referenced_anim_prefixes =
         collect_referenced_anim_prefixes(&active_entities, &project.scripts, &project.chart);
@@ -290,14 +290,21 @@ where
         }
     }
 
-    on_progress(0.65, "Optimizando cuenta regresiva e íconos...");
-    let aux_result = compile_countdown_and_icons_with_manifest(
+    on_progress(0.60, "Optimizando cuenta regresiva e íconos...");
+    let aux_result = compile_countdown_and_icons_with_manifest_progress(
         project,
         &active_entities,
         tier,
         out_dir,
         &manifest.countdown,
         &manifest.icons,
+        |done, total| {
+            let pct = 0.60 + 0.07 * ((done as f32) / (total.max(1) as f32));
+            on_progress(
+                pct,
+                &format!("Optimizando cuenta regresiva e íconos ({}/{})...", done, total),
+            );
+        },
     );
     counters
         .vram_saved_bytes

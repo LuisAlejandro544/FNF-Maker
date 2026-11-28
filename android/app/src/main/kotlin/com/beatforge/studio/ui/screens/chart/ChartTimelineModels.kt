@@ -249,7 +249,7 @@ fun summarizeChartEvent(event: ChartEventSnapshot): String {
                 "intro" -> {
                     val delayMs = params["revealms"]?.toDoubleOrNull() ?: 0.0
                     val delayTag = if (delayMs > 0.0) " +${String.format(java.util.Locale.US, "%.1fs", delayMs / 1000.0)}" else ""
-                    "Intro Negra (3-2-1-¡YA! visible)$delayTag · fade ${dur}s"
+                    "Intro Negra (2-1-¡YA! visible)$delayTag · fade ${dur}s"
                 }
                 "hide_arrows" -> "Ocultar Flechas · ${dur}s"
                 "show_arrows" -> "Mostrar Flechas · ${dur}s"

@@ -509,7 +509,7 @@ internal fun BoxScope.GameplayCountdownOverlay(
     countdownBitmaps: Map<Int, LoadedEntityBitmap> = emptyMap()
 ) {
     val stage = hud.countdownStage
-    if (stage !in 0..3 || hud.paused || hud.finished) return
+    if (stage !in 0..2 || hud.paused || hud.finished) return
     val p = hud.countdownProgress.coerceIn(0f, 1f)
     val popScale = if (p < 0.25f) {
         1.42f - (p / 0.25f) * 0.42f
@@ -522,9 +522,8 @@ internal fun BoxScope.GameplayCountdownOverlay(
         1f
     }
     val stageColor = when (stage) {
-        0 -> StudioColors.AccentCoral
-        1 -> StudioColors.AccentAmber
-        2 -> StudioColors.AccentCyan
+        0 -> StudioColors.AccentAmber
+        1 -> StudioColors.AccentCyan
         else -> StudioColors.AccentEmerald
     }
 
@@ -625,7 +624,7 @@ internal fun BoxScope.GameplayCountdownOverlay(
                     Text(
                         text = hud.countdownLabel,
                         color = stageColor,
-                        fontSize = if (stage == 3) 44.sp else 54.sp,
+                        fontSize = if (stage == 2) 44.sp else 54.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(

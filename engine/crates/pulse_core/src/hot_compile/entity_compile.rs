@@ -201,7 +201,7 @@ where
                     ctx.counters.skipped_optimal.fetch_add(1, Ordering::Relaxed);
                 }
                 let completed = ctx.counters.done.fetch_add(1, Ordering::Relaxed) + 1;
-                let pct = 0.22 + 0.43 * ((completed as f32) / (ctx.total_entities as f32));
+                let pct = 0.20 + 0.40 * ((completed as f32) / (ctx.total_entities as f32));
                 (ctx.on_progress)(
                     pct,
                     &format!("Imagen lista al instante ({}/{})", completed, ctx.total_entities),
@@ -230,7 +230,7 @@ where
             if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
                 ctx.counters.skipped_optimal.fetch_add(1, Ordering::Relaxed);
                 let completed = ctx.counters.done.fetch_add(1, Ordering::Relaxed) + 1;
-                let pct = 0.22 + 0.43 * ((completed as f32) / (ctx.total_entities as f32));
+                let pct = 0.20 + 0.40 * ((completed as f32) / (ctx.total_entities as f32));
                 (ctx.on_progress)(
                     pct,
                     &format!("Imagen lista ({}/{})", completed, ctx.total_entities),
@@ -282,7 +282,7 @@ where
             if !repack.modified && !is_astc && is_webp_path(path) {
                 ctx.counters.skipped_optimal.fetch_add(1, Ordering::Relaxed);
                 let completed = ctx.counters.done.fetch_add(1, Ordering::Relaxed) + 1;
-                let pct = 0.22 + 0.43 * ((completed as f32) / (ctx.total_entities as f32));
+                let pct = 0.20 + 0.40 * ((completed as f32) / (ctx.total_entities as f32));
                 (ctx.on_progress)(
                     pct,
                     &format!("Personaje listo ({}/{})", completed, ctx.total_entities),
@@ -389,7 +389,7 @@ where
         if smart_scale >= 0.999 && !is_astc && is_webp_path(path) {
             ctx.counters.skipped_optimal.fetch_add(1, Ordering::Relaxed);
             let completed = ctx.counters.done.fetch_add(1, Ordering::Relaxed) + 1;
-            let pct = 0.22 + 0.43 * ((completed as f32) / (ctx.total_entities as f32));
+            let pct = 0.20 + 0.40 * ((completed as f32) / (ctx.total_entities as f32));
             (ctx.on_progress)(
                 pct,
                 &format!("Imagen lista ({}/{})", completed, ctx.total_entities),
@@ -429,7 +429,7 @@ where
     };
 
     let completed = ctx.counters.done.fetch_add(1, Ordering::Relaxed) + 1;
-    let pct = 0.22 + 0.43 * ((completed as f32) / (ctx.total_entities as f32));
+    let pct = 0.20 + 0.40 * ((completed as f32) / (ctx.total_entities as f32));
     (ctx.on_progress)(
         pct,
         &format!(
@@ -542,7 +542,8 @@ where
     })
 }
 
-/// Elimina archivos `.webp` / `.png` huérfanos en `dir` (páginas `_p*.webp`, cuenta regresiva e íconos sobrantes).
+/// Elimina archivos `.webp` / `.png` y temporales huérfanos (`.webp.tmp`, `.tmp`) en `dir`
+/// (incluyendo páginas `_p*.webp`, cuenta regresiva e íconos sobrantes).
 pub(super) fn cleanup_orphan_compiled_assets(
     dir: &Path,
     old_manifest: &HotCompileManifest,
@@ -581,11 +582,20 @@ pub(super) fn cleanup_orphan_compiled_assets(
             if !p.is_file() {
                 continue;
             }
+            let file_name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.to_ascii_lowercase())
+                .unwrap_or_default();
             let ext = p
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_ascii_lowercase())
                 .unwrap_or_default();
+            if ext == "tmp" || file_name.ends_with(".tmp") || file_name.ends_with(".webp.tmp") {
+                let _ = std::fs::remove_file(&p);
+                continue;
+            }
             if ext == "webp" || ext == "png" {
                 let keep = next_cached_textures.values().any(|c| {
                     c.compiled_webp_path == p || c.extra_page_paths.iter().any(|ep| ep == &p)

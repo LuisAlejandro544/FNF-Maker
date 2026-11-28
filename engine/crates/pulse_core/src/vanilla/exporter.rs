@@ -328,7 +328,7 @@ pub fn export_project_vanilla_mod(
         }
     }
 
-    // 2b. Recursos de cuenta regresiva ("3", "2", "1", "¡YA!"): imagen, XML opcional y voz/SFX
+    // 2b. Recursos de cuenta regresiva ("2 / Ready?", "1 / Set?", "¡YA! / Go"): imagen, XML opcional y voz/SFX
     for (slot_idx, cd) in cloned.countdown.slots.iter_mut().enumerate() {
         let slot_stem = format!("countdown_step_{}", slot_idx + 1);
         let skip_redundant_astc_decoded = cd

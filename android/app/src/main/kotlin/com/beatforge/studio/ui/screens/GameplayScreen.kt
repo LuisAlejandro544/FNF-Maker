@@ -237,7 +237,7 @@ fun GameplayScreen(
         }
 
         // Cortina de pantalla en negro (`screenBlackoutAlpha`) y destello sobre HUD:
-        // cubre escenario, flechas y barra de vida, pero conserva visible el conteo "3, 2, 1, ¡YA!" y Pausa.
+        // cubre escenario, flechas y barra de vida, pero conserva visible el conteo "2, 1, ¡YA!" y Pausa.
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (frameState.drawTick < 0L) return@Canvas
             if (frameState.vignetteOverHud) {
