@@ -1,7 +1,8 @@
 // Archivo: android/app/src/main/kotlin/com/beatforge/studio/ui/screens/GameplayScreen.kt
-// Propósito: Coordinador modular de la pantalla jugable a 60 FPS en Compose Canvas
-// sincronizada con el reloj del mezclador Rust AAudio (`nativeStepGameplayBinary`).
-// Orquesta el bucle `withFrameNanos` y delega dibujo, entrada multi-touch y HUD/diálogos
+// Propósito: Coordinador modular de la pantalla jugable a 60 FPS sobre OpenGL ES 3.0 por defecto
+// (con fallback automático a OpenGL ES 2.0 y respaldo Canvas 2D en modo seguro), sincronizado
+// con el reloj del mezclador Rust AAudio (`nativeStepGameplayBinary`).
+// Orquesta el bucle `withFrameNanos` y delega dibujo GPU/Canvas, entrada multi-touch y HUD/diálogos
 // a los submódulos de `ui/screens/gameplay/`.
 
 package com.beatforge.studio.ui.screens
@@ -17,6 +18,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -28,9 +30,11 @@ import com.beatforge.studio.CountdownStepSnapshot
 import com.beatforge.studio.GameplayFrameState
 import com.beatforge.studio.LoadedEntityBitmap
 import com.beatforge.studio.MobileControlMode
+import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.ui.screens.gameplay.GameplayCountdownOverlay
 import com.beatforge.studio.ui.screens.gameplay.GameplayDebugOverlay
 import com.beatforge.studio.ui.screens.gameplay.GameplayGameOverOverlay
+import com.beatforge.studio.ui.screens.gameplay.GameplayGlesSurface
 import com.beatforge.studio.ui.screens.gameplay.GameplayHealthBarAndStats
 import com.beatforge.studio.ui.screens.gameplay.GameplayPauseButton
 import com.beatforge.studio.ui.screens.gameplay.GameplayPauseDialog
@@ -72,6 +76,7 @@ fun GameplayScreen(
     debugBotplay: Boolean,
     debugPracticeMode: Boolean,
     debugHideHud: Boolean,
+    renderBackendKey: String = RenderBackendKind.Gles3.key,
     renderBackendLabel: String,
     onStepFrame: suspend (dtSec: Float, pressedMask: Int, justPressedMask: Int) -> Unit,
     onChangeControlMode: (MobileControlMode) -> Unit,
@@ -86,6 +91,11 @@ fun GameplayScreen(
     val hud = frameState.hudState
     var liveFps by remember { mutableIntStateOf(60) }
     var liveFrameMs by remember { mutableFloatStateOf(16.6f) }
+
+    val backendKind = remember(renderBackendKey) { RenderBackendKind.fromKey(renderBackendKey) }
+    var forceCanvasFallback by remember(renderBackendKey) { mutableStateOf(false) }
+    var activeGlLabel by remember(renderBackendKey, renderBackendLabel) { mutableStateOf(renderBackendLabel) }
+    val useGlesSurface = backendKind != RenderBackendKind.Canvas2d && !forceCanvasFallback
 
     val ratingPool = remember { RatingPopupPoolHolder() }
     val splashPool = remember { SplashPoolHolder() }
@@ -130,81 +140,111 @@ fun GameplayScreen(
     val isClassicHitbox = hud.controlMode == MobileControlMode.ClassicHitbox.key
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(StudioColors.BgDark)
+        modifier = if (useGlesSurface) {
+            Modifier.fillMaxSize()
+        } else {
+            Modifier
+                .fillMaxSize()
+                .background(StudioColors.BgDark)
+        }
     ) {
-        // Lienzo principal de gameplay: lee `frameState.drawTick` solo dentro de DrawScope (0 recomposiciones a 60 FPS)
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            if (frameState.drawTick < 0L) return@Canvas
-            val nowNs = System.nanoTime()
-
-            if (frameState.ratingEventId == 0 && ratingPool.lastEventId != 0) {
-                ratingPool.lastEventId = 0
-                ratingPool.clear()
-            } else if (frameState.ratingEventId != ratingPool.lastEventId) {
-                ratingPool.lastEventId = frameState.ratingEventId
-                if (frameState.lastRatingCode in 1..4) {
-                    val slot = ratingPool.slots[ratingPool.cursor % ratingPool.slots.size]
-                    ratingPool.cursor += 1
-                    slot.active = true
-                    slot.ratingCode = frameState.lastRatingCode
-                    slot.startNano = nowNs
-                    slot.jitterX = (((ratingPool.cursor * 19) % 28) - 14).toFloat()
-                    slot.jitterY = (((ratingPool.cursor * 23) % 24) - 12).toFloat()
-                }
-            }
-
-            if (frameState.splashEventId != splashPool.lastEventId) {
-                splashPool.lastEventId = frameState.splashEventId
-                val slot = splashPool.slots[splashPool.cursor and 7]
-                splashPool.cursor += 1
-                slot.active = true
-                slot.lane = frameState.splashLane.coerceIn(0, 3)
-                slot.startNano = nowNs
-                slot.angleOffset = ((splashPool.cursor * 37) % 60 - 30).toFloat()
-            }
-
-            val vw = frameState.virtualWidth.coerceAtLeast(1f)
-            val vh = frameState.virtualHeight.coerceAtLeast(1f)
-            val sx = size.width / vw
-            val sy = size.height / vh
-
-            drawGameplaySceneLayer(
+        if (useGlesSurface) {
+            // Renderizador GPU por defecto: OpenGL ES 3.0 con fallback automático a OpenGL ES 2.0
+            GameplayGlesSurface(
                 frameState = frameState,
-                nowNs = nowNs,
-                sx = sx,
-                sy = sy,
-                compiledBitmapsByIndex = compiledBitmapsByIndex,
-                ratingBitmaps = ratingBitmaps,
-                ratingPool = ratingPool,
-                dynamicTextPaint = dynamicTextPaint
-            )
-
-            if (!frameState.vignetteOverHud) {
-                drawCameraSideVignette(frameState)
-            }
-
-            drawClassicHitboxColumns(
-                frameState = frameState,
-                pressedMask = touchMaskState.pressedMask,
-                lanePalettes = lanePalettes
-            )
-
-            drawStrumsNotesAndSplashes(
-                frameState = frameState,
-                pressedMask = touchMaskState.pressedMask,
-                nowNs = nowNs,
-                sx = sx,
-                sy = sy,
+                touchMaskState = touchMaskState,
+                preferEs3 = backendKind != RenderBackendKind.Gles2,
                 arrowBitmaps = arrowBitmaps,
                 receptorBitmaps = receptorBitmaps,
                 hurtArrowXBitmap = hurtArrowXBitmap,
+                ratingBitmaps = ratingBitmaps,
                 noteSplashBitmap = noteSplashBitmap,
+                compiledBitmapsByIndex = compiledBitmapsByIndex,
+                ratingPool = ratingPool,
                 splashPool = splashPool,
                 lanePalettes = lanePalettes,
-                dynamicTextPaint = dynamicTextPaint
+                onGlContextReady = { resolvedLabel ->
+                    activeGlLabel = resolvedLabel
+                },
+                onGlFatalFallback = { _ ->
+                    forceCanvasFallback = true
+                    activeGlLabel = "Canvas 2D (Fallback)"
+                },
+                modifier = Modifier.fillMaxSize()
             )
+        } else {
+            // Modo seguro / respaldo Canvas 2D: lee `frameState.drawTick` solo dentro de DrawScope (0 recomposiciones a 60 FPS)
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                if (frameState.drawTick < 0L) return@Canvas
+                val nowNs = System.nanoTime()
+
+                if (frameState.ratingEventId == 0 && ratingPool.lastEventId != 0) {
+                    ratingPool.lastEventId = 0
+                    ratingPool.clear()
+                } else if (frameState.ratingEventId != ratingPool.lastEventId) {
+                    ratingPool.lastEventId = frameState.ratingEventId
+                    if (frameState.lastRatingCode in 1..4) {
+                        val slot = ratingPool.slots[ratingPool.cursor % ratingPool.slots.size]
+                        ratingPool.cursor += 1
+                        slot.active = true
+                        slot.ratingCode = frameState.lastRatingCode
+                        slot.startNano = nowNs
+                        slot.jitterX = (((ratingPool.cursor * 19) % 28) - 14).toFloat()
+                        slot.jitterY = (((ratingPool.cursor * 23) % 24) - 12).toFloat()
+                    }
+                }
+
+                if (frameState.splashEventId != splashPool.lastEventId) {
+                    splashPool.lastEventId = frameState.splashEventId
+                    val slot = splashPool.slots[splashPool.cursor and 7]
+                    splashPool.cursor += 1
+                    slot.active = true
+                    slot.lane = frameState.splashLane.coerceIn(0, 3)
+                    slot.startNano = nowNs
+                    slot.angleOffset = ((splashPool.cursor * 37) % 60 - 30).toFloat()
+                }
+
+                val vw = frameState.virtualWidth.coerceAtLeast(1f)
+                val vh = frameState.virtualHeight.coerceAtLeast(1f)
+                val sx = size.width / vw
+                val sy = size.height / vh
+
+                drawGameplaySceneLayer(
+                    frameState = frameState,
+                    nowNs = nowNs,
+                    sx = sx,
+                    sy = sy,
+                    compiledBitmapsByIndex = compiledBitmapsByIndex,
+                    ratingBitmaps = ratingBitmaps,
+                    ratingPool = ratingPool,
+                    dynamicTextPaint = dynamicTextPaint
+                )
+
+                if (!frameState.vignetteOverHud) {
+                    drawCameraSideVignette(frameState)
+                }
+
+                drawClassicHitboxColumns(
+                    frameState = frameState,
+                    pressedMask = touchMaskState.pressedMask,
+                    lanePalettes = lanePalettes
+                )
+
+                drawStrumsNotesAndSplashes(
+                    frameState = frameState,
+                    pressedMask = touchMaskState.pressedMask,
+                    nowNs = nowNs,
+                    sx = sx,
+                    sy = sy,
+                    arrowBitmaps = arrowBitmaps,
+                    receptorBitmaps = receptorBitmaps,
+                    hurtArrowXBitmap = hurtArrowXBitmap,
+                    noteSplashBitmap = noteSplashBitmap,
+                    splashPool = splashPool,
+                    lanePalettes = lanePalettes,
+                    dynamicTextPaint = dynamicTextPaint
+                )
+            }
         }
 
         GameplayTouchOverlay(
@@ -266,7 +306,7 @@ fun GameplayScreen(
             fps = liveFps,
             frameMs = liveFrameMs,
             compiledBitmapsCount = compiledBitmapsByIndex.count { it != null },
-            renderBackendLabel = renderBackendLabel,
+            renderBackendLabel = if (useGlesSurface) activeGlLabel else if (forceCanvasFallback) "Canvas 2D (Fallback)" else renderBackendLabel,
             frameState = frameState,
             hud = hud
         )

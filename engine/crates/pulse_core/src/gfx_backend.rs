@@ -5,13 +5,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Backend de renderizado preferido por el proyecto (preparación modular hacia GPU).
+/// Backend de renderizado preferido por el proyecto (GLES 3.0 activo por defecto con respaldo a 2.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderBackendKind {
-    #[default]
     Canvas2d,
     Gles2,
+    #[default]
     Gles3,
     Vulkan,
 }
@@ -28,19 +28,20 @@ impl RenderBackendKind {
 
     pub fn from_key(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
+            "canvas2d" | "canvas" => RenderBackendKind::Canvas2d,
             "gles2" | "opengl_es2" | "opengles2" => RenderBackendKind::Gles2,
             "gles3" | "gles" | "opengl_es3" | "opengles3" => RenderBackendKind::Gles3,
             "vulkan" | "vk" => RenderBackendKind::Vulkan,
-            _ => RenderBackendKind::Canvas2d,
+            _ => RenderBackendKind::Gles3,
         }
     }
 
     pub fn label_es(self) -> &'static str {
         match self {
-            RenderBackendKind::Canvas2d => "Canvas 2D (Estable)",
-            RenderBackendKind::Gles2 => "OpenGL ES 2.0 (Base)",
-            RenderBackendKind::Gles3 => "OpenGL ES 3.x (Base)",
-            RenderBackendKind::Vulkan => "Vulkan (Preparado)",
+            RenderBackendKind::Canvas2d => "Canvas 2D (Modo seguro)",
+            RenderBackendKind::Gles2 => "OpenGL ES 2.0 (Respaldo GPU)",
+            RenderBackendKind::Gles3 => "OpenGL ES 3.0 (Por defecto)",
+            RenderBackendKind::Vulkan => "Vulkan (Preparado · usa GLES 3.0)",
         }
     }
 }
@@ -67,9 +68,9 @@ impl Default for GfxCapabilities {
             gles2_supported: false,
             gles3_supported: false,
             vulkan_supported: false,
-            active_backend: RenderBackendKind::Canvas2d.as_key().to_string(),
-            recommended_backend: RenderBackendKind::Canvas2d.as_key().to_string(),
-            detail: "Sondeo gráfico inicializado en modo seguro Canvas 2D.".to_string(),
+            active_backend: RenderBackendKind::Gles3.as_key().to_string(),
+            recommended_backend: RenderBackendKind::Gles3.as_key().to_string(),
+            detail: "Renderizador GPU OpenGL ES 3.0 por defecto con respaldo automático a ES 2.0.".to_string(),
         }
     }
 }

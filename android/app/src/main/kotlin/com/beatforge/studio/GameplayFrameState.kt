@@ -118,6 +118,9 @@ class MutableDynamicDrawable {
 }
 
 class GameplayFrameState {
+    // Bloqueo ligero para sincronizar mutaciones desde Dispatchers.Main con lecturas en GLThread
+    val renderLock = Any()
+
     var directBuffer: ByteBuffer = ByteBuffer
         .allocateDirect(128 * 1024)
         .order(ByteOrder.LITTLE_ENDIAN)
@@ -201,7 +204,7 @@ class GameplayFrameState {
         directBuffer = ByteBuffer.allocateDirect(newCap).order(ByteOrder.LITTLE_ENDIAN)
     }
 
-    fun reset() {
+    fun reset() = synchronized(renderLock) {
         active = false
         paused = false
         finished = false
@@ -246,7 +249,7 @@ class GameplayFrameState {
         drawTick += 1L
     }
 
-    fun seedFromJsonStep(step: GameplayStep) {
+    fun seedFromJsonStep(step: GameplayStep) = synchronized(renderLock) {
         active = step.active
         downscroll = step.downscroll
         paused = step.paused
@@ -423,14 +426,14 @@ class GameplayFrameState {
      * Decodifica el paquete binario `BFGP` v2 escrito por Rust en `directBuffer`
      * reutilizando los pools sin crear objetos por frame.
      */
-    fun decodeFromDirectBuffer(byteCount: Int) {
-        if (byteCount < BINARY_HEADER_SIZE) return
+    fun decodeFromDirectBuffer(byteCount: Int) = synchronized(renderLock) {
+        if (byteCount < BINARY_HEADER_SIZE) return@synchronized
         val buf = directBuffer
         buf.position(0)
         buf.limit(byteCount)
 
         val magic = buf.int
-        if (magic != BINARY_FRAME_MAGIC) return
+        if (magic != BINARY_FRAME_MAGIC) return@synchronized
 
         val flags = buf.int
         /* val hudRev = */ buf.int

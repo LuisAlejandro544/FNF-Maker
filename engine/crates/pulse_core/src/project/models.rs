@@ -173,6 +173,8 @@ pub struct ModProject {
     pub scroll_speed_override: Option<f64>,
     #[serde(default)]
     pub preferred_render_backend: RenderBackendKind,
+    #[serde(default)]
+    pub render_backend_user_selected: bool,
     #[serde(default = "default_audio_adapt_enabled")]
     pub audio_adapt_enabled: bool,
     #[serde(default)]
@@ -277,7 +279,8 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             control_mode: MobileControlMode::TapArrows,
             audio_offset_ms: 0.0,
             scroll_speed_override: None,
-            preferred_render_backend: RenderBackendKind::Canvas2d,
+            preferred_render_backend: RenderBackendKind::Gles3,
+            render_backend_user_selected: false,
             audio_adapt_enabled: true,
             countdown: CountdownAssetsConfig::default(),
         }

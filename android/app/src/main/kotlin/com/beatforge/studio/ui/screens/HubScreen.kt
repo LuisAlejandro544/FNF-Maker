@@ -462,14 +462,16 @@ fun HubScreen(
                                         maxLines = 1
                                     )
                                     Text(
-                                        text = if (kind == RenderBackendKind.Canvas2d) {
-                                            "Activo"
-                                        } else if (supported) {
-                                            "Compatible"
-                                        } else {
-                                            "No disp."
+                                        text = when {
+                                            selected -> "Activo"
+                                            supported -> "Compatible"
+                                            else -> "No disp."
                                         },
-                                        color = if (supported) StudioColors.AccentEmerald else StudioColors.TextMuted,
+                                        color = when {
+                                            selected -> StudioColors.AccentAmber
+                                            supported -> StudioColors.AccentEmerald
+                                            else -> StudioColors.TextMuted
+                                        },
                                         fontSize = 9.sp,
                                         maxLines = 1
                                     )

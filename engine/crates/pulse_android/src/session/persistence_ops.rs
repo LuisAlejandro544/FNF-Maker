@@ -11,6 +11,7 @@ use super::{ActionResultJson, EngineSession, ProjectSummaryJson};
 use pulse_audio::decode_audio_file_cached;
 use pulse_core::astc_loader::load_sprite_image;
 use pulse_core::disk_cache::{cleanup_legacy_flat_compiled_cache, touch_dir_last_used};
+use pulse_core::gfx_backend::RenderBackendKind;
 use pulse_core::project::{
     COUNTDOWN_STEP_COUNT, CURRENT_DEV_API_VERSION, MAX_AUDIO_TRACKS, ModProject, current_epoch_ms,
 };
@@ -24,6 +25,11 @@ use std::time::{Duration, Instant};
 const AUTO_SAVE_THROTTLE_MS: u64 = 250;
 
 fn normalize_loaded_project(proj: &mut ModProject) {
+    if !proj.render_backend_user_selected
+        && proj.preferred_render_backend == RenderBackendKind::Canvas2d
+    {
+        proj.preferred_render_backend = RenderBackendKind::Gles3;
+    }
     proj.stage.camera.ensure_default_cameras();
     proj.countdown.sanitize();
     proj.ensure_camera_script();

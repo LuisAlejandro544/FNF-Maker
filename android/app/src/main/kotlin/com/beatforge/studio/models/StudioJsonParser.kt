@@ -263,7 +263,7 @@ object StudioJsonParser {
             hasCustomPngArrowSkin = obj.optBoolean("hasCustomPngArrowSkin", false),
             healthBarSvgPath = optNullableString(obj, "healthBarSvgPath"),
             countdownSlots = countdownSlots,
-            preferredRenderBackend = obj.optString("preferredRenderBackend", "canvas2d"),
+            preferredRenderBackend = obj.optString("preferredRenderBackend", "gles3"),
             audioAdaptEnabled = obj.optBoolean("audioAdaptEnabled", true),
             lastCompileReport = compileReport,
             lastAudioAdaptReport = audioAdaptReport

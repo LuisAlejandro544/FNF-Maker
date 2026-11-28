@@ -55,11 +55,11 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       │   └── tests.rs         # Pruebas unitarias de escenario, multicámara, clamping y limpieza de capas
 │       │       ├── mod_descriptors.rs   # Parsers `.json`/`.xml` de personaje (`characters/*`) y escenario (`stages/*`: Psych/V-Slice/Codename)
 │       │       ├── svg_skin.rs          # Flechas (incl. nota X `default_hurt_arrow_x_svg`), importador `NOTE_assets.png+.xml`, barra, íconos, ratings y Note Splash SVG vía resvg
-│       │       ├── gfx_backend.rs       # Tipos base `RenderBackendKind` (`Canvas2d`/`Gles2`/`Gles3`/`Vulkan`) y `GfxCapabilities`
+│       │       ├── gfx_backend.rs       # Tipos base `RenderBackendKind` (`Gles3` por defecto con fallback `Gles2`, `Canvas2d` seguro, `Vulkan`) y `GfxCapabilities`
 │       │       ├── project/             # Modelo `ModProject`, API de desarrollo y generadores de scripts Lua predeterminados
 │       │       │   ├── mod.rs           # Reexportaciones públicas del módulo `project`
 │       │       │   ├── dev_api.rs       # Sistema "API de desarrollo" (`CURRENT_DEV_API_VERSION = 2` y migración explícita de mods antiguos)
-│       │       │   ├── models.rs        # Estructuras `ModProject` (incl. `dev_api_version`), metadatos, pistas de audio, `countdown` y `render_backend`
+│       │       │   ├── models.rs        # Estructuras `ModProject` (incl. `dev_api_version`, `preferred_render_backend` = `Gles3` y `render_backend_user_selected`), metadatos, pistas de audio y `countdown`
 │       │       │   ├── countdown.rs     # 3 pasos oficiales (`2 · 1 · ¡YA!`): PNG/WebP/ASTC + XML Sparrow opcional (simple/combinado) y voces/SFX separadas
 │       │       │   ├── lua_helpers.rs   # Utilidades compartidas de formato e interpolación para plantillas Lua
 │       │       │   ├── camera_lua.rs    # Generador `camera_system.lua` V2 (`-- [CAM_RUNTIME_V2]`)
@@ -217,10 +217,12 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   ├── AiPatchEngine.kt           # Herramientas: `list_scripts`, `read_script`, `patch_script`, `create_script`, `list_stage_sprites` (sin imágenes), `get_chart_timing_info`, `read_skill`
 │               │   ├── OpenRouterSseClient.kt     # Cliente OkHttp-SSE (Apache-2.0) con streaming en vivo y fragmentos `tool_calls`
 │               │   └── AiAssistantCoordinator.kt  # Bucle agéntico asíncrono en `Dispatchers.IO`
-│               ├── gfx/                 # Capa modular de preparación GPU (OpenGL ES 2.0/3.x y Vulkan)
-│               │   ├── RenderBackendModels.kt # Modelos Kotlin de backend seleccionado y capacidades de drivers detectados
+│               ├── gfx/                 # Subsistema GPU OpenGL ES 3.0 -> 2.0 + sondeo Vulkan
+│               │   ├── RenderBackendModels.kt # Modelos Kotlin de backend (`Gles3` por defecto, `Gles2`, `Canvas2d`, `Vulkan`) y capacidades
 │               │   ├── VulkanProbeBridge.kt   # Sondeo ligero Android PackageManager (GLES / Vulkan) enlazado con el reporte Rust
-│               │   └── GlesSurfaceHost.kt     # Contenedor base GLSurfaceView (ES 2.0 / 3.x) listo para futuro renderizado GPU
+│               │   ├── GlesSurfaceHost.kt     # `StudioGlesConfigChooser` y `StudioGlesContextFactory` (ES 3.0 con fallback automático ES 2.0)
+│               │   ├── GlesShaderProgram.kt   # Batching 2D `Gles2dBatch` (ES 3.00 / ES 1.00 fallback), pila 2D sin GC y texturas procedurales
+│               │   └── GlesTextureCache.kt    # Caché GLThread de texturas `Bitmap` (`RGB_565`/RGBA) y LRU para textos dinámicos (`makeText`)
 │               ├── viewmodel/           # Submódulos especializados del ViewModel
 │               │   ├── StudioBitmapLoader.kt      # Detección 32/64-bit, `LruCache` 1:1 Sparrow, `Bitmap.Config.RGB_565`, decodificación multi-página y alineación `repackedEntityIds`
 │               │   ├── StudioEditorDelegate.kt    # Fachada pública que coordina los delegados de `viewmodel/editor/*` sin alterar la API de `StudioViewModel`
@@ -291,10 +293,11 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       ├── ScriptAiAssistantScreen.kt # Pantalla dedicada del Asistente IA (chat SSE OpenRouter, selector modelos, System Prompt y Skills .md)
 │                       ├── HotCompileScreen.kt    # Pantalla de carga con barra y círculo determinados (`0%–100%`) + fase en vivo
 │                       ├── AudioAdaptScreen.kt    # Pantalla independiente pre-gameplay: hardware/AAudio, EBU R128 + FFT 5 bandas y plan DSP (Ruta 32f, Amplitud, Crossfeed, Lookahead)
-│                       ├── GameplayScreen.kt      # Coordinador jugable 60 FPS (`withFrameNanos`), medición FPS, flash HUD y ocultamiento HUD limpio
+│                       ├── GameplayScreen.kt      # Coordinador jugable 60 FPS (`withFrameNanos`) sobre `GameplayGlesSurface` (GLES 3.0->2.0) o modo seguro Canvas 2D
 │                       └── gameplay/              # Submódulos especializados de `GameplayScreen`
 │                           ├── GameplayRenderPrimitives.kt # Pools sin GC, `GameplayTouchMaskState` y geometría de carriles
-│                           ├── GameplayWorldRenderer.kt    # Dibujo 60 FPS de escena, foco Game Over FNF, flechas X (`hurt_x`), notas y Splash
+│                           ├── GameplayGlesRenderer.kt     # Renderizador GPU por lotes OpenGL ES 3.0 -> 2.0 + `GlRenderSnapshot` (`renderLock`) + `GameplayGlesSurface`
+│                           ├── GameplayWorldRenderer.kt    # Renderizador de respaldo Canvas 2D (escena, foco Game Over, notas y Splash)
 │                           ├── GameplayTouchOverlay.kt     # Entrada multi-touch de 4 carriles (desactivada durante pausa/fin/Game Over)
 │                           └── GameplayHudOverlay.kt       # HUD SVG, overlay Game Over (toque para reintentar), overlay Debug RAM/FPS y Pausa Debug
 │
@@ -309,7 +312,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `setCameraVignette`, `tweenCameraVignette`, `clearCameraVignette`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, API de desarrollo (`migrateProjectDevApiVersion`), parches parciales, sprites sin imágenes, OpenRouter SSE, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `PassThrough` manifest & aux countdown/icon scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF + cruce AAudio + offset Bluetooth + poda v3, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
+│       ├── engine-tools.ts              # Validación, API de desarrollo (`migrateProjectDevApiVersion`), resolución GPU (`resolveActiveGameplayRenderBackend`), parches parciales, sprites sin imágenes, OpenRouter SSE, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `PassThrough` manifest & aux countdown/icon scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF + cruce AAudio + offset Bluetooth + poda v3, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
 │       └── engine-tools.test.ts         # Suite de pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)

@@ -69,7 +69,7 @@ fun ProjectsScreen(
     activeProjectName: String,
     isLobbyMode: Boolean = false,
     gfxCapabilities: GfxCapabilities = GfxCapabilities(),
-    activeRenderBackend: String = "canvas2d",
+    activeRenderBackend: String = "gles3",
     onReturnToLobby: (() -> Unit)? = null,
     onCreateProject: (name: String, author: String) -> Unit,
     onImportModPackage: () -> Unit,

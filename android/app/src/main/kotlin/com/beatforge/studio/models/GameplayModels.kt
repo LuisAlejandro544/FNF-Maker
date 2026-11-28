@@ -92,7 +92,7 @@ data class ProjectSnapshot(
     val hasCustomPngArrowSkin: Boolean = false,
     val healthBarSvgPath: String? = null,
     val countdownSlots: List<CountdownStepSnapshot> = emptyList(),
-    val preferredRenderBackend: String = "canvas2d",
+    val preferredRenderBackend: String = "gles3",
     val audioAdaptEnabled: Boolean = true,
     val lastCompileReport: CompileReportSnapshot? = null,
     val lastAudioAdaptReport: AudioAdaptationReportSnapshot? = null

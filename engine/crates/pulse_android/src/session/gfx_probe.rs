@@ -34,12 +34,12 @@ pub fn probe_graphics_capabilities(active_backend: RenderBackendKind) -> GfxCapa
     #[cfg(not(target_os = "android"))]
     let (egl_ok, gles2_ok, gles3_ok, vk_ok) = (false, false, false, false);
 
-    let recommended = if vk_ok {
-        RenderBackendKind::Vulkan
-    } else if gles3_ok {
+    let recommended = if gles3_ok {
         RenderBackendKind::Gles3
     } else if gles2_ok {
         RenderBackendKind::Gles2
+    } else if vk_ok {
+        RenderBackendKind::Vulkan
     } else {
         RenderBackendKind::Canvas2d
     };
@@ -74,7 +74,8 @@ impl EngineSession {
     pub fn set_preferred_render_backend(&mut self, backend_key: &str) -> String {
         let parsed = RenderBackendKind::from_key(backend_key);
         self.project.preferred_render_backend = parsed;
+        self.project.render_backend_user_selected = true;
         self.save_active_project_now();
-        self.ok_response(format!("Backend gráfico preparado: {}", parsed.label_es()))
+        self.ok_response(format!("Backend gráfico activo: {}", parsed.label_es()))
     }
 }

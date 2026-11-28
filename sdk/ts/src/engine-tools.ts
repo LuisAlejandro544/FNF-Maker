@@ -4739,10 +4739,13 @@ export function isHazardXNote(kind: NoteSpecialType | string): boolean {
 }
 
 /**
- * Normaliza la clave del backend gráfico seleccionado para el proyecto (`canvas2d`, `gles2`, `gles3`, `vulkan`).
+ * Normaliza la clave del backend gráfico seleccionado para el proyecto (`gles3` por defecto, `gles2`, `canvas2d`, `vulkan`).
  */
 export function normalizeRenderBackendKind(raw?: string | null): RenderBackendKind {
   switch ((raw ?? '').trim().toLowerCase()) {
+    case 'canvas2d':
+    case 'canvas':
+      return 'canvas2d';
     case 'gles2':
     case 'opengl_es2':
     case 'opengles2':
@@ -4756,8 +4759,87 @@ export function normalizeRenderBackendKind(raw?: string | null): RenderBackendKi
     case 'vk':
       return 'vulkan';
     default:
-      return 'canvas2d';
+      return 'gles3';
   }
+}
+
+export interface GameplayGfxCapabilitiesInput {
+  gles3Supported: boolean;
+  gles2Supported: boolean;
+  eglContextEs3Created?: boolean;
+  eglContextEs2Created?: boolean;
+  shaderCompileOk?: boolean;
+}
+
+export interface ResolvedGameplayRenderPlan {
+  requestedBackend: RenderBackendKind;
+  activeBackend: RenderBackendKind;
+  label: string;
+  fellBackToEs2: boolean;
+  fellBackToCanvas: boolean;
+}
+
+/**
+ * Resuelve el backend activo en tiempo de ejecución siguiendo la política:
+ * `GLES 3.0` por defecto -> fallback automático a `GLES 2.0` -> respaldo seguro `Canvas 2D`.
+ */
+export function resolveActiveGameplayRenderBackend(
+  preferredRaw: string | null | undefined,
+  caps: GameplayGfxCapabilitiesInput
+): ResolvedGameplayRenderPlan {
+  const requested = normalizeRenderBackendKind(preferredRaw);
+  if (requested === 'canvas2d') {
+    return {
+      requestedBackend: requested,
+      activeBackend: 'canvas2d',
+      label: 'Canvas 2D',
+      fellBackToEs2: false,
+      fellBackToCanvas: false,
+    };
+  }
+
+  const shaderOk = caps.shaderCompileOk ?? true;
+  if (!shaderOk) {
+    return {
+      requestedBackend: requested,
+      activeBackend: 'canvas2d',
+      label: 'Canvas 2D (Fallback)',
+      fellBackToEs2: false,
+      fellBackToCanvas: true,
+    };
+  }
+
+  const preferEs3 = requested !== 'gles2';
+  const es3Available = caps.gles3Supported && (caps.eglContextEs3Created ?? true);
+  if (preferEs3 && es3Available) {
+    return {
+      requestedBackend: requested,
+      activeBackend: 'gles3',
+      label: 'GLES 3.0',
+      fellBackToEs2: false,
+      fellBackToCanvas: false,
+    };
+  }
+
+  const es2Available = caps.gles2Supported && (caps.eglContextEs2Created ?? true);
+  if (es2Available) {
+    const fellBackToEs2 = preferEs3;
+    return {
+      requestedBackend: requested,
+      activeBackend: 'gles2',
+      label: fellBackToEs2 ? 'GLES 2.0 (Fallback)' : 'GLES 2.0',
+      fellBackToEs2,
+      fellBackToCanvas: false,
+    };
+  }
+
+  return {
+    requestedBackend: requested,
+    activeBackend: 'canvas2d',
+    label: 'Canvas 2D (Fallback)',
+    fellBackToEs2: false,
+    fellBackToCanvas: true,
+  };
 }
 
 export interface ArrowSparrowMatch {

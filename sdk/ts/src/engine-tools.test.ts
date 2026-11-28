@@ -102,6 +102,7 @@ import {
   noteSpecialCodeToType,
   isHazardXNote,
   normalizeRenderBackendKind,
+  resolveActiveGameplayRenderBackend,
   matchArrowSparrowSubTexture,
   decodeBfgpExtensionFlags,
   estimateOutputLatencyAndOffset,
@@ -1647,10 +1648,58 @@ test('decodeBfgpExtensionFlags, noteKindCode and normalizeRenderBackendKind pres
   assert.equal(decodeBfgpNoteKindCode(noteFlags), 2);
   assert.equal(noteSpecialCodeToType(decodeBfgpNoteKindCode(noteFlags)), 'instakill');
 
+  assert.equal(normalizeRenderBackendKind('canvas2d'), 'canvas2d');
   assert.equal(normalizeRenderBackendKind('gles2'), 'gles2');
   assert.equal(normalizeRenderBackendKind('OpenGL_ES3'), 'gles3');
   assert.equal(normalizeRenderBackendKind('vulkan'), 'vulkan');
-  assert.equal(normalizeRenderBackendKind('unknown'), 'canvas2d');
+  assert.equal(normalizeRenderBackendKind('unknown'), 'gles3');
+});
+
+test('resolveActiveGameplayRenderBackend enforces GLES 3.0 default with automatic ES 2.0 and Canvas 2D fallback', () => {
+  const es3Plan = resolveActiveGameplayRenderBackend(undefined, {
+    gles3Supported: true,
+    gles2Supported: true,
+  });
+  assert.equal(es3Plan.requestedBackend, 'gles3');
+  assert.equal(es3Plan.activeBackend, 'gles3');
+  assert.equal(es3Plan.label, 'GLES 3.0');
+  assert.equal(es3Plan.fellBackToEs2, false);
+  assert.equal(es3Plan.fellBackToCanvas, false);
+
+  const es2FallbackPlan = resolveActiveGameplayRenderBackend('gles3', {
+    gles3Supported: true,
+    gles2Supported: true,
+    eglContextEs3Created: false,
+  });
+  assert.equal(es2FallbackPlan.activeBackend, 'gles2');
+  assert.equal(es2FallbackPlan.label, 'GLES 2.0 (Fallback)');
+  assert.equal(es2FallbackPlan.fellBackToEs2, true);
+  assert.equal(es2FallbackPlan.fellBackToCanvas, false);
+
+  const explicitEs2 = resolveActiveGameplayRenderBackend('gles2', {
+    gles3Supported: true,
+    gles2Supported: true,
+  });
+  assert.equal(explicitEs2.activeBackend, 'gles2');
+  assert.equal(explicitEs2.label, 'GLES 2.0');
+  assert.equal(explicitEs2.fellBackToEs2, false);
+
+  const safeCanvas = resolveActiveGameplayRenderBackend('canvas2d', {
+    gles3Supported: true,
+    gles2Supported: true,
+  });
+  assert.equal(safeCanvas.activeBackend, 'canvas2d');
+  assert.equal(safeCanvas.label, 'Canvas 2D');
+  assert.equal(safeCanvas.fellBackToCanvas, false);
+
+  const shaderFailureFallback = resolveActiveGameplayRenderBackend('gles3', {
+    gles3Supported: true,
+    gles2Supported: true,
+    shaderCompileOk: false,
+  });
+  assert.equal(shaderFailureFallback.activeBackend, 'canvas2d');
+  assert.equal(shaderFailureFallback.label, 'Canvas 2D (Fallback)');
+  assert.equal(shaderFailureFallback.fellBackToCanvas, true);
 });
 
 test('normalizeAndCenterAtlasFrames centers misaligned poses, aligns untrimmed frames, and is idempotent', () => {

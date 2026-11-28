@@ -537,7 +537,7 @@ private fun BeatForgeRootContent(
                     StudioScreen.Gameplay -> {
                         val playerEntId = state.snapshot.stageEntities.firstOrNull { it.role == "player" }?.id
                         val oppEntId = state.snapshot.stageEntities.firstOrNull { it.role == "opponent" }?.id
-                        val backendLabel = RenderBackendKind.fromKey(state.snapshot.preferredRenderBackend).shortBadge
+                        val backendKind = RenderBackendKind.fromKey(state.snapshot.preferredRenderBackend)
                         GameplayScreen(
                             frameState = viewModel.gameplayFrameState,
                             arrowBitmaps = state.arrowBitmaps,
@@ -562,7 +562,8 @@ private fun BeatForgeRootContent(
                             debugBotplay = state.debugBotplay,
                             debugPracticeMode = state.debugPracticeMode,
                             debugHideHud = state.debugHideHud,
-                            renderBackendLabel = backendLabel,
+                            renderBackendKey = backendKind.key,
+                            renderBackendLabel = backendKind.shortBadge,
                             onStepFrame = { dt, pressed, justPressed ->
                                 viewModel.stepGameplayFrame(dt, pressed, justPressed)
                             },
