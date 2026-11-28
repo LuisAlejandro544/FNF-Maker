@@ -437,4 +437,7 @@ object NativeEngineBridge {
 
     @JvmStatic
     external fun nativeRestoreDefaultCountdownAssets(): String
+
+    @JvmStatic
+    external fun nativeUpgradeProjectDevApi(): String
 }

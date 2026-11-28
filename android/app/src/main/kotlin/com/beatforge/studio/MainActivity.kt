@@ -51,6 +51,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.beatforge.studio.ai.AiAssistantUiState
 import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.ui.components.StudioEqualizerBars
 import com.beatforge.studio.ui.components.StudioGlowingProgressBar
@@ -59,6 +60,7 @@ import com.beatforge.studio.ui.components.StudioOrbitProgressRing
 import com.beatforge.studio.ui.popups.ArrowSkinDialog
 import com.beatforge.studio.ui.popups.CharacterIconsDialog
 import com.beatforge.studio.ui.popups.CountdownAssetsDialog
+import com.beatforge.studio.ui.popups.DevApiDialog
 import com.beatforge.studio.ui.popups.ModFilesGuideDialog
 import com.beatforge.studio.ui.screens.AudioAdaptScreen
 import com.beatforge.studio.ui.screens.AudioScreen
@@ -68,6 +70,7 @@ import com.beatforge.studio.ui.screens.HotCompileScreen
 import com.beatforge.studio.ui.screens.HubScreen
 import com.beatforge.studio.ui.screens.ProjectLoadingScreen
 import com.beatforge.studio.ui.screens.ProjectsScreen
+import com.beatforge.studio.ui.screens.ScriptAiAssistantScreen
 import com.beatforge.studio.ui.screens.ScriptStudioScreen
 import com.beatforge.studio.ui.screens.SpriteLabScreen
 import com.beatforge.studio.ui.screens.StageEditorScreen
@@ -141,7 +144,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             BeatForgeTheme {
                 val state by studioViewModel.uiState.collectAsStateWithLifecycle()
-                BeatForgeRootContent(state = state, viewModel = studioViewModel)
+                val aiState by studioViewModel.aiState.collectAsStateWithLifecycle()
+                BeatForgeRootContent(
+                    state = state,
+                    aiState = aiState,
+                    viewModel = studioViewModel
+                )
             }
         }
     }
@@ -186,6 +194,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun BeatForgeRootContent(
     state: StudioUiState,
+    aiState: AiAssistantUiState,
     viewModel: StudioViewModel
 ) {
     Row(
@@ -352,7 +361,8 @@ private fun BeatForgeRootContent(
                         },
                         onNavigate = { viewModel.navigateTo(it) },
                         onOpenArrowSkin = { viewModel.setArrowSkinDialogOpen(true) },
-                        onCompileAndPlay = { viewModel.startCompileAndPlay() }
+                        onCompileAndPlay = { viewModel.startCompileAndPlay() },
+                        onOpenDevApiDialog = { viewModel.setDevApiDialogOpen(true) }
                     )
 
                     StudioScreen.Projects -> ProjectsScreen(
@@ -491,7 +501,25 @@ private fun BeatForgeRootContent(
                         },
                         onValidateScript = { id, enabled, src ->
                             viewModel.validateScript(id, enabled, src)
-                        }
+                        },
+                        onOpenAiAssistant = { viewModel.openAiAssistantFromScripts() }
+                    )
+
+                    StudioScreen.AiAssistant -> ScriptAiAssistantScreen(
+                        snapshot = state.snapshot,
+                        selectedScriptId = state.selectedScriptId,
+                        aiState = aiState,
+                        onBackToScripts = { viewModel.navigateTo(StudioScreen.ScriptStudio) },
+                        onSendMessage = { viewModel.sendAiMessage(it) },
+                        onStopStreaming = { viewModel.stopAiStreaming() },
+                        onClearChat = { viewModel.clearAiConversation() },
+                        onUpdateApiKey = { viewModel.updateAiApiKey(it) },
+                        onSelectModel = { viewModel.selectAiModel(it) },
+                        onAddCustomModel = { viewModel.addAiCustomModel(it) },
+                        onRemoveCustomModel = { viewModel.removeAiCustomModel(it) },
+                        onUpdateSystemPrompt = { viewModel.updateAiSystemPrompt(it) },
+                        onRestoreDefaultSystemPrompt = { viewModel.restoreDefaultAiSystemPrompt() },
+                        onToggleSkill = { id, enabled -> viewModel.toggleAiSkill(id, enabled) }
                     )
 
                     StudioScreen.HotCompile -> HotCompileScreen(
@@ -644,6 +672,14 @@ private fun BeatForgeRootContent(
             onPreviewAudio = { slot -> viewModel.previewCountdownAudio(slot) },
             onRestoreDefaults = { viewModel.restoreDefaultCountdownAssets() },
             onDismiss = { viewModel.setCountdownAssetsDialogOpen(false) }
+        )
+    }
+
+    if (state.devApiDialogOpen) {
+        DevApiDialog(
+            snapshot = state.snapshot,
+            onUpgrade = { viewModel.upgradeProjectDevApi() },
+            onDismiss = { viewModel.setDevApiDialogOpen(false) }
         )
     }
 }

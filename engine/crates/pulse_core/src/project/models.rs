@@ -5,6 +5,7 @@
 
 use super::camera_lua::render_camera_lua_script;
 use super::countdown::CountdownAssetsConfig;
+use super::dev_api::{CURRENT_DEV_API_VERSION, LEGACY_DEV_API_VERSION};
 use super::stage_events_lua::render_stage_events_lua_script;
 use super::ui_blackout_lua::{UI_BLACKOUT_RUNTIME_V2_MARKER, render_ui_blackout_lua_script};
 use crate::chart::ChartData;
@@ -142,12 +143,18 @@ fn default_audio_adapt_enabled() -> bool {
     true
 }
 
+fn default_legacy_dev_api_version() -> u32 {
+    LEGACY_DEV_API_VERSION
+}
+
 /// Proyecto completo del usuario listo para editar o compilar en caliente.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModProject {
     pub id: String,
     pub name: String,
     pub author: String,
+    #[serde(default = "default_legacy_dev_api_version")]
+    pub dev_api_version: u32,
     #[serde(default)]
     pub updated_at_ms: u64,
     pub chart: ChartData,
@@ -210,6 +217,7 @@ function onNoteHit(lane: number, isPlayer: boolean): void {
             id: "proj_neon_pulse".to_string(),
             name: "Neon Pulse Demo".to_string(),
             author: "Creador Local".to_string(),
+            dev_api_version: CURRENT_DEV_API_VERSION,
             updated_at_ms: current_epoch_ms(),
             chart,
             chart_source_path: None,

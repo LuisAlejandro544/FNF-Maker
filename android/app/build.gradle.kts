@@ -68,6 +68,13 @@ android {
             useLegacyPackaging = false
         }
     }
+
+    sourceSets {
+        getByName("main") {
+            // Empaqueta los SKILL.md modulares del asistente IA dentro de assets/ del APK
+            assets.srcDirs("src/main/assets", "../../skills/beatforge_ai")
+        }
+    }
 }
 
 dependencies {
@@ -88,6 +95,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    // Cliente HTTP y SSE streaming para OpenRouter (licencia permisiva Apache-2.0)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -172,3 +172,12 @@ pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpdate
     );
     to_jstr(&mut env, &json)
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_beatforge_studio_NativeEngineBridge_nativeUpgradeProjectDevApi<'local>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+) -> JString<'local> {
+    let json = session().lock().upgrade_dev_api_version();
+    to_jstr(&mut env, &json)
+}

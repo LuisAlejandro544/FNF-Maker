@@ -12,6 +12,8 @@ import android.net.Uri
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.beatforge.studio.ai.AiAssistantCoordinator
+import com.beatforge.studio.ai.AiAssistantUiState
 import com.beatforge.studio.gfx.RenderBackendKind
 import com.beatforge.studio.viewmodel.StudioBitmapLoader
 import com.beatforge.studio.viewmodel.StudioEditorDelegate
@@ -52,6 +54,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         gameplayFrameState = gameplayFrameState,
         bitmapLoader = bitmapLoader
     )
+    private val aiCoordinator = AiAssistantCoordinator(
+        app = application,
+        scope = viewModelScope,
+        engineIoDispatcher = engineIoDispatcher,
+        getSnapshot = { _uiState.value.snapshot },
+        getSelectedScriptId = { _uiState.value.selectedScriptId },
+        onSnapshotMutated = { nextSnap, modifiedScriptId ->
+            _uiState.update { st ->
+                val validScript = nextSnap.scripts.any { it.id == st.selectedScriptId }
+                st.copy(
+                    snapshot = nextSnap,
+                    selectedScriptId = modifiedScriptId
+                        ?: if (validScript) st.selectedScriptId else (nextSnap.scripts.firstOrNull()?.id ?: ""),
+                    scriptValidationMsg = null
+                )
+            }
+        }
+    )
+    val aiState: StateFlow<AiAssistantUiState> = aiCoordinator.aiState
 
     private var pendingImportKind: ImportKind? = null
     private var pendingExportModProjectId: String? = null
@@ -62,9 +83,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     init {
         _uiState.update { it.copy(selectedTier = bitmapLoader.detectOptimalDeviceTier(application)) }
         editorDelegate.initializeEngine()
+        aiCoordinator.initialize()
     }
 
     override fun onCleared() {
+        aiCoordinator.stopStreaming()
         try {
             NativeEngineBridge.nativeFlushSave()
         } catch (_: Throwable) {
@@ -178,6 +201,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun setCountdownAssetsDialogOpen(open: Boolean) {
         _uiState.update { it.copy(countdownAssetsDialogOpen = open) }
     }
+
+    fun setDevApiDialogOpen(open: Boolean) {
+        _uiState.update { it.copy(devApiDialogOpen = open) }
+    }
+
+    fun upgradeProjectDevApi() = editorDelegate.upgradeProjectDevApi()
 
     fun clearCountdownSprite(slot: Int) = editorDelegate.clearCountdownSprite(slot)
 
@@ -444,6 +473,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun validateScript(scriptId: String, currentEnabled: Boolean, currentSource: String) =
         editorDelegate.validateScript(scriptId, currentEnabled, currentSource)
+
+    fun openAiAssistantFromScripts() {
+        aiCoordinator.initialize()
+        editorDelegate.flushSaveAsync()
+        _uiState.update { it.copy(currentScreen = StudioScreen.AiAssistant, statusBanner = null) }
+    }
+
+    fun initAiAssistant() = aiCoordinator.initialize()
+
+    fun sendAiMessage(prompt: String) = aiCoordinator.sendUserMessage(prompt)
+
+    fun stopAiStreaming() = aiCoordinator.stopStreaming()
+
+    fun clearAiConversation() = aiCoordinator.clearConversation()
+
+    fun updateAiApiKey(apiKey: String) = aiCoordinator.updateApiKey(apiKey)
+
+    fun selectAiModel(modelId: String) = aiCoordinator.selectModel(modelId)
+
+    fun addAiCustomModel(modelId: String) = aiCoordinator.addCustomModel(modelId)
+
+    fun removeAiCustomModel(modelId: String) = aiCoordinator.removeCustomModel(modelId)
+
+    fun updateAiSystemPrompt(prompt: String) = aiCoordinator.updateSystemPrompt(prompt)
+
+    fun restoreDefaultAiSystemPrompt() = aiCoordinator.restoreDefaultSystemPrompt()
+
+    fun toggleAiSkill(skillId: String, enabled: Boolean) = aiCoordinator.toggleSkillEnabled(skillId, enabled)
 
     fun restoreDefaultArrowSvg() = editorDelegate.restoreDefaultArrowSvg()
 

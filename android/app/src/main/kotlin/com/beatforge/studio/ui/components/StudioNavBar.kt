@@ -90,7 +90,8 @@ fun StudioNavRail(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 RAIL_TABS.forEach { tab ->
-                    val selected = currentScreen == tab.screen
+                    val selected = currentScreen == tab.screen ||
+                        (tab.screen == StudioScreen.ScriptStudio && currentScreen == StudioScreen.AiAssistant)
                     RailButton(
                         label = tab.screen.label,
                         icon = tab.icon,

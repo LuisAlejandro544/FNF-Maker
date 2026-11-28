@@ -6,6 +6,7 @@
 
 mod camera_lua;
 pub mod countdown;
+pub mod dev_api;
 mod lua_helpers;
 mod models;
 mod stage_events_lua;
@@ -15,6 +16,10 @@ pub use camera_lua::{parse_camera_config_from_lua, render_camera_lua_script};
 pub use countdown::{
     COUNTDOWN_STEP_COUNT, CountdownAssetsConfig, CountdownStepAsset, countdown_step_label,
     parse_countdown_sparrow_xml,
+};
+pub use dev_api::{
+    CURRENT_DEV_API_VERSION, DevApiSpec, LEGACY_DEV_API_VERSION, dev_api_label, dev_api_spec,
+    migrate_project_to_dev_api,
 };
 pub use models::{
     AudioTrackSlot, CAMERA_SCRIPT_ID, CAMERA_SCRIPT_NAME, MAX_AUDIO_TRACKS, MobileControlMode,

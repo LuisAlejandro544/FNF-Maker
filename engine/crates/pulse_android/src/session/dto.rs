@@ -6,7 +6,10 @@ use super::{EngineSession, anim_kind_key, control_mode_to_key, lang_to_key, role
 use pulse_audio::AudioAdaptationReport;
 use pulse_core::frame_memory::{FrameBumpArena, FrameVisibleNote, NoteSlidingWindow};
 use pulse_core::hot_compile::{CompiledBundle, EntityLifecycleWindow};
-use pulse_core::project::{COUNTDOWN_STEP_COUNT, MAX_AUDIO_TRACKS, countdown_step_label};
+use pulse_core::project::{
+    COUNTDOWN_STEP_COUNT, CURRENT_DEV_API_VERSION, MAX_AUDIO_TRACKS, countdown_step_label,
+    dev_api_label,
+};
 use pulse_core::sparrow::CharacterAnimKind;
 use pulse_core::NoteSpecialKind;
 use pulse_scripting::ModScriptRuntime;
@@ -33,6 +36,8 @@ pub struct ProjectSummaryJson {
     pub track_count: usize,
     pub entity_count: usize,
     pub script_count: usize,
+    pub dev_api_version: u32,
+    pub current_dev_api_version: u32,
     pub updated_at_ms: u64,
     pub is_active: bool,
 }
@@ -79,6 +84,9 @@ pub struct ProjectSnapshotJson {
     pub id: String,
     pub name: String,
     pub author: String,
+    pub dev_api_version: u32,
+    pub current_dev_api_version: u32,
+    pub dev_api_label: String,
     pub downscroll: bool,
     pub control_mode: String,
     pub audio_offset_ms: f64,
@@ -819,6 +827,9 @@ impl EngineSession {
             id: self.project.id.clone(),
             name: self.project.name.clone(),
             author: self.project.author.clone(),
+            dev_api_version: self.project.dev_api_version,
+            current_dev_api_version: CURRENT_DEV_API_VERSION,
+            dev_api_label: dev_api_label(self.project.dev_api_version),
             downscroll: self.project.downscroll,
             control_mode: control_mode_to_key(self.project.control_mode).to_string(),
             audio_offset_ms: self.project.audio_offset_ms,

@@ -42,6 +42,7 @@ data class StudioUiState(
     val characterIconsDialogOpen: Boolean = false,
     val modFilesGuideDialogOpen: Boolean = false,
     val countdownAssetsDialogOpen: Boolean = false,
+    val devApiDialogOpen: Boolean = false,
     val stagedArrowAtlasPngPath: String? = null,
     val stagedArrowAtlasXmlPath: String? = null,
     val audioPreviewPlaying: Boolean = false,

@@ -421,6 +421,15 @@ private fun ProjectCard(
                 MiniStatChip("Pistas", "${project.trackCount}/3", StudioColors.AccentEmerald)
                 MiniStatChip("Capas", project.entityCount.toString(), StudioColors.AccentIndigo)
                 MiniStatChip("Scripts", project.scriptCount.toString(), StudioColors.AccentPurple)
+                MiniStatChip(
+                    "API",
+                    "v${project.devApiVersion}",
+                    if (project.devApiVersion >= project.currentDevApiVersion) {
+                        StudioColors.AccentEmerald
+                    } else {
+                        StudioColors.AccentAmber
+                    }
+                )
             }
 
             Row(

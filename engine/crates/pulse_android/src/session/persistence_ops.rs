@@ -11,7 +11,9 @@ use super::{ActionResultJson, EngineSession, ProjectSummaryJson};
 use pulse_audio::decode_audio_file_cached;
 use pulse_core::astc_loader::load_sprite_image;
 use pulse_core::disk_cache::{cleanup_legacy_flat_compiled_cache, touch_dir_last_used};
-use pulse_core::project::{COUNTDOWN_STEP_COUNT, MAX_AUDIO_TRACKS, ModProject, current_epoch_ms};
+use pulse_core::project::{
+    COUNTDOWN_STEP_COUNT, CURRENT_DEV_API_VERSION, MAX_AUDIO_TRACKS, ModProject, current_epoch_ms,
+};
 use pulse_core::vanilla::{export_project_vanilla_mod, import_project_vanilla_mod};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -563,6 +565,8 @@ impl EngineSession {
                     track_count: proj.active_audio_count(),
                     entity_count: proj.stage.entities.len(),
                     script_count: proj.scripts.len(),
+                    dev_api_version: proj.dev_api_version,
+                    current_dev_api_version: CURRENT_DEV_API_VERSION,
                     updated_at_ms: proj.updated_at_ms,
                     is_active: sid == active_id,
                 });
@@ -580,6 +584,8 @@ impl EngineSession {
                 track_count: self.project.active_audio_count(),
                 entity_count: self.project.stage.entities.len(),
                 script_count: self.project.scripts.len(),
+                dev_api_version: self.project.dev_api_version,
+                current_dev_api_version: CURRENT_DEV_API_VERSION,
                 updated_at_ms: self.project.updated_at_ms,
                 is_active: true,
             });

@@ -7898,3 +7898,175 @@ export function computeHotCompileFinalTailProgress(spec: {
   const clamped = Math.min(1.0, Math.max(0.90, rounded));
   return Math.max(spec.previousProgress, clamped);
 }
+
+export const LEGACY_DEV_API_VERSION = 1;
+export const CURRENT_DEV_API_VERSION = 2;
+
+export interface DevApiMigrationOutcome<T extends object> {
+  project: T & { devApiVersion: number };
+  previousVersion: number;
+  migrated: boolean;
+}
+
+/**
+ * Espejo puro de `pulse_core::project::dev_api::migrate_project_to_dev_api`:
+ * proyectos nuevos nacen en `CURRENT_DEV_API_VERSION`, proyectos antiguos sin campo
+ * arrancan en `LEGACY_DEV_API_VERSION` (v1) y pueden migrarse explícitamente preservando sus datos.
+ */
+export function migrateProjectDevApiVersion<T extends object>(
+  project: T & { devApiVersion?: number },
+  targetVersion: number = CURRENT_DEV_API_VERSION,
+): DevApiMigrationOutcome<T> {
+  const prev =
+    typeof project.devApiVersion === 'number' && Number.isFinite(project.devApiVersion) && project.devApiVersion >= 1
+      ? Math.trunc(project.devApiVersion)
+      : LEGACY_DEV_API_VERSION;
+  const normalizedTarget = Math.max(prev, Math.trunc(targetVersion));
+  if (prev >= normalizedTarget) {
+    return {
+      project: { ...project, devApiVersion: prev },
+      previousVersion: prev,
+      migrated: false,
+    };
+  }
+  return {
+    project: { ...project, devApiVersion: normalizedTarget },
+    previousVersion: prev,
+    migrated: true,
+  };
+}
+
+export type PartialPatchResult =
+  | { ok: true; sourceCode: string }
+  | { ok: false; reason: 'empty_old_text' | 'not_found' | 'ambiguous_match'; sourceCode: string };
+
+/**
+ * Espejo puro de `AiPatchEngine.handlePatchScript`: aplica un reemplazo único exacto
+ * (`oldText` -> `newText`) sin sobrescribir el resto del script.
+ */
+export function applyScriptPartialPatch(
+  sourceCode: string,
+  oldText: string,
+  newText: string,
+): PartialPatchResult {
+  if (!oldText) {
+    return { ok: false, reason: 'empty_old_text', sourceCode };
+  }
+  const firstIdx = sourceCode.indexOf(oldText);
+  if (firstIdx < 0) {
+    return { ok: false, reason: 'not_found', sourceCode };
+  }
+  const secondIdx = sourceCode.indexOf(oldText, firstIdx + oldText.length);
+  if (secondIdx >= 0) {
+    return { ok: false, reason: 'ambiguous_match', sourceCode };
+  }
+  return {
+    ok: true,
+    sourceCode:
+      sourceCode.slice(0, firstIdx) + newText + sourceCode.slice(firstIdx + oldText.length),
+  };
+}
+
+export interface StageSpriteContextInput {
+  id: string;
+  displayName: string;
+  role: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  opacity: number;
+  visible: boolean;
+  flipX: boolean;
+  zIndex: number;
+  xmlPath?: string | null;
+  animationPrefixes?: ReadonlyArray<string>;
+  imageBytes?: Uint8Array;
+  base64Png?: string;
+}
+
+/**
+ * Espejo puro de `AiPatchEngine.handleListStageSprites`: serializa los metadatos del escenario
+ * (nombres, roles, coordenadas, visibilidad y animaciones) garantizando que nunca se envían
+ * bytes o payloads de imágenes al proveedor LLM.
+ */
+export function buildNonImageStageSpritesContext(
+  entities: ReadonlyArray<StageSpriteContextInput>,
+  cameras: ReadonlyArray<{ index: number; name: string; targetKind: string; targetEntityId?: string | null; zoom: number }>,
+) {
+  return {
+    virtualCanvas: '1280x720' as const,
+    sprites: entities.map((e) => ({
+      id: e.id,
+      displayName: e.displayName,
+      role: e.role,
+      x: e.x,
+      y: e.y,
+      width: e.width,
+      height: e.height,
+      scale: e.scale,
+      opacity: e.opacity,
+      visible: e.visible,
+      flipX: e.flipX,
+      zIndex: e.zIndex,
+      hasAtlas: Boolean(e.xmlPath),
+      animations: [...(e.animationPrefixes ?? [])],
+    })),
+    cameras: cameras.map((c) => ({
+      slotIndex: c.index,
+      name: c.name,
+      targetKind: c.targetKind,
+      targetEntityId: c.targetEntityId ?? null,
+      zoom: c.zoom,
+    })),
+  };
+}
+
+export interface OpenRouterSseChunkDelta {
+  content?: string | null;
+  tool_calls?: ReadonlyArray<{
+    index: number;
+    id?: string;
+    function?: { name?: string; arguments?: string };
+  }>;
+}
+
+/**
+ * Espejo puro de `OpenRouterSseClient`: ensambla tokens de texto y fragmentos indexados
+ * de `tool_calls` recibidos por Server-Sent Events (`stream: true`).
+ */
+export function accumulateOpenRouterSseToolCalls(deltas: ReadonlyArray<OpenRouterSseChunkDelta>): {
+  assistantText: string;
+  toolCalls: Array<{ id: string; name: string; argumentsJson: string }>;
+} {
+  let assistantText = '';
+  const map = new Map<number, { id: string; name: string; args: string }>();
+
+  for (const delta of deltas) {
+    if (typeof delta.content === 'string' && delta.content.length > 0) {
+      assistantText += delta.content;
+    }
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const cur = map.get(tc.index) ?? {
+          id: `call_${tc.index}`,
+          name: '',
+          args: '',
+        };
+        if (tc.id) cur.id = tc.id;
+        if (tc.function?.name) cur.name += tc.function.name;
+        if (tc.function?.arguments) cur.args += tc.function.arguments;
+        map.set(tc.index, cur);
+      }
+    }
+  }
+
+  const toolCalls = [...map.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, v]) => ({ id: v.id, name: v.name, argumentsJson: v.args }))
+    .filter((v) => v.name.trim().length > 0);
+
+  return { assistantText, toolCalls };
+}
+

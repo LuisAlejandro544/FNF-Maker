@@ -99,6 +99,8 @@ object StudioJsonParser {
                             trackCount = obj.optInt("trackCount", 0),
                             entityCount = obj.optInt("entityCount", 0),
                             scriptCount = obj.optInt("scriptCount", 0),
+                            devApiVersion = obj.optInt("devApiVersion", 1),
+                            currentDevApiVersion = obj.optInt("currentDevApiVersion", 2),
                             updatedAtMs = obj.optLong("updatedAtMs", 0L),
                             isActive = obj.optBoolean("isActive", false)
                         )
@@ -234,10 +236,19 @@ object StudioJsonParser {
             parseAudioAdaptationReportObject(it)
         }
 
+        val parsedDevApiVersion = obj.optInt("devApiVersion", 1).coerceAtLeast(1)
+        val parsedCurrentDevApi = obj.optInt("currentDevApiVersion", 2).coerceAtLeast(1)
+        val parsedDevApiLabel = obj.optString("devApiLabel", "").ifBlank {
+            if (parsedDevApiVersion >= 2) "v2 · Scripting Pro & Multicámara" else "v1 · Base Inicial"
+        }
+
         return ProjectSnapshot(
             id = obj.optString("id", ""),
             name = obj.optString("name", "Nuevo Mod"),
             author = obj.optString("author", "Creador"),
+            devApiVersion = parsedDevApiVersion,
+            currentDevApiVersion = parsedCurrentDevApi,
+            devApiLabel = parsedDevApiLabel,
             downscroll = obj.optBoolean("downscroll", false),
             controlMode = obj.optString("controlMode", "tap_arrows"),
             audioOffsetMs = obj.optDouble("audioOffsetMs", 0.0),

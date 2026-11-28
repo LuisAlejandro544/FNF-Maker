@@ -68,6 +68,8 @@ internal class StudioEditorDelegate(
     fun setPreferredRenderBackend(kind: RenderBackendKind) =
         projectLifecycle.setPreferredRenderBackend(kind)
 
+    fun upgradeProjectDevApi() = projectLifecycle.upgradeProjectDevApi()
+
     fun duplicateProject(projectId: String) = projectLifecycle.duplicateProject(projectId)
 
     fun deleteProject(projectId: String) = projectLifecycle.deleteProject(projectId)

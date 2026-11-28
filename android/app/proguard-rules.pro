@@ -4,3 +4,6 @@
 -keep class com.beatforge.studio.CrashReportActivity { *; }
 -keep class com.beatforge.studio.SafFileBridge { *; }
 -keep class com.beatforge.studio.NativeEngineBridge { *; }
+-keep class com.beatforge.studio.ai.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

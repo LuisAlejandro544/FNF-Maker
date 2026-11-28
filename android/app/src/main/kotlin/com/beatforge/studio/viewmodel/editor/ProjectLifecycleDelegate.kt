@@ -149,6 +149,16 @@ internal class ProjectLifecycleDelegate(
         }
     }
 
+    fun upgradeProjectDevApi() {
+        helper.scope.launch(helper.engineIoDispatcher) {
+            helper.setBusy(true)
+            val raw = NativeEngineBridge.nativeUpgradeProjectDevApi()
+            helper.applyActionJson(raw)
+            helper.refreshProjectsInternal()
+            helper.uiState.update { it.copy(devApiDialogOpen = false, isBusy = false) }
+        }
+    }
+
     fun duplicateProject(projectId: String) {
         helper.scope.launch(helper.engineIoDispatcher) {
             helper.setBusy(true)

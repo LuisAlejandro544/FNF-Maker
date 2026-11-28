@@ -15,6 +15,7 @@ enum class StudioScreen(val label: String) {
     SpriteLab("Sprites"),
     StageEditor("Escena"),
     ScriptStudio("Scripts"),
+    AiAssistant("Asistente IA"),
     HotCompile("Compilar"),
     AudioAdapt("Acústica"),
     Gameplay("Juego")
@@ -97,6 +98,8 @@ data class ProjectSummary(
     val trackCount: Int = 0,
     val entityCount: Int = 0,
     val scriptCount: Int = 0,
+    val devApiVersion: Int = 1,
+    val currentDevApiVersion: Int = 2,
     val updatedAtMs: Long = 0L,
     val isActive: Boolean = false
 )

@@ -13,6 +13,7 @@ mod script_skin_ops;
 mod stage_ops;
 
 use crate::session::{EngineSession, parse_control_mode_key};
+use pulse_core::project::{CURRENT_DEV_API_VERSION, dev_api_label, migrate_project_to_dev_api};
 
 impl EngineSession {
     pub fn update_project_meta(
@@ -36,5 +37,23 @@ impl EngineSession {
         self.invalidate_compiled_bundle();
         self.mark_dirty_and_maybe_save(false);
         self.ok_response("Proyecto actualizado")
+    }
+
+    pub fn upgrade_dev_api_version(&mut self) -> String {
+        let (prev, next) = migrate_project_to_dev_api(&mut self.project, CURRENT_DEV_API_VERSION);
+        self.invalidate_compiled_bundle();
+        self.save_active_project_now();
+        if prev == next {
+            self.ok_response(format!(
+                "El proyecto ya usa la API de desarrollo {}",
+                dev_api_label(next)
+            ))
+        } else {
+            self.ok_response(format!(
+                "Proyecto migrado de API v{} a {}",
+                prev,
+                dev_api_label(next)
+            ))
+        }
     }
 }

@@ -56,14 +56,15 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │       │       ├── mod_descriptors.rs   # Parsers `.json`/`.xml` de personaje (`characters/*`) y escenario (`stages/*`: Psych/V-Slice/Codename)
 │       │       ├── svg_skin.rs          # Flechas (incl. nota X `default_hurt_arrow_x_svg`), importador `NOTE_assets.png+.xml`, barra, íconos, ratings y Note Splash SVG vía resvg
 │       │       ├── gfx_backend.rs       # Tipos base `RenderBackendKind` (`Canvas2d`/`Gles2`/`Gles3`/`Vulkan`) y `GfxCapabilities`
-│       │       ├── project/             # Modelo `ModProject` y generadores de scripts Lua predeterminados
+│       │       ├── project/             # Modelo `ModProject`, API de desarrollo y generadores de scripts Lua predeterminados
 │       │       │   ├── mod.rs           # Reexportaciones públicas del módulo `project`
-│       │       │   ├── models.rs        # Estructuras `ModProject`, metadatos, pistas de audio, `countdown` y `render_backend`
-│       │       │   ├── countdown.rs     # 4 pasos independientes (`3 · 2 · 1 · ¡YA!`): PNG/WebP/ASTC + XML Sparrow opcional (simple/combinado) y voces/SFX separadas
+│       │       │   ├── dev_api.rs       # Sistema "API de desarrollo" (`CURRENT_DEV_API_VERSION = 2` y migración explícita de mods antiguos)
+│       │       │   ├── models.rs        # Estructuras `ModProject` (incl. `dev_api_version`), metadatos, pistas de audio, `countdown` y `render_backend`
+│       │       │   ├── countdown.rs     # 3 pasos oficiales (`2 · 1 · ¡YA!`): PNG/WebP/ASTC + XML Sparrow opcional (simple/combinado) y voces/SFX separadas
 │       │       │   ├── lua_helpers.rs   # Utilidades compartidas de formato e interpolación para plantillas Lua
 │       │       │   ├── camera_lua.rs    # Generador `camera_system.lua` V2 (`-- [CAM_RUNTIME_V2]`)
 │       │       │   ├── stage_events_lua.rs # Generador `stage_events.lua` para eventos de escenario y cámara
-│       │       │   └── ui_blackout_lua.rs  # Generador `ui_blackout.lua` para apagones e intro HUD (`3-2-1-GO`)
+│       │       │   └── ui_blackout_lua.rs  # Generador `ui_blackout.lua` para apagones e intro HUD (`2-1-¡YA!`)
 │       │       ├── frame_memory.rs      # Memoria por frame / ventana deslizante de notas
 │       │       ├── script_optimizer/    # Poda segura modularizada preservando API completa del motor en JS/TS/Lua
 │       │       │   ├── mod.rs           # Reexportaciones públicas (`optimize_scripts_for_hot_compile`, `optimize_single_script`)
@@ -146,10 +147,10 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   └── gameplay_gfx_ops.rs # JNI de compilación incremental, simulación gameplay `BFGP` v2, debug y probe GPU (`gfx`)
 │               └── session/             # `EngineSession` modularizado por responsabilidad (sin caché RGBA duplicado)
 │                   ├── mod.rs           # Struct `EngineSession` (incl. `auto_audio_offset_ms`), rutas `compiled_cache/<id>/` y `audio_cache/`, cuota de caché y helpers
-│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `autoAudioOffsetMs`, `CountdownStepSnapshotJson`, `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
-│                   ├── countdown_ops.rs # Importación/limpieza/preview de PNG/ASTC/WebP, Sparrow `.xml` y voces separadas `3 · 2 · 1 · ¡YA!`
+│                   ├── dto.rs           # DTOs hacia Kotlin (incl. `devApiVersion`, `currentDevApiVersion`, `devApiLabel`, `autoAudioOffsetMs`, `CountdownStepSnapshotJson`, `StageCameraSlotSnapshotJson`, `cameraSlot`, `repacked_entity_ids`, `compiled_texture_pages`, `texture_pixel_formats`, `timeline_windows`, `page_index`)
+│                   ├── countdown_ops.rs # Importación/limpieza/preview de PNG/ASTC/WebP, Sparrow `.xml` y voces separadas `2 · 1 · ¡YA!`
 │                   ├── editor_ops/        # Operaciones de edición de `EngineSession` divididas por dominio
-│                   │   ├── mod.rs         # Coordinador `editor_ops` y actualización de metadatos del proyecto (`update_project_meta`)
+│                   │   ├── mod.rs         # Coordinador `editor_ops`, metadatos del proyecto y migración `upgrade_dev_api_version`
 │                   │   ├── chart_ops.rs   # Importación/exportación de `chart.json`, BPM, metadatos, `intro_ui`, secciones, eventos y notas
 │                   │   ├── audio_ops.rs   # Importación/eliminación de hasta 3 pistas, ganancia/mute y adaptador acústico
 │                   │   ├── stage_ops.rs   # Alta, eliminación individual, vaciado de escena, transformaciones e importación `stages/*`
@@ -209,6 +210,13 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               ├── StudioViewModel.kt   # Coordinador principal (`StateFlow`) que delega en `viewmodel/*` sobre `Dispatchers.IO`
 │               ├── audio/               # Sondeo físico del audio de Android (sin bloqueos en UI)
 │               │   └── AndroidAudioDeviceProbe.kt # Consulta `AudioManager` + cruce exacto `AudioDeviceInfo.id == aaudioDeviceId` en `Dispatchers.IO` (`aaudioMatched`)
+│               ├── ai/                  # Subsistema del Asistente IA (OpenRouter SSE streaming + tool calling + Skills .md)
+│               │   ├── AiModels.kt                # Modelos de configuración, selector (`baidu/ernie-5.5-flash-preview:free`), chat y herramientas
+│               │   ├── AiPreferencesStore.kt      # Almacenamiento local (`SharedPreferences`) de API Key, modelos y System Prompt editable
+│               │   ├── AiSkillsRepository.kt      # Lector desde assets de los módulos `/skills/beatforge_ai/*/SKILL.md`
+│               │   ├── AiPatchEngine.kt           # Herramientas: `list_scripts`, `read_script`, `patch_script`, `create_script`, `list_stage_sprites` (sin imágenes), `get_chart_timing_info`, `read_skill`
+│               │   ├── OpenRouterSseClient.kt     # Cliente OkHttp-SSE (Apache-2.0) con streaming en vivo y fragmentos `tool_calls`
+│               │   └── AiAssistantCoordinator.kt  # Bucle agéntico asíncrono en `Dispatchers.IO`
 │               ├── gfx/                 # Capa modular de preparación GPU (OpenGL ES 2.0/3.x y Vulkan)
 │               │   ├── RenderBackendModels.kt # Modelos Kotlin de backend seleccionado y capacidades de drivers detectados
 │               │   ├── VulkanProbeBridge.kt   # Sondeo ligero Android PackageManager (GLES / Vulkan) enlazado con el reporte Rust
@@ -218,7 +226,7 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │               │   ├── StudioEditorDelegate.kt    # Fachada pública que coordina los delegados de `viewmodel/editor/*` sin alterar la API de `StudioViewModel`
 │               │   ├── editor/                    # Delegados modulares del editor divididos por dominio
 │               │   │   ├── EditorStateHelper.kt       # Helpers compartidos (estados busy/banner, `applyActionJson`, actualización de proyecto y recarga de bitmaps)
-│               │   │   ├── ProjectLifecycleDelegate.kt # Ciclo de vida del motor, lobby, cuota `StorageManager`, crear/abrir/duplicar/borrar y backend GPU
+│               │   │   ├── ProjectLifecycleDelegate.kt # Ciclo de vida del motor, lobby, cuota `StorageManager`, crear/abrir/duplicar/borrar, backend GPU y `upgradeProjectDevApi`
 │               │   │   ├── SafImportExportDelegate.kt # Staging SAF, exportación `.json`/`.mod`, importación universal y flujo en 2 pasos `NOTE_assets`
 │               │   │   ├── ChartAudioEditorDelegate.kt # Edición de `chart.json` (BPM, eventos, notas, secciones) y pistas/preview de audio
 │               │   │   └── StageAssetsEditorDelegate.kt # Entidades del escenario, íconos, SVGs, Sparrow offsets, cuenta regresiva, multicámara y scripts
@@ -227,11 +235,14 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                   ├── theme/
 │                   │   └── StudioTheme.kt         # Paleta estudio carbón mate, naranja estudio, ámbar y verde Material 3
 │                   ├── components/
-│                   │   └── StudioNavBar.kt        # Riel vertical izquierdo compacto (`StudioNavRail`) con Material Icons
+│                   │   ├── StudioNavBar.kt        # Riel vertical izquierdo compacto (`StudioNavRail`) con Material Icons
+│                   │   ├── StudioLoadingVisuals.kt# Anillos y barras animadas de carga del estudio
+│                   │   └── CodeEditorWithLineNumbers.kt # Editor de código Compose puro con números de línea 1:1, coloreado sintáctico y barra rápida móvil
 │                   ├── popups/
 │                   │   ├── ArrowSkinDialog.kt     # Modal para personalizar flechas `.svg` o importar 2 pasos `NOTE_assets.png + .xml` (+ vista Nota X)
 │                   │   ├── CharacterIconsDialog.kt# Modal para íconos normal/perdiendo (auto-split 2-frame) y barra de vida .svg
-│                   │   ├── CountdownAssetsDialog.kt # Modal 3 · 2 · 1 · ¡YA! (imagen/XML por paso + voz/SFX separada + botón Probar)
+│                   │   ├── CountdownAssetsDialog.kt # Modal 2 · 1 · ¡YA! (imagen/XML por paso + voz/SFX separada + botón Probar)
+│                   │   ├── DevApiDialog.kt          # Modal de "API de desarrollo": muestra versión del mod, historial y migración segura a v2
 │                   │   ├── ChartJsonDetailsDialog.kt # Modal para editar metadatos `chart.json`, `changeBPM`, eventos e intro UI Blackout (hasta 600 s)
 │                   │   ├── ChartStepCueDialog.kt  # Modal coordinador en columna `#` que aloja las 5 pestañas de `ui/popups/chart_cue/` y lista de eventos activos
 │                   │   ├── chart_cue/             # Submódulos UI de pestañas del modal de cues del chart
@@ -276,7 +287,8 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                       │   │   ├── CameraModeChartTab.kt    # Pestaña 1: Acceso a `camera_system.lua`, modo (`fixed`/`sections`/`beats`), suavizado y clamping al fondo
 │                       │   │   └── CameraVignetteTab.kt     # Pestaña 2: Viñeta lateral (activar, colores preset/HEX, alpha, ancho, pulso y Escenario/HUD)
 │                       │   └── StageEntityInspector.kt# Inspector de entidad: rol 2x2, cruceta 1/10/35px, sliders, flipX y `Eliminar capa de la escena`
-│                       ├── ScriptStudioScreen.kt  # Editor nativo Lua / TS / JS (`camera_system.lua` y `stage_events.lua`) con referencia API
+│                       ├── ScriptStudioScreen.kt  # Editor Lua/TS/JS con números de línea (`CodeEditorWithLineNumbers`), validación Rust y acceso al Asistente IA
+│                       ├── ScriptAiAssistantScreen.kt # Pantalla dedicada del Asistente IA (chat SSE OpenRouter, selector modelos, System Prompt y Skills .md)
 │                       ├── HotCompileScreen.kt    # Pantalla de carga con barra y círculo determinados (`0%–100%`) + fase en vivo
 │                       ├── AudioAdaptScreen.kt    # Pantalla independiente pre-gameplay: hardware/AAudio, EBU R128 + FFT 5 bandas y plan DSP (Ruta 32f, Amplitud, Crossfeed, Lookahead)
 │                       ├── GameplayScreen.kt      # Coordinador jugable 60 FPS (`withFrameNanos`), medición FPS, flash HUD y ocultamiento HUD limpio
@@ -286,13 +298,19 @@ Este documento describe el árbol modular del repositorio y la responsabilidad d
 │                           ├── GameplayTouchOverlay.kt     # Entrada multi-touch de 4 carriles (desactivada durante pausa/fin/Game Over)
 │                           └── GameplayHudOverlay.kt       # HUD SVG, overlay Game Over (toque para reintentar), overlay Debug RAM/FPS y Pausa Debug
 │
+├── skills/beatforge_ai/                 # Skills modulares `.md` incluidos en assets Android para el Asistente IA
+│   ├── 01_scripting_api/SKILL.md        # Callbacks, Watchdog, HUD/FX, audio, tweens, timers y objetos dinámicos
+│   ├── 02_psych_migration/SKILL.md      # Guía de traducción Psych Engine -> BeatForge Studio
+│   ├── 03_stage_sprites_camera/SKILL.md # Lienzo 1280×720, sprites, animaciones/RAM y multicámara
+│   └── 04_chart_events_dev_api/SKILL.md # Chart, bloques protegidos, countdown 2-1-¡YA! y API de desarrollo
+│
 ├── sdk/                                 # Recursos y SDK para creadores de mods y pruebas locales
 │   ├── assets/arrows/                   # Flechas SVG originales libres de derechos (`left`, `down`, `up`, `right`, `hurt_x`)
 │   ├── samples/                         # Scripts de muestra (.lua, .ts, .js)
 │   └── ts/src/
 │       ├── beatforge-sdk.d.ts           # Tipado TypeScript oficial del API completo (`switchCamera`, `setCameraFollowPos`, `getGfSection`, `setCameraVignette`, `tweenCameraVignette`, `clearCameraVignette`, `triggerGameOver`, `noteType`)
-│       ├── engine-tools.ts              # Validación, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `PassThrough` manifest & aux countdown/icon scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF + cruce AAudio + offset Bluetooth + poda v3, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
-│       └── engine-tools.test.ts         # 74 pruebas unitarias ejecutables con `npx tsx --test`
+│       ├── engine-tools.ts              # Validación, API de desarrollo (`migrateProjectDevApiVersion`), parches parciales, sprites sin imágenes, OpenRouter SSE, multicámara + viñeta lateral, UI Blackout Inicio→Fin, `Lanczos3` viewport scaling, `PassThrough` manifest & aux countdown/icon scaling, `TimelineAssetLifecycle`, `RGB_565`+`exoquant`, multi-page splitting, adaptador DSP + Lookahead/M-S/Crossfeed/TPDF + cruce AAudio + offset Bluetooth + poda v3, `optimizeSparrowAtlasPlan`, eliminar/vaciar escena, countdown XML/audio, `.mod`, `BFGP` v2 (`168B`)
+│       └── engine-tools.test.ts         # Suite de pruebas unitarias ejecutables con `npx tsx --test`
 │
 ├── branding/                            # Identidad visual "Beat Hammer" (SVGs maestros, generador y PNGs de tienda/miniatura)
 │   ├── generate_pngs.mjs                # Conversor automático SVG -> PNG (resvg-js) para Android y tiendas

@@ -25,7 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -38,10 +38,10 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,13 +49,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.beatforge.studio.ImportKind
 import com.beatforge.studio.ProjectSnapshot
+import com.beatforge.studio.ui.components.CodeEditorWithLineNumbers
 import com.beatforge.studio.ui.theme.StudioColors
 
 @Composable
@@ -68,13 +66,21 @@ fun ScriptStudioScreen(
     onAddScript: (language: String) -> Unit,
     onRequestImportScript: () -> Unit,
     onUpdateScript: (scriptId: String, enabled: Boolean, sourceCode: String, silent: Boolean) -> Unit,
-    onValidateScript: (scriptId: String, enabled: Boolean, sourceCode: String) -> Unit
+    onValidateScript: (scriptId: String, enabled: Boolean, sourceCode: String) -> Unit,
+    onOpenAiAssistant: () -> Unit = {}
 ) {
     val activeScript = snapshot.scripts.find { it.id == selectedScriptId }
         ?: snapshot.scripts.firstOrNull()
 
     var editedSource by remember(activeScript?.id) {
         mutableStateOf(activeScript?.sourceCode ?: "")
+    }
+
+    LaunchedEffect(activeScript?.id, activeScript?.sourceCode) {
+        val remoteSource = activeScript?.sourceCode ?: return@LaunchedEffect
+        if (editedSource != remoteSource) {
+            editedSource = remoteSource
+        }
     }
 
     Row(
@@ -225,6 +231,25 @@ fun ScriptStudioScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = {
+                                    onUpdateScript(activeScript.id, activeScript.enabled, editedSource, true)
+                                    onOpenAiAssistant()
+                                },
+                                border = BorderStroke(1.dp, StudioColors.AccentCyan.copy(alpha = 0.7f)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = StudioColors.AccentCyan,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Asistente IA", color = StudioColors.TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
                                     onUpdateScript(activeScript.id, activeScript.enabled, editedSource, false)
                                 },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -284,21 +309,17 @@ fun ScriptStudioScreen(
                         }
                     }
 
-                    OutlinedTextField(
-                        value = editedSource,
-                        onValueChange = {
+                    CodeEditorWithLineNumbers(
+                        scriptId = activeScript.id,
+                        language = activeScript.language,
+                        sourceCode = editedSource,
+                        onSourceChange = {
                             editedSource = it
                             onUpdateScript(activeScript.id, activeScript.enabled, it, true)
                         },
-                        textStyle = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = StudioColors.TextPrimary
-                        ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .background(StudioColors.BgDark, RoundedCornerShape(8.dp))
                     )
 
                     Text(

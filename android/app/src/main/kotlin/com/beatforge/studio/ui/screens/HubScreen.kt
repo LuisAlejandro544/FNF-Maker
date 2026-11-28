@@ -80,7 +80,8 @@ fun HubScreen(
     ) -> Unit,
     onNavigate: (StudioScreen) -> Unit,
     onOpenArrowSkin: () -> Unit,
-    onCompileAndPlay: () -> Unit
+    onCompileAndPlay: () -> Unit,
+    onOpenDevApiDialog: () -> Unit = {}
 ) {
     var name by remember(snapshot.id) { mutableStateOf(snapshot.name) }
     var author by remember(snapshot.id) { mutableStateOf(snapshot.author) }
@@ -145,20 +146,46 @@ fun HubScreen(
                                 fontSize = 14.sp
                             )
                         }
-                        OutlinedButton(
-                            onClick = { onNavigate(StudioScreen.Projects) },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(28.dp)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.FolderOpen,
-                                contentDescription = null,
-                                tint = StudioColors.AccentCyan,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("Proyectos", color = StudioColors.TextPrimary, fontSize = 11.sp)
+                            val apiOutdated = snapshot.devApiVersion < snapshot.currentDevApiVersion
+                            val apiColor = if (apiOutdated) StudioColors.AccentAmber else StudioColors.AccentEmerald
+                            Surface(
+                                modifier = Modifier.clickable(onClick = onOpenDevApiDialog),
+                                shape = RoundedCornerShape(8.dp),
+                                color = apiColor.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, apiColor.copy(alpha = 0.7f))
+                            ) {
+                                Text(
+                                    text = if (apiOutdated) {
+                                        "API v${snapshot.devApiVersion} → v${snapshot.currentDevApiVersion}"
+                                    } else {
+                                        "API v${snapshot.devApiVersion}"
+                                    },
+                                    color = apiColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = { onNavigate(StudioScreen.Projects) },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.FolderOpen,
+                                    contentDescription = null,
+                                    tint = StudioColors.AccentCyan,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Proyectos", color = StudioColors.TextPrimary, fontSize = 11.sp)
+                            }
                         }
                     }
 

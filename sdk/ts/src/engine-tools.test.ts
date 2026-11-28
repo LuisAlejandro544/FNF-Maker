@@ -14,17 +14,22 @@ import {
   BINARY_GAMEPLAY_MAGIC,
   BINARY_GAMEPLAY_NOTE_BYTES,
   BINARY_GAMEPLAY_STRUM_BYTES,
+  CURRENT_DEV_API_VERSION,
+  LEGACY_DEV_API_VERSION,
   LruResourceCache,
   STREAM_RING_BYTES,
+  accumulateOpenRouterSseToolCalls,
   advanceNoteSlidingWindow,
   analyzeStageEventRamLifecycle,
   applyLookaheadLimiterStereo,
   applyMixerOutputStagePolicy,
+  applyScriptPartialPatch,
   applyStereoWidthAndCrossfeed,
   autoBindSparrowPrefixes,
   buildAdaptiveDspPlan,
   buildBfaudCacheKey,
   buildFlashEffectEventParams,
+  buildNonImageStageSpritesContext,
   buildStageSwapEventParams,
   buildUiBlackoutEventParams,
   clampEntityScale,
@@ -54,6 +59,7 @@ import {
   fnv1a64Hex,
   fuseDeviceAndAAudioProbe,
   mapRotatedSpriteSample,
+  migrateProjectDevApiVersion,
   optimizeScriptLoops,
   packPosesIntoBoundedAtlas,
   parseAstcHeader,
@@ -3454,3 +3460,110 @@ test('computeHotCompileFinalTailProgress advances monotonically from 90% to 100%
   });
   assert.equal(p6, 1.0);
 });
+
+test('migrateProjectDevApiVersion defaults legacy projects to v1 and upgrades cleanly without altering data', () => {
+  const legacyProject = { id: 'old_mod', name: 'Mod Clásico', notesCount: 42 };
+  const upgraded = migrateProjectDevApiVersion(legacyProject);
+  assert.equal(upgraded.previousVersion, LEGACY_DEV_API_VERSION);
+  assert.equal(upgraded.migrated, true);
+  assert.equal(upgraded.project.devApiVersion, CURRENT_DEV_API_VERSION);
+  assert.equal(upgraded.project.notesCount, 42);
+
+  const alreadyCurrent = migrateProjectDevApiVersion({ id: 'new_mod', devApiVersion: CURRENT_DEV_API_VERSION });
+  assert.equal(alreadyCurrent.migrated, false);
+  assert.equal(alreadyCurrent.project.devApiVersion, CURRENT_DEV_API_VERSION);
+});
+
+test('applyScriptPartialPatch replaces unique fragment and rejects missing or ambiguous fragments', () => {
+  const source = [
+    'function onBeatHit(beat)',
+    '  if beat == 4 then',
+    '    setCameraZoom(1.15)',
+    '  end',
+    'end',
+  ].join('\n');
+
+  const okRes = applyScriptPartialPatch(source, 'setCameraZoom(1.15)', 'setCameraZoom(1.25)');
+  assert.equal(okRes.ok, true);
+  assert.ok(okRes.sourceCode.includes('setCameraZoom(1.25)'));
+  assert.ok(okRes.sourceCode.includes('function onBeatHit(beat)'));
+
+  const missingRes = applyScriptPartialPatch(source, 'nonExistentFn()', 'x()');
+  assert.equal(missingRes.ok, false);
+  if (!missingRes.ok) assert.equal(missingRes.reason, 'not_found');
+
+  const dupSource = 'log("a")\nlog("a")';
+  const ambigRes = applyScriptPartialPatch(dupSource, 'log("a")', 'log("b")');
+  assert.equal(ambigRes.ok, false);
+  if (!ambigRes.ok) assert.equal(ambigRes.reason, 'ambiguous_match');
+});
+
+test('buildNonImageStageSpritesContext emits metadata and strips binary image payloads', () => {
+  const ctx = buildNonImageStageSpritesContext(
+    [
+      {
+        id: 'opponent_main',
+        displayName: 'Rival Principal',
+        role: 'opponent',
+        x: 240,
+        y: 380,
+        width: 280,
+        height: 380,
+        scale: 1.0,
+        opacity: 1.0,
+        visible: true,
+        flipX: false,
+        zIndex: 2,
+        xmlPath: '/assets/sprites/rival.xml',
+        animationPrefixes: ['idle', 'singLEFT'],
+        imageBytes: new Uint8Array([1, 2, 3, 4]),
+        base64Png: 'iVBORw0KGgo=',
+      },
+    ],
+    [{ index: 0, name: 'Cam 0', targetKind: 'fixed', targetEntityId: null, zoom: 1.0 }],
+  );
+
+  assert.equal(ctx.virtualCanvas, '1280x720');
+  assert.equal(ctx.sprites.length, 1);
+  assert.equal(ctx.sprites[0]?.displayName, 'Rival Principal');
+  assert.equal(ctx.sprites[0]?.hasAtlas, true);
+  assert.equal('imageBytes' in ctx.sprites[0]!, false);
+  assert.equal('base64Png' in ctx.sprites[0]!, false);
+});
+
+test('accumulateOpenRouterSseToolCalls reassembles streamed text and indexed tool_calls', () => {
+  const assembled = accumulateOpenRouterSseToolCalls([
+    { content: 'Voy a inspeccionar ' },
+    { content: 'el escenario.' },
+    {
+      tool_calls: [
+        { index: 0, id: 'call_abc', function: { name: 'list_stage_sprites', arguments: '' } },
+      ],
+    },
+    {
+      tool_calls: [
+        { index: 0, function: { arguments: '{}' } },
+        { index: 1, id: 'call_def', function: { name: 'patch_' } },
+      ],
+    },
+    {
+      tool_calls: [
+        { index: 1, function: { name: 'script', arguments: '{"script_id":"stage_events.lua"}' } },
+      ],
+    },
+  ]);
+
+  assert.equal(assembled.assistantText, 'Voy a inspeccionar el escenario.');
+  assert.equal(assembled.toolCalls.length, 2);
+  assert.deepEqual(assembled.toolCalls[0], {
+    id: 'call_abc',
+    name: 'list_stage_sprites',
+    argumentsJson: '{}',
+  });
+  assert.deepEqual(assembled.toolCalls[1], {
+    id: 'call_def',
+    name: 'patch_script',
+    argumentsJson: '{"script_id":"stage_events.lua"}',
+  });
+});
+
